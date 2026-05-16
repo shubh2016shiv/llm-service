@@ -1,9 +1,10 @@
 """
-OpenAI Direct Resolution Demo
-=============================
+demo_full_request_lifecycle_with_live_openai
+============================================
 
-Step-by-step smoke test of the tenant-aware resolution and provider-execution
-pipeline WITHOUT going through the FastAPI layer.
+Walks through the entire request lifecycle — tenant config → route resolution →
+secret fetch → quota gate → live OpenAI provider execution → response — all
+WITHOUT the FastAPI layer, so you can inspect every step.
 
 What this validates (in order):
   1. ConfigLoader can parse config/providers/openai.yaml
@@ -22,22 +23,30 @@ Token Manager:
 
 Usage:
   export OPENAI_API_KEY="sk-..."
-  python3 examples/openai_direct_resolution_demo.py
+  python3 examples/demo_full_request_lifecycle_with_live_openai.py
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
-from uuid import UUID, uuid5, NAMESPACE_URL
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import aiobreaker
 import httpx
 
-from app.core.secret_store import EnvironmentSecretStore
-from app.core.settings import ConfigLoader
-from app.core.settings.models.tenant_config import (
+# ---------------------------------------------------------------------------
+# Path bootstrap — allow running from any directory
+# ---------------------------------------------------------------------------
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from app.core.secret_store import EnvironmentSecretStore  # noqa: E402
+from app.core.settings import ConfigLoader  # noqa: E402
+from app.core.settings.models.tenant_config import (  # noqa: E402
     DeploymentConfig,
     DeploymentStatus,
     TenantConfig,
@@ -46,9 +55,9 @@ from app.core.settings.models.tenant_config import (
     TenantTier,
     UserEntitlementConfig,
 )
-from app.infrastructure.http_client_factory import HTTPClientFactory
-from app.providers.direct.openai_provider import OpenAIProvider
-from app.routing import (
+from app.infrastructure.http_client_factory import HTTPClientFactory  # noqa: E402
+from app.providers.direct.openai_provider import OpenAIProvider  # noqa: E402
+from app.routing import (  # noqa: E402
     CredentialResolutionService,
     DeploymentResolutionService,
     ProviderRouteValidationService,
@@ -59,9 +68,11 @@ from app.routing import (
     TenantResolutionService,
     UserEntitlementResolutionService,
 )
-from app.routing.deployment_resolver import DeploymentNotFoundError as LegacyDeploymentNotFoundError
-from app.schemas.enums import OperationType
-from app.schemas.requests import ChatMessage, ChatRequest
+from app.routing.deployment_resolver import (  # noqa: E402
+    DeploymentNotFoundError as LegacyDeploymentNotFoundError,
+)
+from app.schemas.enums import OperationType  # noqa: E402
+from app.schemas.requests import ChatMessage, ChatRequest  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 
@@ -87,6 +98,7 @@ USER_WITH_OVERRIDE_ID = UUID("55555555-5555-5555-5555-555555555555")
 # These satisfy the TenantConfigReader and UserEntitlementReader protocols
 # without requiring a live database — necessary for pre-API smoke testing.
 # ---------------------------------------------------------------------------
+
 
 class _TenantStore:
     """Minimal TenantConfigReader backed by a single in-memory TenantConfig."""
@@ -147,6 +159,7 @@ class _DeploymentStore:
 # Service Assembly
 # ---------------------------------------------------------------------------
 
+
 def build_resolution_service(
     config_loader: ConfigLoader,
     tenant_config: TenantConfig,
@@ -169,7 +182,9 @@ def build_resolution_service(
     deployment_store = _DeploymentStore(
         deployments={deployment_config.deployment_key: deployment_config},
     )
-    deployment_svc = DeploymentResolutionService(deployment_store)
+    # _DeploymentStore implements the same resolve() contract as DeploymentResolver
+    # but is intentionally a lightweight in-memory stub for demo/testing.
+    deployment_svc = DeploymentResolutionService(deployment_store)  # type: ignore[arg-type]
 
     return RequestResolutionService(
         tenant_resolution_service=tenant_svc,
@@ -184,6 +199,7 @@ def build_resolution_service(
 # ---------------------------------------------------------------------------
 # Execution Context → Provider Config Adapter
 # ---------------------------------------------------------------------------
+
 
 def context_to_deployment_config(
     context: ResolvedExecutionContext,
@@ -233,6 +249,7 @@ def context_to_deployment_config(
 # Token Manager Gate (bypassed when USE_TOKEN_MANAGER = False)
 # ---------------------------------------------------------------------------
 
+
 async def check_token_quota(
     tenant_id: UUID,
     deployment_key: str,
@@ -250,7 +267,7 @@ async def check_token_quota(
         )
         return
 
-    from app.adapters.clients.token_manager_client import TokenManagerClient, QuotaExceededError
+    from app.adapters.clients.token_manager_client import QuotaExceededError, TokenManagerClient
 
     client = TokenManagerClient()
     allowed = await client.check_quota(
@@ -268,6 +285,7 @@ async def check_token_quota(
 # ---------------------------------------------------------------------------
 # Single Case Runner
 # ---------------------------------------------------------------------------
+
 
 async def run_case(
     *,
@@ -293,10 +311,10 @@ async def run_case(
     )
     context = await resolution_service.resolve(resolution_request)
 
-    print(f"\n{'='*62}")
+    print(f"\n{'=' * 62}")
     print(f"  CASE : {case_name}")
-    print(f"{'='*62}")
-    print(f"[STEP 1] Route resolved")
+    print(f"{'=' * 62}")
+    print("[STEP 1] Route resolved")
     print(f"         resolution_source  : {context.resolution_source.value}")
     print(f"         provider_name      : {context.provider_name}")
     print(f"         model_name         : {context.model_name}")
@@ -312,7 +330,7 @@ async def run_case(
         context.secret_reference,
         tenant_id=str(context.tenant_config.tenant_id),
     )
-    print(f"[STEP 2] Secret fetched")
+    print("[STEP 2] Secret fetched")
     print(f"         secret_reference   : {context.secret_reference}")
     print(f"         key_preview        : {api_key[:10]}...{api_key[-4:]}")
 
@@ -326,20 +344,20 @@ async def run_case(
         max_tokens=min(120, context.effective_max_tokens),
         resolved_api_key=api_key,
     )
-    print(f"[STEP 3] ChatRequest built")
+    print("[STEP 3] ChatRequest built")
     print(f"         messages           : {len(chat_request.messages)} (system + user)")
     print(f"         temperature        : {chat_request.temperature}")
     print(f"         max_tokens         : {chat_request.max_tokens}")
 
     # Step 4 — Token manager gate (bypassed when USE_TOKEN_MANAGER = False).
-    print(f"[STEP 4] Token manager gate")
+    print("[STEP 4] Token manager gate")
     print(f"         USE_TOKEN_MANAGER  : {USE_TOKEN_MANAGER}")
     await check_token_quota(
         tenant_id=TENANT_ID,
         deployment_key=deployment_key,
         chat_request=chat_request,
     )
-    print(f"         quota_status       : PASSED")
+    print("         quota_status       : PASSED")
 
     # Step 5 — Instantiate the provider and execute.
     http_client = http_client_factory.create_client("rest_api")
@@ -353,16 +371,16 @@ async def run_case(
         http_client=http_client,
         circuit_breaker=aiobreaker.CircuitBreaker(),
     )
-    print(f"[STEP 5] Provider instantiated")
+    print("[STEP 5] Provider instantiated")
     print(f"         provider_class     : {provider.__class__.__name__}")
     print(f"         target_model       : {deployment_config.model_name}")
     print(f"         target_endpoint    : {deployment_config.api_endpoint_url}")
-    print(f"         circuit_breaker    : CLOSED (fresh)")
+    print("         circuit_breaker    : CLOSED (fresh)")
 
-    print(f"[STEP 6] Executing LLM call...")
+    print("[STEP 6] Executing LLM call...")
     try:
         response = await provider.generate(chat_request)
-        print(f"[STEP 6] Response received")
+        print("[STEP 6] Response received")
         print(f"         response_model     : {response.model}")
         print(f"         finish_reason      : {response.finish_reason}")
         print(f"         response_content   : {response.content.strip()}")
@@ -377,12 +395,13 @@ async def run_case(
         raise
     finally:
         await http_client.aclose()
-        print(f"[STEP 7] HTTP client closed cleanly.")
+        print("[STEP 7] HTTP client closed cleanly.")
 
 
 # ---------------------------------------------------------------------------
 # Demo Fixtures
 # ---------------------------------------------------------------------------
+
 
 def make_tenant_config() -> TenantConfig:
     return TenantConfig(
@@ -439,6 +458,7 @@ def make_user_entitlement_config() -> UserEntitlementConfig:
 # ---------------------------------------------------------------------------
 # Entry Point
 # ---------------------------------------------------------------------------
+
 
 async def main() -> None:
     """Boot infrastructure, wire services, then run both resolution scenarios."""
