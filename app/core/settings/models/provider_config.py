@@ -29,12 +29,12 @@ Last Updated: 2026-05-16
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING  # noqa: F401
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-if TYPE_CHECKING:
-    from app.core.settings.models.model_config import LLMModelSpec, ModelCapability
+# These are used in Pydantic field annotations and MUST be at runtime.
+from app.core.settings.models.model_config import LLMModelSpec, ModelCapability  # noqa: TC001
 
 
 class AuthMode(StrEnum):
@@ -162,9 +162,7 @@ class ProviderEndpointConfig(BaseModel):
         """
         if self.base_url_template:
             if not region:
-                raise ValueError(
-                    "base_url_template requires a region, but none was provided."
-                )
+                raise ValueError("base_url_template requires a region, but none was provided.")
             return self.base_url_template.format(region=region)
         return self.base_url
 
@@ -263,8 +261,7 @@ class ProviderStaticConfig(BaseModel):
         """
         if value != value.lower():
             raise ValueError(
-                f"provider_name must be lowercase, got: {value!r}. "
-                f"Use {value.lower()!r} instead."
+                f"provider_name must be lowercase, got: {value!r}. Use {value.lower()!r} instead."
             )
         return value
 
