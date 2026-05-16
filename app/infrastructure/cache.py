@@ -26,8 +26,12 @@ Design (per implementation_plan.md §10)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from typing import AsyncIterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +171,7 @@ class RedisCache:
             # Yield nothing if Redis is down — caller's loop exits immediately.
             return
 
+        pubsub = None
         try:
             pubsub = self._redis.pubsub()  # type: ignore[union-attr]
             await pubsub.subscribe(channel)
@@ -186,10 +191,9 @@ class RedisCache:
         except Exception:
             logger.warning("RedisCache subscription error for channel=%s", channel, exc_info=True)
         finally:
-            try:
-                await pubsub.unsubscribe(channel)
-            except Exception:
-                pass
+            if pubsub is not None:
+                with contextlib.suppress(Exception):
+                    await pubsub.unsubscribe(channel)
 
     # ------------------------------------------------------------------
     # Health
