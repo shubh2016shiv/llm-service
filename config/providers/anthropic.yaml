@@ -1,0 +1,47 @@
+# settings/providers/anthropic.yaml — Anthropic static provider definition
+
+provider_name: anthropic
+provider_type: rest_api
+implementation_class: app.providers.direct.anthropic_provider.AnthropicProvider
+
+auth:
+  mode: api_key_header
+  header_name: x-api-key
+
+endpoints:
+  base_url: https://api.anthropic.com/v1
+  chat: /messages
+  health: /models
+
+capabilities:
+  - chat
+
+defaults:
+  timeout_seconds: 90.0
+  max_retries: 3
+  temperature: 0.7
+
+extra_default_headers:
+  anthropic-version: "2023-06-01"
+
+models:
+  - name: claude-3-5-sonnet-20241022
+    max_output_tokens: 8192
+    context_window: 200000
+    capabilities: [chat]
+    price_per_1k_prompt_tokens: 0.003
+    price_per_1k_completion_tokens: 0.015
+
+  - name: claude-3-5-haiku-20241022
+    max_output_tokens: 8192
+    context_window: 200000
+    capabilities: [chat]
+    price_per_1k_prompt_tokens: 0.001
+    price_per_1k_completion_tokens: 0.005
+
+  - name: claude-3-opus-20240229
+    max_output_tokens: 4096
+    context_window: 200000
+    capabilities: [chat]
+    price_per_1k_prompt_tokens: 0.015
+    price_per_1k_completion_tokens: 0.075

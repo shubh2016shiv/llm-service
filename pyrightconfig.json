@@ -1,0 +1,10 @@
+{
+  "typeCheckingMode": "standard",
+  "reportMissingTypeStubs": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownArgumentType": "none",
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["app"]
+}

@@ -1,0 +1,32 @@
+# settings/providers/vllm.yaml — vLLM (self-hosted) static provider definition
+# Endpoint is per-tenant in DeploymentConfig (pointing to the vLLM server).
+# Auth is optional (api_key_header or none for private networks).
+
+provider_name: vllm
+provider_type: rest_api
+implementation_class: app.providers.direct.vllm_provider.VLLMProvider
+
+auth:
+  mode: bearer_token
+  header_name: Authorization
+  header_prefix: "Bearer"
+
+endpoints:
+  # base_url is overridden per-deployment with the actual vLLM server URL.
+  base_url: http://localhost:8000/v1
+  chat: /chat/completions
+  embed: /embeddings
+  health: /health
+
+capabilities:
+  - chat
+  - embed
+
+defaults:
+  timeout_seconds: 180.0 # Self-hosted models may be slower; generous timeout
+  max_retries: 2
+  temperature: 0.7
+
+# No models defined at provider level — vLLM models vary per deployment.
+# The deploying team populates model_name in DeploymentConfig.
+models: []

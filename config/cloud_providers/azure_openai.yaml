@@ -1,0 +1,48 @@
+# settings/cloud_providers/azure_openai.yaml — Azure OpenAI static provider definition
+# Endpoint and deployment_name are per-tenant (in DeploymentConfig).
+# Lives under cloud_providers/ alongside azure.yaml (platform infra) because
+# Azure OpenAI is a cloud-platform-native SDK provider, not a direct REST API.
+
+provider_name: azure_openai
+provider_type: rest_api
+implementation_class: app.providers.cloud.azure_openai_provider.AzureOpenAIProvider
+
+auth:
+  mode: api_key_header
+  header_name: api-key
+
+endpoints:
+  # Base URL is built per-deployment from AzureCloudConfig.endpoint_template.
+  base_url: ""
+  base_url_template: "https://{resource_name}.openai.azure.com/openai/deployments/{deployment_name}"
+  chat: /chat/completions
+  embed: /embeddings
+
+capabilities:
+  - chat
+  - embed
+
+defaults:
+  timeout_seconds: 60.0
+  max_retries: 3
+  temperature: 0.7
+
+# Azure requires api-version query param on every request.
+extra_default_headers: {}
+
+models:
+  # Azure model names are deployment-specific; list common base models for validation.
+  - name: gpt-4o
+    max_output_tokens: 4096
+    context_window: 128000
+    capabilities: [chat]
+
+  - name: gpt-4o-mini
+    max_output_tokens: 16384
+    context_window: 128000
+    capabilities: [chat]
+
+  - name: text-embedding-3-large
+    max_output_tokens: 8192
+    context_window: 8192
+    capabilities: [embed]

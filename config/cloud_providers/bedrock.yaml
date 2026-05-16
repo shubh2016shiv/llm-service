@@ -1,0 +1,57 @@
+# settings/cloud_providers/bedrock.yaml — AWS Bedrock static provider definition
+# Uses AWS SigV4 auth — no API key header. Region from DeploymentConfig.
+# Lives under cloud_providers/ alongside aws.yaml (platform infra) because
+# Bedrock is a cloud-platform-native SDK provider, not a direct REST API.
+
+provider_name: bedrock
+provider_type: aws_sdk
+implementation_class: app.providers.cloud.bedrock_provider.BedrockProvider
+
+auth:
+  mode: aws_sigv4
+  aws_service_name: bedrock-runtime
+
+endpoints:
+  # Template resolved per-deployment using cloud_region from DeploymentConfig.
+  base_url: ""
+  base_url_template: "https://bedrock-runtime.{region}.amazonaws.com"
+  chat: /model/{model_id}/invoke
+  health: ""
+
+capabilities:
+  - chat
+  - embed
+
+defaults:
+  timeout_seconds: 120.0   # Bedrock models can be slow on first token
+  max_retries: 3
+  temperature: 0.7
+
+models:
+  - name: anthropic.claude-3-5-sonnet-20241022-v2:0
+    max_output_tokens: 8192
+    context_window: 200000
+    capabilities: [chat]
+    price_per_1k_prompt_tokens: 0.003
+    price_per_1k_completion_tokens: 0.015
+
+  - name: anthropic.claude-3-haiku-20240307-v1:0
+    max_output_tokens: 4096
+    context_window: 200000
+    capabilities: [chat]
+    price_per_1k_prompt_tokens: 0.00025
+    price_per_1k_completion_tokens: 0.00125
+
+  - name: meta.llama3-70b-instruct-v1:0
+    max_output_tokens: 8192
+    context_window: 128000
+    capabilities: [chat]
+    price_per_1k_prompt_tokens: 0.00099
+    price_per_1k_completion_tokens: 0.00099
+
+  - name: amazon.titan-embed-text-v2:0
+    max_output_tokens: 8192
+    context_window: 8192
+    capabilities: [embed]
+    price_per_1k_prompt_tokens: 0.00002
+    price_per_1k_completion_tokens: 0.0

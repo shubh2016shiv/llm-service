@@ -1,0 +1,20 @@
+# environments/production.yaml — Production overrides on top of base.yaml
+# Maximum pool size, minimum logging noise, full retry policy.
+
+logging:
+  level: WARNING             # only warnings and above in prod
+  format: json
+  include_request_body: false  # critical: never log prompts in production
+
+http_pool:
+  max_connections: 200
+  max_keepalive_connections: 50
+  keepalive_expiry_seconds: 600
+  connect_timeout_seconds: 10.0
+  read_timeout_seconds: 120.0
+  write_timeout_seconds: 15.0
+
+retry:
+  max_attempts: 3
+  backoff_multiplier: 1.5
+  backoff_max_seconds: 16.0

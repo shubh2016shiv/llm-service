@@ -1,0 +1,20 @@
+# settings/cloud_providers/aws.yaml — AWS infrastructure defaults
+
+vendor: aws
+
+default_region: us-east-1
+
+supported_regions:
+  - us-east-1
+  - us-west-2
+  - eu-west-1
+  - eu-central-1
+  - ap-southeast-1
+  - ap-northeast-1
+
+# default_role_arn: null  # set per-tenant via DeploymentConfig or here for a global default
+session_duration_seconds: 3600
+
+connect_timeout_seconds: 10.0
+read_timeout_seconds: 120.0   # Bedrock large model responses can be slow
+max_pool_connections: 50

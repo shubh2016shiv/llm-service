@@ -1,0 +1,15 @@
+# environments/development.yaml — Dev overrides on top of base.yaml
+# Higher verbosity, smaller pools, text logs for readability.
+
+logging:
+  level: DEBUG
+  format: text               # human-readable in local terminal
+  include_request_body: false
+
+http_pool:
+  max_connections: 20
+  max_keepalive_connections: 5
+  keepalive_expiry_seconds: 60
+
+retry:
+  max_attempts: 2            # fewer retries locally — fail fast

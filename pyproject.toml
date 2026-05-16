@@ -1,0 +1,127 @@
+[project]
+name = "llm-services"
+version = "0.1.0"
+description = "Enterprise-grade multi-tenant LLM provider abstraction service"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    # ── Web Framework ─────────────────────────────────────────────────────
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+
+    # ── Config & Validation ───────────────────────────────────────────────
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "pyyaml>=6.0.2",
+
+    # ── Async HTTP + Connection Pooling ───────────────────────────────────
+    "httpx>=0.28.0",
+
+    # ── Encryption (SecretStore: AES-256-GCM, HKDF) ──────────────────────
+    "cryptography>=44.0.0",
+
+    # ── Database (async SQLAlchemy + asyncpg driver) ──────────────────────
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+
+    # ── Caching (Redis async) ─────────────────────────────────────────────
+    "redis[hiredis]>=5.2.0",
+
+    # ── Resilience (retries, circuit breaker) ────────────────────────────
+    "tenacity>=9.0.0",
+    "aiobreaker>=1.2.0",
+
+
+    # ── AWS Bedrock (async boto3) ─────────────────────────────────────────
+    "aioboto3>=13.2.0",
+
+
+]
+
+[dependency-groups]
+
+dev = [
+    # ── Linting & Formatting ──────────────────────────────────────────────
+    "ruff>=0.9.0",
+
+    # ── Type Checking ─────────────────────────────────────────────────────
+    "pyright>=1.1.390",
+    "mypy>=1.14.0",
+    "types-pyyaml>=6.0.12",
+    "types-redis>=4.6.0",
+
+    # ── Testing ───────────────────────────────────────────────────────────
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",          # async test client for FastAPI
+    "respx>=0.22.0",          # httpx mock library for provider tests
+    "moto>=5.0.0",            # AWS mock for Bedrock tests
+    "fakeredis>=2.26.0",      # in-memory Redis for tests
+]
+
+# ── Ruff (Linting + Formatting) ───────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking (move imports to TYPE_CHECKING)
+    "ANN",  # flake8-annotations (enforce type hints)
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "E501",     # line too long — handled by formatter
+    "ANN101",   # missing type for self
+    "ANN102",   # missing type for cls
+    "ANN401",   # allow Any in narrow cases
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ── Pyright (Static Type Checking) ───────────────────────────────────────────
+[tool.pyright]
+pythonVersion = "3.12"
+pythonPlatform = "Linux"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+include = ["app"]
+exclude = ["**/__pycache__", ".venv"]
+reportMissingImports = true
+reportMissingTypeStubs = false
+
+# ── Mypy ─────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--tb=short -q"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*", "**/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80

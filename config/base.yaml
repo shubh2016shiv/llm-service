@@ -1,0 +1,27 @@
+# base.yaml — Global service defaults (system-wide, all environments)
+# Loaded first. Overridden by environments/<env>.yaml on top.
+# NEVER put secrets or environment-specific values here.
+
+service:
+  name: llm-provider-service
+  version: "0.1.0"
+  environment: development   # overridden by APP_ENVIRONMENT env var via ApplicationSettings
+
+logging:
+  level: INFO
+  format: json               # json | text
+  include_request_body: false  # never log raw prompts in production
+
+http_pool:
+  max_connections: 100
+  max_keepalive_connections: 20
+  keepalive_expiry_seconds: 300
+  connect_timeout_seconds: 10.0
+  read_timeout_seconds: 60.0
+  write_timeout_seconds: 10.0
+
+retry:
+  max_attempts: 3
+  backoff_multiplier: 1.0
+  backoff_max_seconds: 8.0
+  retryable_status_codes: [429, 500, 502, 503, 504]

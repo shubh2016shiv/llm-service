@@ -1,0 +1,9 @@
+# settings/cloud_providers/azure.yaml — Azure infrastructure defaults
+
+vendor: azure
+
+default_api_version: "2024-02-01"
+endpoint_template: "https://{resource_name}.openai.azure.com"
+
+connect_timeout_seconds: 10.0
+read_timeout_seconds: 60.0

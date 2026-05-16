@@ -1,0 +1,65 @@
+# settings/providers/openai.yaml — OpenAI static provider definition
+# Shared across all tenants using OpenAI. No secrets here.
+
+provider_name: openai
+provider_type: rest_api
+implementation_class: app.providers.direct.openai_provider.OpenAIProvider
+
+auth:
+  mode: bearer_token
+  header_name: Authorization
+  header_prefix: "Bearer"
+
+endpoints:
+  base_url: https://api.openai.com/v1
+  chat: /chat/completions
+  embed: /embeddings
+  health: /models
+
+capabilities:
+  - chat
+  - embed
+
+defaults:
+  timeout_seconds: 60.0
+  max_retries: 3
+  temperature: 0.7
+
+extra_default_headers:
+  OpenAI-Beta: "assistants=v2"
+
+models:
+  - name: gpt-4o
+    max_output_tokens: 4096
+    context_window: 128000
+    capabilities: [chat]
+    price_per_1k_prompt_tokens: 0.005
+    price_per_1k_completion_tokens: 0.015
+
+  - name: gpt-4o-mini
+    max_output_tokens: 16384
+    context_window: 128000
+    capabilities: [chat]
+    price_per_1k_prompt_tokens: 0.00015
+    price_per_1k_completion_tokens: 0.0006
+
+  - name: gpt-4-turbo
+    max_output_tokens: 4096
+    context_window: 128000
+    capabilities: [chat]
+    price_per_1k_prompt_tokens: 0.01
+    price_per_1k_completion_tokens: 0.03
+
+  - name: text-embedding-3-small
+    max_output_tokens: 8192
+    context_window: 8192
+    capabilities: [embed]
+    price_per_1k_prompt_tokens: 0.00002
+    price_per_1k_completion_tokens: 0.0
+
+  - name: text-embedding-3-large
+    max_output_tokens: 8192
+    context_window: 8192
+    capabilities: [embed]
+    price_per_1k_prompt_tokens: 0.00013
+    price_per_1k_completion_tokens: 0.0

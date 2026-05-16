@@ -1,0 +1,13 @@
+# environments/staging.yaml — Staging overrides on top of base.yaml
+
+logging:
+  level: INFO
+  format: json
+
+http_pool:
+  max_connections: 50
+  max_keepalive_connections: 10
+  keepalive_expiry_seconds: 180
+
+retry:
+  max_attempts: 3
