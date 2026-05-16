@@ -30,16 +30,15 @@ Last Updated: 2026-05-16
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, AsyncIterator
-
-from app.core.exceptions import LLMServiceError
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from uuid import UUID
 
+    from app.adapters.clients.token_manager_client import TokenManagerClient
     from app.providers.registry import ProviderRegistry
     from app.routing.deployment_resolver import DeploymentResolver
-    from app.adapters.clients.token_manager_client import TokenManagerClient
     from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses import ChatResponse, ChatStreamChunk, EmbedResponse, RerankResponse
 
