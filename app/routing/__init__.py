@@ -41,9 +41,9 @@ from app.routing.request_resolution_service import (
 )
 from app.routing.resolution_models import (
     CredentialScope,
-    ResolvedExecutionContext,
     ResolutionRequest,
     ResolutionSource,
+    ResolvedExecutionContext,
 )
 from app.routing.resolved_execution_context_factory import (
     ResolvedExecutionContextFactory,

@@ -25,18 +25,21 @@ Last Updated: 2026-05-16
 from __future__ import annotations
 
 from enum import StrEnum
-from uuid import UUID
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.settings.models.model_config import LLMModelSpec
-from app.core.settings.models.provider_config import ProviderStaticConfig
-from app.core.settings.models.tenant_config import (
-    DeploymentConfig,
-    TenantConfig,
-    UserEntitlementConfig,
-)
-from app.schemas.enums import OperationType
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from app.core.settings.models.model_config import LLMModelSpec
+    from app.core.settings.models.provider_config import ProviderStaticConfig
+    from app.core.settings.models.tenant_config import (
+        DeploymentConfig,
+        TenantConfig,
+        UserEntitlementConfig,
+    )
+    from app.schemas.enums import OperationType
 
 
 class ResolutionSource(StrEnum):

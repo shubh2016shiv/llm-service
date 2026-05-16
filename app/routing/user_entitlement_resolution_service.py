@@ -25,13 +25,15 @@ Last Updated: 2026-05-16
 
 from __future__ import annotations
 
-from uuid import UUID
+from typing import TYPE_CHECKING
 
-from app.core.settings.models.tenant_config import TenantConfig, UserEntitlementConfig
-from app.routing.contracts import UserEntitlementReader
 from app.routing.exceptions import AmbiguousUserEntitlementError
-from app.routing.resolution_models import ResolutionRequest
-from app.routing.tenant_resolution_service import TenantResolutionService
+
+if TYPE_CHECKING:
+    from app.core.settings.models.tenant_config import TenantConfig, UserEntitlementConfig
+    from app.routing.contracts import UserEntitlementReader
+    from app.routing.resolution_models import ResolutionRequest
+    from app.routing.tenant_resolution_service import TenantResolutionService
 
 
 class UserEntitlementResolutionService:

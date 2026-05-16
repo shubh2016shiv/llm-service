@@ -23,13 +23,16 @@ Last Updated: 2026-05-16
 
 from __future__ import annotations
 
-from uuid import UUID
+from typing import TYPE_CHECKING
 
 from app.core.exceptions import TenantNotFoundError, TenantSuspendedError
-from app.core.settings.models.tenant_config import TenantConfig
-
-from app.routing.contracts import TenantConfigReader
 from app.routing.exceptions import ProviderNotAllowedError
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from app.core.settings.models.tenant_config import TenantConfig
+    from app.routing.contracts import TenantConfigReader
 
 
 class TenantResolutionService:

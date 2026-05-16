@@ -28,28 +28,31 @@ Last Updated: 2026-05-16
 
 from __future__ import annotations
 
-from app.routing.credential_resolution_service import (
-    CredentialResolutionService,
-)
-from app.routing.deployment_resolution_service import (
-    DeploymentResolutionService,
-)
-from app.routing.provider_route_validation_service import (
-    ProviderRouteValidationService,
-)
-from app.routing.resolution_models import (
-    ResolvedExecutionContext,
-    ResolutionRequest,
-)
-from app.routing.resolved_execution_context_factory import (
-    ResolvedExecutionContextFactory,
-)
-from app.routing.tenant_resolution_service import (
-    TenantResolutionService,
-)
-from app.routing.user_entitlement_resolution_service import (
-    UserEntitlementResolutionService,
-)
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.routing.credential_resolution_service import (
+        CredentialResolutionService,
+    )
+    from app.routing.deployment_resolution_service import (
+        DeploymentResolutionService,
+    )
+    from app.routing.provider_route_validation_service import (
+        ProviderRouteValidationService,
+    )
+    from app.routing.resolution_models import (
+        ResolutionRequest,
+        ResolvedExecutionContext,
+    )
+    from app.routing.resolved_execution_context_factory import (
+        ResolvedExecutionContextFactory,
+    )
+    from app.routing.tenant_resolution_service import (
+        TenantResolutionService,
+    )
+    from app.routing.user_entitlement_resolution_service import (
+        UserEntitlementResolutionService,
+    )
 
 
 class RequestResolutionService:

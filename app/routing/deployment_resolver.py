@@ -22,10 +22,9 @@ Last Updated: 2026-05-16
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 from uuid import UUID
-
-import logging
 
 from app.core.exceptions import LLMServiceError
 from app.core.settings.models.tenant_config import DeploymentConfig

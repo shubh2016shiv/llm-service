@@ -26,19 +26,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import TYPE_CHECKING
 
-from app.core.settings.models.model_config import LLMModelSpec
-from app.core.settings.models.provider_config import ProviderStaticConfig
-from app.core.settings.models.tenant_config import (
-    DeploymentConfig,
-    TenantConfig,
-    UserEntitlementConfig,
-)
-from app.routing.credential_resolution_service import CredentialSelection
 from app.routing.resolution_models import (
-    ResolvedExecutionContext,
     ResolutionSource,
+    ResolvedExecutionContext,
 )
+
+if TYPE_CHECKING:
+    from app.core.settings.models.model_config import LLMModelSpec
+    from app.core.settings.models.provider_config import ProviderStaticConfig
+    from app.core.settings.models.tenant_config import (
+        DeploymentConfig,
+        TenantConfig,
+        UserEntitlementConfig,
+    )
+    from app.routing.credential_resolution_service import CredentialSelection
 
 
 class ResolvedExecutionContextFactory:

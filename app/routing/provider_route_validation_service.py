@@ -25,12 +25,16 @@ Last Updated: 2026-05-16
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.core.exceptions import ConfigurationError, ModelNotSupportedError
-from app.core.settings.loader import ConfigLoader
 from app.core.settings.models.model_config import LLMModelSpec, ModelCapability
-from app.core.settings.models.provider_config import ProviderStaticConfig
 from app.routing.exceptions import OperationNotSupportedError
 from app.schemas.enums import OperationType
+
+if TYPE_CHECKING:
+    from app.core.settings.loader import ConfigLoader
+    from app.core.settings.models.provider_config import ProviderStaticConfig
 
 
 class ProviderRouteValidationService:

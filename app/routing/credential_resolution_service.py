@@ -24,10 +24,12 @@ Last Updated: 2026-05-16
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-from app.core.settings.models.tenant_config import DeploymentConfig, UserEntitlementConfig
 from app.routing.resolution_models import CredentialScope
+
+if TYPE_CHECKING:
+    from app.core.settings.models.tenant_config import DeploymentConfig, UserEntitlementConfig
 
 
 class CredentialSelection(NamedTuple):

@@ -21,10 +21,12 @@ Last Updated: 2026-05-16
 
 from __future__ import annotations
 
-from typing import Protocol
-from uuid import UUID
+from typing import TYPE_CHECKING, Protocol
 
-from app.core.settings.models.tenant_config import TenantConfig, UserEntitlementConfig
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from app.core.settings.models.tenant_config import TenantConfig, UserEntitlementConfig
 
 
 class TenantConfigReader(Protocol):
@@ -45,3 +47,4 @@ class UserEntitlementReader(Protocol):
         requested_model_name: str | None = None,
     ) -> list[UserEntitlementConfig]:
         """Return candidate entitlements for a deployment-key-driven request."""
+        ...
