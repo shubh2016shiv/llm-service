@@ -29,10 +29,12 @@ Last Updated: 2026-05-16
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.core.settings.models.model_config import LLMModelSpec, ModelCapability
+if TYPE_CHECKING:
+    from app.core.settings.models.model_config import LLMModelSpec, ModelCapability
 
 
 class AuthMode(StrEnum):

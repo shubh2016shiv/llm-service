@@ -28,9 +28,12 @@ Last Updated: 2026-05-16
 from __future__ import annotations
 
 from enum import StrEnum
-from uuid import UUID
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 
 class TenantStatus(StrEnum):
