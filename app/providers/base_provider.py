@@ -29,25 +29,29 @@ Architecture
 
 Design Constraints (per implementation_plan.md §6.1)
 ----------------------------------------------------
-- Immutable after construction — all state is settings + shared HTTP client.
-- All methods are pure functions over: request payload + frozen settings + shared client.
+- Immutable after construction — all state is settings + shared transport.
+- All methods are pure functions over: request payload + frozen settings + shared transport.
 - NEVER store per-request or per-tenant state on the instance.
 - Thread-safe: per-request variables are local to each call frame.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
-import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, AsyncIterator
-
-import aiobreaker
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable, Coroutine
+
+    import aiobreaker
+
+    from app.core.exceptions import ProviderError
     from app.core.settings.models.provider_config import ProviderStaticConfig
     from app.core.settings.models.tenant_config import DeploymentConfig
-    from app.core.exceptions import ProviderError
     from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses import (
         ChatResponse,
@@ -57,14 +61,24 @@ if TYPE_CHECKING:
         RerankResponse,
     )
 
-import httpx
+
+@dataclass(frozen=True)
+class _StreamError:
+    exception: Exception
 
 
-class BaseProvider(ABC):
+class _StreamComplete:
+    pass
+
+
+_STREAM_COMPLETE = _StreamComplete()
+
+
+class BaseProvider[TransportT](ABC):
     """Abstract contract for all LLM providers.
 
     Immutable after construction. All methods are pure functions over:
-      request payload + frozen settings + shared HTTP client.
+      request payload + frozen settings + shared transport.
 
     Never store per-request or per-tenant state on the instance.
     """
@@ -73,7 +87,7 @@ class BaseProvider(ABC):
         self,
         static_config: ProviderStaticConfig,
         deployment_config: DeploymentConfig,
-        http_client: httpx.AsyncClient,
+        http_client: TransportT,
         circuit_breaker: aiobreaker.CircuitBreaker,
     ) -> None:
         self._static = static_config
@@ -88,31 +102,69 @@ class BaseProvider(ABC):
 
     async def generate(self, request: ChatRequest) -> ChatResponse:
         """Send a chat completion request through the circuit breaker."""
-        return await self._circuit_breaker.call_async(self._generate, request)
+        return await self._call_with_breaker(self._generate, request)
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         """Generate embeddings through the circuit breaker."""
-        return await self._circuit_breaker.call_async(self._embed, request)
+        return await self._call_with_breaker(self._embed, request)
 
     async def rerank(self, request: RerankRequest) -> RerankResponse:
         """Re-rank documents through the circuit breaker."""
-        return await self._circuit_breaker.call_async(self._rerank, request)
+        return await self._call_with_breaker(self._rerank, request)
 
     async def stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
-        """Stream chat completion chunks through the circuit breaker."""
-        # aiobreaker call_async currently doesn't natively support AsyncGenerators directly
-        # depending on the version. Assuming it does, or we can wrap it.
-        # Often circuit breakers just wrap the initial connection, but since it's an async generator:
-        # If call_async fails for generator, we can do manual state checking.
-        if self._circuit_breaker.current_state.name == "OPEN":
-            raise aiobreaker.CircuitBreakerError("Circuit is OPEN")
-        try:
+        """Stream chat completion chunks through the circuit breaker.
+
+        aiobreaker guards coroutines, not async generators. To preserve normal
+        breaker semantics for stream failures and half-open trial calls, a
+        producer coroutine consumes the provider stream under call_async while
+        this method yields chunks to the caller through a bounded queue.
+        """
+        queue: asyncio.Queue[ChatStreamChunk | _StreamError | _StreamComplete] = (
+            asyncio.Queue(maxsize=1)
+        )
+
+        async def _consume_stream() -> None:
             async for chunk in self._stream_generate(request):
-                yield chunk
-            self._circuit_breaker.succeed()
-        except Exception as e:
-            self._circuit_breaker.fail()
-            raise e
+                await queue.put(chunk)
+
+        async def _run_guarded_stream() -> None:
+            try:
+                await self._circuit_breaker.call_async(_consume_stream)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await queue.put(_StreamError(exc))
+            else:
+                await queue.put(_STREAM_COMPLETE)
+
+        producer = asyncio.create_task(_run_guarded_stream())
+
+        try:
+            while True:
+                item = await queue.get()
+                if isinstance(item, _StreamComplete):
+                    break
+                if isinstance(item, _StreamError):
+                    raise item.exception
+                yield item
+        finally:
+            if not producer.done():
+                producer.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await producer
+
+        await producer
+
+    async def _call_with_breaker[ResponseT](
+        self,
+        func: Callable[..., Coroutine[object, object, ResponseT]],
+        *args: object,
+    ) -> ResponseT:
+        """Call a coroutine through aiobreaker while preserving its return type."""
+        # cast: aiobreaker.call_async is not generic in its distributed stubs,
+        # but the runtime returns exactly the value produced by `func`.
+        return cast("ResponseT", await self._circuit_breaker.call_async(func, *args))
 
     # ------------------------------------------------------------------
     # Abstract Provider Implementation Methods

@@ -28,10 +28,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-from typing import TYPE_CHECKING
-from uuid import UUID
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from app.core.settings.loader import ConfigLoader
     from app.core.settings.models.tenant_config import DeploymentConfig
     from app.infrastructure.cache import RedisCache
@@ -54,7 +55,7 @@ class ProviderRegistry:
         config_loader: ConfigLoader,
         cache: RedisCache,
     ) -> None:
-        self._providers: dict[str, BaseProvider] = {}
+        self._providers: dict[str, BaseProvider[Any]] = {}
         self._lock = asyncio.Lock()
         self._http_client_factory = http_client_factory
         self._config_loader = config_loader
@@ -64,7 +65,7 @@ class ProviderRegistry:
     # Public API
     # ------------------------------------------------------------------
 
-    async def get_provider(self, deployment_config: DeploymentConfig) -> BaseProvider:
+    async def get_provider(self, deployment_config: DeploymentConfig) -> BaseProvider[Any]:
         """Return a cached or newly-built provider for the given deployment.
 
         Fast-path read (no lock) for the common case where the provider is
@@ -97,7 +98,7 @@ class ProviderRegistry:
     # Internal
     # ------------------------------------------------------------------
 
-    async def _build_provider(self, deployment_config: DeploymentConfig) -> BaseProvider:
+    async def _build_provider(self, deployment_config: DeploymentConfig) -> BaseProvider[Any]:
         """Build and return a new provider instance.
 
         Steps:
@@ -129,7 +130,7 @@ class ProviderRegistry:
     @staticmethod
     def _resolve_implementation_class(
         fully_qualified_name: str,
-    ) -> type[BaseProvider]:
+    ) -> type[BaseProvider[Any]]:
         """Dynamically import and return the provider class.
 
         Args:

@@ -8,6 +8,8 @@ internal ProviderError subclasses.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import httpx
 
 from app.core.exceptions import (
@@ -27,7 +29,18 @@ from app.core.exceptions import (
 try:
     from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
 except ImportError:
-    ClientError = ConnectTimeoutError = ReadTimeoutError = type("Unimported", (Exception,), {})  # type: ignore
+
+    class _BotocoreStub(Exception):
+        """Placeholder used when botocore is not installed.
+
+        isinstance checks against this class are always False for real AWS errors,
+        so the response attribute is never accessed in practice — but it is declared
+        here so static analysis does not flag attribute access on the class.
+        """
+
+        response: ClassVar[dict[str, object]] = {}
+
+    ClientError = ConnectTimeoutError = ReadTimeoutError = _BotocoreStub  # type: ignore[assignment]
 
 
 def classify_error(exc: Exception, provider_name: str) -> ProviderError:
@@ -86,8 +99,10 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
         return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=0.0)
         
     if isinstance(exc, ClientError):
-        code = exc.response.get("Error", {}).get("Code", "Unknown")
-        msg = exc.response.get("Error", {}).get("Message", "")
+        error_block = exc.response.get("Error", {})
+        error_block = error_block if isinstance(error_block, dict) else {}
+        code: str = error_block.get("Code", "Unknown")
+        msg: str = error_block.get("Message", "")
         
         if code in ("AccessDeniedException", "UnrecognizedClientException", "InvalidSignatureException"):
             return InvalidAPIKeyError(provider_name=provider_name, masked_key="****")

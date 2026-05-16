@@ -19,14 +19,15 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING
 
 import httpx
 
 from app.providers.base_provider import BaseProvider
 
 if TYPE_CHECKING:
-    from app.core.exceptions import ProviderError
+    from collections.abc import AsyncIterator
+
     from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses import (
         ChatResponse,
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
     )
 
 
-class AnthropicProvider(BaseProvider):
+class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     """Anthropic Messages API provider.
 
     Thread-safe: all state is immutable settings + shared async HTTP client.
@@ -192,11 +193,14 @@ class AnthropicProvider(BaseProvider):
     def _parse_messages_response(data: dict[str, object]) -> ChatResponse:
         from app.schemas.responses import ChatResponse, Usage
 
-        content_blocks = data.get("content", [])  # type: ignore[var-annotated]
+        raw_content = data.get("content", [])
+        content_blocks = raw_content if isinstance(raw_content, list) else []
         text = "".join(
-            block["text"]
+            block["text"]  # type: ignore[index]
             for block in content_blocks
-            if block.get("type") == "text"  # type: ignore[index]
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
         )
         usage_raw = data.get("usage", {})
         usage = (

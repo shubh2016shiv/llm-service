@@ -14,14 +14,15 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING
 
 import httpx
 
 from app.providers.base_provider import BaseProvider
 
 if TYPE_CHECKING:
-    from app.core.exceptions import ProviderError
+    from collections.abc import AsyncIterator
+
     from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses import (
         ChatResponse,
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     )
 
 
-class OpenAIProvider(BaseProvider):
+class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
     """OpenAI REST API provider (chat + embed).
 
     Thread-safe: all state is immutable settings + shared async HTTP client.

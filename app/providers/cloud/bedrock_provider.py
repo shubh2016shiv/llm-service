@@ -20,16 +20,17 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING, AsyncIterator
-
-import aiobreaker
+from typing import TYPE_CHECKING
 
 from app.providers.base_provider import BaseProvider
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    import aiobreaker
+
     from app.core.settings.models.provider_config import ProviderStaticConfig
     from app.core.settings.models.tenant_config import DeploymentConfig
-    from app.core.exceptions import ProviderError
     from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses import (
         ChatResponse,
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     )
 
 
-class BedrockProvider(BaseProvider):
+class BedrockProvider(BaseProvider[object]):
     """AWS Bedrock runtime provider.
 
     Thread-safe: boto3 sessions are thread-safe. No per-request mutable state.
@@ -56,7 +57,7 @@ class BedrockProvider(BaseProvider):
         http_client: object,  # aioboto3.Session in practice; typed loosely for ABC compatibility
         circuit_breaker: aiobreaker.CircuitBreaker,
     ) -> None:
-        super().__init__(static_config, deployment_config, http_client, circuit_breaker)  # type: ignore[arg-type]
+        super().__init__(static_config, deployment_config, http_client, circuit_breaker)
         self._bedrock_session = http_client  # stored as the aioboto3 session
 
     # ------------------------------------------------------------------
@@ -277,7 +278,7 @@ class BedrockProvider(BaseProvider):
 
     def _resolve_aws_region(self) -> str:
         """Resolve AWS region from deployment settings or provider defaults."""
-        return (
-            self._deployment.extra_config.get("aws_region")
-            or "us-east-1"
-        )
+        value = self._deployment.extra_config.get("aws_region")
+        if isinstance(value, str) and value:
+            return value
+        return "us-east-1"
