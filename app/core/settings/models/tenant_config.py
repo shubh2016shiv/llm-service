@@ -28,12 +28,9 @@ Last Updated: 2026-05-16
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from uuid import UUID  # noqa: TC003 — needed at runtime for Pydantic field resolution
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-if TYPE_CHECKING:
-    from uuid import UUID
 
 
 class TenantStatus(StrEnum):
@@ -256,8 +253,7 @@ class DeploymentConfig(BaseModel):
         """
         if value != value.lower():
             raise ValueError(
-                f"provider_name must be lowercase, got {value!r}. "
-                f"Use {value.lower()!r} instead."
+                f"provider_name must be lowercase, got {value!r}. Use {value.lower()!r} instead."
             )
         return value
 

@@ -25,21 +25,21 @@ Last Updated: 2026-05-16
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING  # noqa: F401
+from uuid import UUID  # noqa: TC003 — needed at runtime for Pydantic field resolution
 
 from pydantic import BaseModel, ConfigDict, Field
 
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    from app.core.settings.models.model_config import LLMModelSpec
-    from app.core.settings.models.provider_config import ProviderStaticConfig
-    from app.core.settings.models.tenant_config import (
-        DeploymentConfig,
-        TenantConfig,
-        UserEntitlementConfig,
-    )
-    from app.schemas.enums import OperationType
+# The following imports are used in Pydantic field annotations and MUST be
+# available at runtime for Pydantic model building / validation.
+from app.core.settings.models.model_config import LLMModelSpec  # noqa: TC001
+from app.core.settings.models.provider_config import ProviderStaticConfig  # noqa: TC001
+from app.core.settings.models.tenant_config import (  # noqa: TC001
+    DeploymentConfig,
+    TenantConfig,
+    UserEntitlementConfig,
+)
+from app.schemas.enums import OperationType  # noqa: TC001
 
 
 class ResolutionSource(StrEnum):
