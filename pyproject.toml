@@ -30,6 +30,8 @@ dependencies = [
     "httpx>=0.28.0",
     # ── Encryption (SecretStore: AES-256-GCM, HKDF) ──────────────────────
     "cryptography>=44.0.0",
+    # ── Email Validation ────────────────────────────────────────────────
+    "email-validator>=2.2.0",
     # ── JWT Authentication ────────────────────────────────────────────────
     "python-jose[cryptography]>=3.3.0",
     # ── Database (async SQLAlchemy + asyncpg driver) ──────────────────────
@@ -100,6 +102,7 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # would cause NameError at boot.
 "app/api/*.py" = ["TC001"]
 "app/auth/*.py" = ["TC001"]
+"app/database/*.py" = ["TC001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
