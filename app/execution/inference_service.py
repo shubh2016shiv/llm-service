@@ -36,11 +36,16 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from uuid import UUID
 
-    from app.adapters.clients.token_manager_client import TokenManagerClient
+    from app.clients.token_manager_client import TokenManagerClient
     from app.providers.registry import ProviderRegistry
     from app.routing.deployment_resolver import DeploymentResolver
-    from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
-    from app.schemas.responses import ChatResponse, ChatStreamChunk, EmbedResponse, RerankResponse
+    from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
+    from app.schemas.responses_schema import (
+        ChatResponse,
+        ChatStreamChunk,
+        EmbedResponse,
+        RerankResponse,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -65,27 +70,27 @@ class InferenceService:
         request: ChatRequest,
     ) -> ChatResponse:
         """Execute a non-streaming chat completion request.
-        
+
         Args:
             tenant_id: The UUID of the requesting tenant.
             deployment_key: The ID of the deployment to route to.
             request: The chat completion request payload.
-            
+
         Returns:
             A normalised ChatResponse.
         """
         # 1. Resolve Configuration
         config = await self._resolver.resolve(tenant_id, deployment_key)
-        
+
         # 2. Check Quotas
         await self._token_manager.check_quota(tenant_id, deployment_key, request)
-        
+
         # 3. Get Provider
         provider = await self._registry.get_provider(config)
-        
+
         # 4. Execute Inference
         response = await provider.generate(request)
-        
+
         # 5. Report Usage
         if response.usage:
             await self._token_manager.report_usage(
@@ -94,7 +99,7 @@ class InferenceService:
                 prompt_tokens=response.usage.prompt_tokens,
                 completion_tokens=response.usage.completion_tokens,
             )
-            
+
         return response
 
     async def execute_stream_chat(
@@ -104,16 +109,16 @@ class InferenceService:
         request: ChatRequest,
     ) -> AsyncIterator[ChatStreamChunk]:
         """Execute a streaming chat completion request.
-        
+
         Usage reporting happens after the stream closes, which typically requires
         the API route to track the yielded tokens and report them, or the orchestrator
         to wrap the generator and accumulate token counts.
         """
         config = await self._resolver.resolve(tenant_id, deployment_key)
         await self._token_manager.check_quota(tenant_id, deployment_key, request)
-        
+
         provider = await self._registry.get_provider(config)
-        
+
         # We yield chunks as they come in. For precise usage reporting in streaming,
         # we'd accumulate the chunks. For now, we omit usage reporting in stream
         # since it's highly dependent on the provider's token counting method.
@@ -129,10 +134,10 @@ class InferenceService:
         """Execute an embedding request."""
         config = await self._resolver.resolve(tenant_id, deployment_key)
         await self._token_manager.check_quota(tenant_id, deployment_key, request)
-        
+
         provider = await self._registry.get_provider(config)
         response = await provider.embed(request)
-        
+
         if response.usage:
             await self._token_manager.report_usage(
                 tenant_id=tenant_id,
@@ -140,7 +145,7 @@ class InferenceService:
                 prompt_tokens=response.usage.prompt_tokens,
                 completion_tokens=0,
             )
-            
+
         return response
 
     async def execute_rerank(
@@ -152,6 +157,6 @@ class InferenceService:
         """Execute a rerank request."""
         config = await self._resolver.resolve(tenant_id, deployment_key)
         await self._token_manager.check_quota(tenant_id, deployment_key, request)
-        
+
         provider = await self._registry.get_provider(config)
         return await provider.rerank(request)
