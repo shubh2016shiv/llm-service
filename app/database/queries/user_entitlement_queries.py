@@ -114,7 +114,7 @@ CREATE_USER_ENTITLEMENT_SQL = """
         :cloud_provider,
         :cloud_region,
         :provider_deployment_name,
-        :extra_config::JSONB,
+        :extra_config,
         :created_by_user_id,
         :created_at,
         :updated_at

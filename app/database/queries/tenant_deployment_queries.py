@@ -105,8 +105,8 @@ CREATE_DEPLOYMENT_SQL = """
         :default_max_output_tokens,
         :is_default,
         :routing_priority,
-        :extra_headers::JSONB,
-        :extra_config::JSONB,
+        :extra_headers,
+        :extra_config,
         :created_by_user_id
     )
     RETURNING

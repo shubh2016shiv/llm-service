@@ -34,8 +34,7 @@ CHECK_MODEL_EXISTS_BY_NAME_SQL = """
     SELECT 1 FROM model_catalog
     WHERE provider_id = :provider_id
       AND model_name = :model_name
-      AND (:model_version::TEXT IS NULL AND model_version IS NULL
-           OR model_version = :model_version)
+      AND model_version IS NOT DISTINCT FROM :model_version
     LIMIT 1
 """
 
@@ -66,8 +65,8 @@ CREATE_MODEL_SQL = """
         :max_output_tokens,
         :default_temperature,
         :default_top_p,
-        :pricing_metadata::JSONB,
-        :model_metadata::JSONB,
+        :pricing_metadata,
+        :model_metadata,
         :status
     )
     RETURNING *
@@ -93,8 +92,7 @@ GET_MODEL_BY_NAME_SQL = """
     FROM model_catalog
     WHERE provider_id = :provider_id
       AND model_name = :model_name
-      AND (:model_version::TEXT IS NULL AND model_version IS NULL
-           OR model_version = :model_version)
+      AND model_version IS NOT DISTINCT FROM :model_version
 """
 
 # ── List reads ────────────────────────────────────────────────────────────────

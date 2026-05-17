@@ -50,7 +50,7 @@ CREATE_PROVIDER_SQL = """
         :default_api_endpoint_url,
         :supported_operations,
         :is_active,
-        :provider_metadata::JSONB
+        :provider_metadata
     )
     RETURNING *
 """
