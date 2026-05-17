@@ -1,11 +1,13 @@
 """
 SecretStore — Secure retrieval and decryption of provider API keys.
 
-Provider API keys are stored encrypted in PostgreSQL. This module:
-    1. Defines SecretStore — abstract interface for fetching a secret
+Provider API keys are stored encrypted in PostgreSQL or in HashiCorp Vault.
+This module:
+    1. Defines SecretStore — abstract async interface for fetching a secret
     2. Implements EnvironmentSecretStore — reads from env vars (dev/test)
     3. Implements AESGCMSecretStore — decrypts AES-256-GCM ciphertext from DB
-    4. Provides derive_tenant_key() — HKDF derivation of per-tenant keys
+    4. Implements VaultSecretStore — reads from Vault KV v2 via userpass auth
+    5. Provides derive_tenant_key() — HKDF derivation of per-tenant keys
 
 Key security properties:
     - Master key lives in environment / Secrets Manager (never in code)
@@ -13,6 +15,7 @@ Key security properties:
       of one tenant's key does not expose others
     - Decrypted secrets exist only in-memory during provider build
     - AES-256-GCM provides authenticated encryption (prevents tampering)
+    - VaultSecretStore tokens are cached in-memory and refreshed on expiry
 
 Architecture:
 -------------
@@ -27,20 +30,36 @@ Architecture:
           ▼
     plaintext API key (in-memory only, injected into provider headers)
 
+    HashiCorp Vault (KV v2):
+          VAULT_USERNAME / VAULT_PASSWORD
+          │
+          ▼
+    VaultSecretStore._ensure_token()   ← userpass login, token cached
+          │
+          ▼
+    VaultSecretStore.get_secret()      ← GET /v1/{mount}/data/{prefix}/{ref}
+          │
+          ▼
+    plaintext api_key field value
+
 Dependencies:
     - cryptography >= 41.0  — AES-GCM, HKDF
+    - httpx >= 0.28         — async Vault API calls
 
 Author: Engineering Team
-Last Updated: 2026-05-16
+Last Updated: 2026-05-17
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 
+import httpx
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -149,25 +168,29 @@ def decrypt_api_key(ciphertext_b64: str, master_key_bytes: bytes, tenant_id: str
 
 
 class SecretStore(ABC):
-    """Abstract interface for fetching decrypted provider API keys.
+    """Abstract async interface for fetching decrypted provider API keys.
 
     Implementations differ in WHERE they fetch secrets from (env, DB, Vault),
     but callers depend only on this interface — the Dependency Inversion principle.
 
+    All implementations are async so that network-backed stores (Vault) can
+    perform I/O without blocking. Sync stores (EnvironmentSecretStore,
+    AESGCMSecretStore) use `async def` without internal awaits — that is fine.
+
     Example:
         >>> store: SecretStore = EnvironmentSecretStore()
-        >>> api_key = store.get_secret("OPENAI_API_KEY", tenant_id="acme")
+        >>> api_key = await store.get_secret("OPENAI_API_KEY", tenant_id="acme")
         >>> api_key.startswith("sk-")
         True
     """
 
     @abstractmethod
-    def get_secret(self, secret_reference: str, *, tenant_id: str) -> str:
+    async def get_secret(self, secret_reference: str, *, tenant_id: str) -> str:
         """Retrieve a plaintext secret by its reference string.
 
         Args:
             secret_reference: Opaque reference as stored in DeploymentConfig
-                              (e.g., 'OPENAI_API_KEY' or 'secret/acme/openai').
+                              (e.g., 'OPENAI_API_KEY' or 'providers/openai/default').
             tenant_id: UUID string of the requesting tenant. Used for key
                        derivation in encrypted stores.
 
@@ -178,6 +201,14 @@ class SecretStore(ABC):
             KeyError: If the secret_reference is not found.
             ValueError: If decryption fails (tampered ciphertext).
         """
+
+    async def aclose(self) -> None:
+        """Release any resources held by this store (e.g. HTTP client).
+
+        Default implementation is a no-op. Override in network-backed stores.
+        Called once during application shutdown.
+        """
+        return
 
 
 # ── Environment Implementation ────────────────────────────────────────────────
@@ -193,11 +224,11 @@ class EnvironmentSecretStore(SecretStore):
         >>> import os
         >>> os.environ["OPENAI_API_KEY"] = "sk-test"
         >>> store = EnvironmentSecretStore()
-        >>> store.get_secret("OPENAI_API_KEY", tenant_id="any")
+        >>> await store.get_secret("OPENAI_API_KEY", tenant_id="any")
         'sk-test'
     """
 
-    def get_secret(self, secret_reference: str, *, tenant_id: str) -> str:
+    async def get_secret(self, secret_reference: str, *, tenant_id: str) -> str:
         """Look up the secret_reference as an environment variable name.
 
         Args:
@@ -242,7 +273,7 @@ class AESGCMSecretStore(SecretStore):
         ...     master_key_b64="<base64-encoded-32-bytes>",
         ...     encrypted_secrets={"secret/acme/openai": "<ciphertext>"},
         ... )
-        >>> api_key = store.get_secret("secret/acme/openai", tenant_id="acme-uuid")
+        >>> api_key = await store.get_secret("secret/acme/openai", tenant_id="acme-uuid")
     """
 
     def __init__(
@@ -279,7 +310,7 @@ class AESGCMSecretStore(SecretStore):
         """
         self._encrypted_secrets[reference] = ciphertext_b64
 
-    def get_secret(self, secret_reference: str, *, tenant_id: str) -> str:
+    async def get_secret(self, secret_reference: str, *, tenant_id: str) -> str:
         """Decrypt and return the plaintext secret for the given reference.
 
         Args:
@@ -317,3 +348,175 @@ class AESGCMSecretStore(SecretStore):
             extra={"secret_reference": secret_reference, "tenant_id": tenant_id},
         )
         return plaintext
+
+
+# ── HashiCorp Vault KV v2 Implementation ─────────────────────────────────────
+
+# Fraction of the token's lease_duration to use as a refresh buffer.
+# Refreshing at 90% of the TTL prevents clock-skew edge cases.
+_VAULT_TOKEN_REFRESH_FRACTION: float = 0.9
+
+
+class VaultSecretStore(SecretStore):
+    """Fetches secrets from HashiCorp Vault KV v2 using userpass auth.
+
+    Authenticates once via the userpass auth method, caches the returned
+    Vault token in memory, and re-authenticates automatically when the token
+    is within 10% of its lease expiry. All network I/O is async (httpx).
+
+    Path convention (KV v2):
+        {mount_path}/data/{kv_prefix}/{secret_reference}
+        e.g.  secret/data/llm-provider-service/providers/openai/default
+
+    The secret stored at that path must have an ``api_key`` field:
+        vault kv put secret/llm-provider-service/providers/openai/default \\
+              api_key="sk-..."
+
+    Example:
+        >>> store = VaultSecretStore(
+        ...     vault_addr="http://localhost:8200",
+        ...     username="llm-service",
+        ...     password="s3cr3t",
+        ... )
+        >>> api_key = await store.get_secret(
+        ...     "providers/openai/default", tenant_id="acme-uuid"
+        ... )
+    """
+
+    def __init__(
+        self,
+        vault_addr: str,
+        username: str,
+        password: str,
+        mount_path: str = "secret",
+        kv_prefix: str = "llm-provider-service",
+    ) -> None:
+        """Initialise the Vault client. No network calls are made here.
+
+        Args:
+            vault_addr: Vault server address, e.g. "http://vault:8200".
+            username: Userpass auth username for the service account.
+            password: Plaintext password (extracted from SecretStr by caller).
+            mount_path: KV v2 mount path (default "secret").
+            kv_prefix: Path prefix within the mount (default "llm-provider-service").
+        """
+        self._vault_addr = vault_addr.rstrip("/")
+        self._username = username
+        self._password = password
+        self._mount_path = mount_path.strip("/")
+        self._kv_prefix = kv_prefix.strip("/")
+
+        self._client = httpx.AsyncClient(
+            base_url=self._vault_addr,
+            timeout=httpx.Timeout(10.0),
+            headers={"Content-Type": "application/json"},
+        )
+        self._token: str | None = None
+        self._token_expiry: float = 0.0
+        self._token_lock = asyncio.Lock()
+
+    async def _ensure_token(self) -> str:
+        """Return a valid Vault token, refreshing via userpass login if expired.
+
+        Uses double-checked locking so concurrent requests don't all trigger
+        a re-authentication simultaneously.
+        """
+        # Fast path — token still within its valid window
+        if self._token is not None and time.monotonic() < self._token_expiry:
+            return self._token
+
+        async with self._token_lock:
+            # Double-check after acquiring the lock
+            if self._token is not None and time.monotonic() < self._token_expiry:
+                return self._token
+
+            response = await self._client.post(
+                f"/v1/auth/userpass/login/{self._username}",
+                json={"password": self._password},
+            )
+            if response.status_code == 400:
+                raise PermissionError(
+                    f"Vault userpass login failed for '{self._username}': bad credentials."
+                )
+            response.raise_for_status()
+
+            auth_payload: dict[str, object] = response.json().get("auth", {})  # type: ignore[assignment]
+            token = auth_payload.get("client_token")
+            if not isinstance(token, str):
+                raise RuntimeError(
+                    "Vault login response did not contain 'auth.client_token'."
+                )
+            raw_lease = auth_payload.get("lease_duration", 3600)
+            lease_duration = raw_lease if isinstance(raw_lease, int) else 3600
+
+            self._token = token
+            # Cache for _VAULT_TOKEN_REFRESH_FRACTION of the lease to avoid expiry races.
+            self._token_expiry = time.monotonic() + (
+                lease_duration * _VAULT_TOKEN_REFRESH_FRACTION
+            )
+
+            logger.debug(
+                "Vault token acquired",
+                extra={"username": self._username, "lease_duration": lease_duration},
+            )
+            return self._token
+
+    async def get_secret(self, secret_reference: str, *, tenant_id: str) -> str:
+        """Read a secret from Vault KV v2 and return the value of its ``api_key`` field.
+
+        Args:
+            secret_reference: Path within kv_prefix, e.g. 'providers/openai/default'.
+                              This is the value stored in DeploymentConfig.secret_reference.
+            tenant_id: Not used for path-based Vault access control, but retained
+                       for interface compatibility and audit logging.
+
+        Returns:
+            Plaintext value of the ``api_key`` field at the resolved Vault path.
+
+        Raises:
+            KeyError: If the secret path does not exist in Vault or has no ``api_key`` field.
+            PermissionError: If Vault auth fails.
+            httpx.HTTPStatusError: On unexpected Vault HTTP errors.
+        """
+        token = await self._ensure_token()
+
+        # KV v2 read path: /v1/{mount}/data/{prefix}/{reference}
+        path = f"/v1/{self._mount_path}/data/{self._kv_prefix}/{secret_reference.strip('/')}"
+
+        response = await self._client.get(
+            path,
+            headers={"X-Vault-Token": token},
+        )
+
+        if response.status_code == 404:
+            raise KeyError(
+                f"Vault secret not found at '{self._mount_path}/{self._kv_prefix}/"
+                f"{secret_reference}'. Ensure the secret was written to Vault."
+            )
+        if response.status_code == 403:
+            raise PermissionError(
+                f"Vault permission denied for path '{self._mount_path}/{self._kv_prefix}/"
+                f"{secret_reference}'. Check the service account policy."
+            )
+        response.raise_for_status()
+
+        # KV v2 response envelope: {"data": {"data": {"api_key": "..."}, "metadata": {...}}}
+        secret_data: dict[str, str] = response.json().get("data", {}).get("data", {})
+        api_key: str | None = secret_data.get("api_key")
+
+        if api_key is None:
+            raise KeyError(
+                f"Vault secret at '{secret_reference}' has no 'api_key' field. "
+                f"Available fields: {sorted(secret_data.keys())}"
+            )
+
+        logger.debug(
+            "Secret retrieved from Vault",
+            extra={"secret_reference": secret_reference, "tenant_id": tenant_id},
+        )
+        return api_key
+
+    async def aclose(self) -> None:
+        """Close the underlying httpx client. Called during application shutdown."""
+        await self._client.aclose()
+        logger.debug("VaultSecretStore HTTP client closed")

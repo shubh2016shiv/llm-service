@@ -122,6 +122,63 @@ class ApplicationSettings(BaseSettings):
         ),
     )
 
+    # ── Secret Backend ────────────────────────────────────────────────────
+    # Selects which SecretStore implementation the app uses at runtime.
+    # 'environment' — EnvironmentSecretStore (dev/test only)
+    # 'vault'       — VaultSecretStore (staging/production)
+    secret_backend: str = Field(
+        default="environment",
+        description="Secret backend: 'environment' | 'vault'",
+    )
+
+    # ── HashiCorp Vault ───────────────────────────────────────────────────
+    vault_addr: str = Field(
+        default="http://localhost:8200",
+        description="Vault server address, e.g. http://vault:8200",
+    )
+    vault_username: str | None = Field(
+        default=None,
+        description="Vault userpass auth username for the LLM service account.",
+    )
+    vault_password: SecretStr | None = Field(
+        default=None,
+        description="Vault userpass auth password for the LLM service account.",
+    )
+    vault_mount_path: str = Field(
+        default="secret",
+        description="KV v2 mount path (matches 'path' in Vault policy).",
+    )
+    vault_kv_prefix: str = Field(
+        default="llm-provider-service",
+        description="Path prefix within the KV mount for all service secrets.",
+    )
+
+    # ── JWT Authentication ────────────────────────────────────────────────
+    jwt_secret_key: SecretStr = Field(
+        description=(
+            "Secret key used to sign and verify JWT tokens. "
+            "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        ),
+    )
+    jwt_algorithm: str = Field(
+        default="HS256",
+        description="JWT signing algorithm. HS256 for single-service; RS256 for multi-service.",
+    )
+    jwt_access_token_expire_hours: int = Field(
+        default=24,
+        ge=1,
+        description="Access token lifetime in hours.",
+    )
+    jwt_refresh_token_expire_days: int = Field(
+        default=7,
+        ge=1,
+        description="Refresh token lifetime in days. Only used when jwt_refresh_enabled=true.",
+    )
+    jwt_refresh_enabled: bool = Field(
+        default=False,
+        description="Enable refresh token issuance and exchange.",
+    )
+
     # ── Logging ───────────────────────────────────────────────────────────
     log_level: str = Field(
         default="INFO",
@@ -133,6 +190,28 @@ class ApplicationSettings(BaseSettings):
         default="config",
         description="Filesystem path to the YAML configuration root directory.",
     )
+
+    @field_validator("secret_backend")
+    @classmethod
+    def validate_secret_backend(cls, value: str) -> str:
+        """Enforce known secret backend names.
+
+        Args:
+            value: Raw value from environment.
+
+        Returns:
+            Lowercased, validated backend name.
+
+        Raises:
+            ValueError: If not in the allowed set.
+        """
+        allowed = {"environment", "vault"}
+        lower = value.lower()
+        if lower not in allowed:
+            raise ValueError(
+                f"secret_backend {value!r} is not valid. Must be one of: {sorted(allowed)}"
+            )
+        return lower
 
     @field_validator("app_environment")
     @classmethod
