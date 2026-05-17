@@ -44,6 +44,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from pydantic import SecretStr
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine
 
@@ -89,11 +91,13 @@ class BaseProvider[TransportT](ABC):
         deployment_config: DeploymentConfig,
         http_client: TransportT,
         circuit_breaker: aiobreaker.CircuitBreaker,
+        api_key: SecretStr | None = None,
     ) -> None:
         self._static = static_config
         self._deployment = deployment_config
         self._http_client = http_client
         self._circuit_breaker = circuit_breaker
+        self._api_key = api_key if api_key is not None else SecretStr("")
         self._logger = logging.getLogger(self.__class__.__module__)
 
     # ------------------------------------------------------------------
@@ -120,8 +124,8 @@ class BaseProvider[TransportT](ABC):
         producer coroutine consumes the provider stream under call_async while
         this method yields chunks to the caller through a bounded queue.
         """
-        queue: asyncio.Queue[ChatStreamChunk | _StreamError | _StreamComplete] = (
-            asyncio.Queue(maxsize=1)
+        queue: asyncio.Queue[ChatStreamChunk | _StreamError | _StreamComplete] = asyncio.Queue(
+            maxsize=1
         )
 
         async def _consume_stream() -> None:
@@ -199,15 +203,19 @@ class BaseProvider[TransportT](ABC):
     # Concrete Helpers
     # ------------------------------------------------------------------
 
-    def _build_auth_headers(self, api_key: str) -> dict[str, str]:
-        """Build authentication headers from the resolved API key.
+    def _build_auth_headers(self) -> dict[str, str]:
+        """Build authentication headers using the provider's stored API key.
 
-        Override in subclasses for non-standard auth schemes (e.g. SigV4).
+        Reads the plaintext only at this call site — it never exists in a
+        request object, a log record, or any other serialisable structure.
+
+        Override in subclasses that use a non-Bearer auth scheme (e.g. Anthropic,
+        Azure, AWS SigV4).
         """
         auth = self._static.auth
         header_name = auth.header_name or "Authorization"
         prefix = auth.header_prefix or "Bearer"
-        return {header_name: f"{prefix} {api_key}"}
+        return {header_name: f"{prefix} {self._api_key.get_secret_value()}"}
 
     def _emit_structured_log(
         self,

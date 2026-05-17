@@ -50,7 +50,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _generate(self, request: ChatRequest) -> ChatResponse:
-        headers = self._build_request_headers(request.resolved_api_key)
+        headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         t0 = time.monotonic()
         try:
@@ -74,7 +74,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
             raise self._handle_provider_error(exc) from exc
 
     async def _stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
-        headers = self._build_request_headers(request.resolved_api_key)
+        headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         payload["stream"] = True
         t0 = time.monotonic()
@@ -103,7 +103,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
-        headers = self._build_request_headers(request.resolved_api_key)
+        headers = self._build_request_headers()
         payload = {
             "model": self._deployment.model_name,
             "input": request.input if isinstance(request.input, list) else [request.input],
@@ -176,9 +176,10 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     # Request Builder Helpers
     # ------------------------------------------------------------------
 
-    def _build_request_headers(self, api_key: str) -> dict[str, str]:
-        """vLLM may run without auth. Only set Authorization if API key is provided."""
+    def _build_request_headers(self) -> dict[str, str]:
+        """vLLM may run without auth. Only set Authorization if an API key is configured."""
         headers: dict[str, str] = {"Content-Type": "application/json"}
+        api_key = self._api_key.get_secret_value()
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         headers.update(self._deployment.extra_headers)

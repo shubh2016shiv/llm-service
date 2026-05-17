@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     import aiobreaker
+    from pydantic import SecretStr
 
     from app.core.settings.models.provider_config import ProviderStaticConfig
     from app.core.settings.models.tenant_config import DeploymentConfig
@@ -56,8 +57,9 @@ class BedrockProvider(BaseProvider[object]):
         deployment_config: DeploymentConfig,
         http_client: object,  # aioboto3.Session in practice; typed loosely for ABC compatibility
         circuit_breaker: aiobreaker.CircuitBreaker,
+        api_key: SecretStr | None = None,  # Accepted for registry compat; Bedrock uses IAM auth
     ) -> None:
-        super().__init__(static_config, deployment_config, http_client, circuit_breaker)
+        super().__init__(static_config, deployment_config, http_client, circuit_breaker, api_key)
         self._bedrock_session = http_client  # stored as the aioboto3 session
 
     # ------------------------------------------------------------------
@@ -175,8 +177,6 @@ class BedrockProvider(BaseProvider[object]):
                 latency_ms=latency_ms,
                 detail=str(exc),
             )
-
-
 
     # ------------------------------------------------------------------
     # Payload Builders (Bedrock Converse API)

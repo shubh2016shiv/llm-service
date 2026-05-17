@@ -33,11 +33,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from app.core.secret_store import SecretStore
     from app.core.settings.loader import ConfigLoader
     from app.core.settings.models.tenant_config import DeploymentConfig
     from app.infrastructure.cache import RedisCache
     from app.infrastructure.http_client_factory import HTTPClientFactory
     from app.providers.base_provider import BaseProvider
+
+from pydantic import SecretStr
 
 from app.infrastructure.circuit_breaker import get_provider_circuit_breaker
 
@@ -54,12 +57,14 @@ class ProviderRegistry:
         http_client_factory: HTTPClientFactory,
         config_loader: ConfigLoader,
         cache: RedisCache,
+        secret_store: SecretStore,
     ) -> None:
         self._providers: dict[str, BaseProvider[Any]] = {}
         self._lock = asyncio.Lock()
         self._http_client_factory = http_client_factory
         self._config_loader = config_loader
         self._cache = cache
+        self._secret_store = secret_store
 
     # ------------------------------------------------------------------
     # Public API
@@ -117,14 +122,17 @@ class ProviderRegistry:
             static_config.provider_name, self._cache
         )
 
-        # Inject resolved API key into deployment settings for this instance
-        # (secret NEVER stored on the instance — only passed at call time via
-        #  request.resolved_api_key, set by the dispatcher)
+        plaintext_api_key = await self._secret_store.get_secret(
+            deployment_config.secret_reference,
+            tenant_id=str(deployment_config.tenant_id),
+        )
+
         return provider_class(
             static_config=static_config,
             deployment_config=deployment_config,
             http_client=http_client,
             circuit_breaker=circuit_breaker,
+            api_key=SecretStr(plaintext_api_key),
         )
 
     @staticmethod

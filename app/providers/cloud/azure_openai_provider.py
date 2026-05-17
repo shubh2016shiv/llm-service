@@ -50,7 +50,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _generate(self, request: ChatRequest) -> ChatResponse:
-        headers = self._build_request_headers(request.resolved_api_key)
+        headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         url = self._build_url("chat/completions")
         t0 = time.monotonic()
@@ -75,7 +75,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
             raise self._handle_provider_error(exc) from exc
 
     async def _stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
-        headers = self._build_request_headers(request.resolved_api_key)
+        headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         payload["stream"] = True
         url = self._build_url("chat/completions")
@@ -105,7 +105,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
-        headers = self._build_request_headers(request.resolved_api_key)
+        headers = self._build_request_headers()
         payload = {
             "input": request.input if isinstance(request.input, list) else [request.input],
         }
@@ -154,7 +154,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
         try:
             response = await self._http_client.get(
                 self._build_url(""),
-                headers=self._build_request_headers(""),
+                headers=self._build_request_headers(),
                 timeout=self._effective_timeout(),
             )
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -179,10 +179,10 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # Request Builder Helpers
     # ------------------------------------------------------------------
 
-    def _build_request_headers(self, api_key: str) -> dict[str, str]:
+    def _build_request_headers(self) -> dict[str, str]:
         """Azure uses `api-key` header by default, not Bearer Authorization."""
         headers: dict[str, str] = {
-            "api-key": api_key,
+            "api-key": self._api_key.get_secret_value(),
             "Content-Type": "application/json",
         }
         headers.update(self._deployment.extra_headers)

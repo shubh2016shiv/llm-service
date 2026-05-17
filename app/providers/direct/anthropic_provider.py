@@ -49,7 +49,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _generate(self, request: ChatRequest) -> ChatResponse:
-        headers = self._build_request_headers(request.resolved_api_key)
+        headers = self._build_request_headers()
         payload = self._build_messages_payload(request)
         t0 = time.monotonic()
         try:
@@ -73,7 +73,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
             raise self._handle_provider_error(exc) from exc
 
     async def _stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
-        headers = self._build_request_headers(request.resolved_api_key)
+        headers = self._build_request_headers()
         payload = self._build_messages_payload(request)
         payload["stream"] = True
         t0 = time.monotonic()
@@ -130,7 +130,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         try:
             response = await self._http_client.get(
                 f"{self._deployment.api_endpoint_url}/models",
-                headers=self._build_request_headers(""),
+                headers=self._build_request_headers(),
                 timeout=self._effective_timeout(),
             )
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -155,10 +155,10 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     # Request Builder Helpers
     # ------------------------------------------------------------------
 
-    def _build_request_headers(self, api_key: str) -> dict[str, str]:
+    def _build_request_headers(self) -> dict[str, str]:
         """Anthropic uses x-api-key (not Bearer Authorization)."""
         headers: dict[str, str] = {
-            "x-api-key": api_key,
+            "x-api-key": self._api_key.get_secret_value(),
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
