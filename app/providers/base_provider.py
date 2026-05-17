@@ -54,8 +54,8 @@ if TYPE_CHECKING:
     from app.core.exceptions import ProviderError
     from app.core.settings.models.provider_config import ProviderStaticConfig
     from app.core.settings.models.tenant_config import DeploymentConfig
-    from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
-    from app.schemas.responses import (
+    from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
+    from app.schemas.responses_schema import (
         ChatResponse,
         ChatStreamChunk,
         EmbedResponse,

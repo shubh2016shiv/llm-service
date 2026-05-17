@@ -45,11 +45,11 @@ except ImportError:
 
 def classify_error(exc: Exception, provider_name: str) -> ProviderError:
     """Classify a raw exception from the provider into the ProviderError hierarchy.
-    
+
     Args:
         exc: The raw exception caught from httpx or aioboto3.
         provider_name: The name of the provider.
-        
+
     Returns:
         An instantiated subclass of ProviderError.
     """
@@ -61,30 +61,36 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         body = exc.response.text.lower()
-        
+
         if status == 401:
             if "expired" in body:
                 return ExpiredTokenError(provider_name=provider_name)
             return InvalidAPIKeyError(provider_name=provider_name, masked_key="****")
-            
+
         if status == 429:
             # Simple heuristic; specific providers may need custom parsing
             # to extract exact retry_after_seconds.
             retry_after = int(exc.response.headers.get("Retry-After", 0)) or None
             if "token" in body:
-                return TokensPerMinuteExceededError(provider_name=provider_name, retry_after_seconds=retry_after)
-            return RequestsPerMinuteExceededError(provider_name=provider_name, retry_after_seconds=retry_after)
-            
+                return TokensPerMinuteExceededError(
+                    provider_name=provider_name, retry_after_seconds=retry_after
+                )
+            return RequestsPerMinuteExceededError(
+                provider_name=provider_name, retry_after_seconds=retry_after
+            )
+
         if status == 400:
             if "model" in body and "not found" in body:
-                # Extracting requested model would require access to the request, 
+                # Extracting requested model would require access to the request,
                 # so we use a placeholder "unknown" or extract from body.
                 return ModelNotSupportedError(provider_name=provider_name, model_name="unknown")
-            return InvalidRequestError(provider_name=provider_name, field="unknown", reason=body[:200])
-            
+            return InvalidRequestError(
+                provider_name=provider_name, field="unknown", reason=body[:200]
+            )
+
         if status in (500, 502, 503, 504):
             return ServiceDownError(provider_name=provider_name, status_code=status)
-            
+
         return ProviderInternalError(
             f"Unexpected HTTP status {status} from {provider_name}",
             provider_name=provider_name,
@@ -97,14 +103,18 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
     # AWS Bedrock handling
     if isinstance(exc, (ConnectTimeoutError, ReadTimeoutError)):
         return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=0.0)
-        
+
     if isinstance(exc, ClientError):
         error_block = exc.response.get("Error", {})
         error_block = error_block if isinstance(error_block, dict) else {}
         code: str = error_block.get("Code", "Unknown")
         msg: str = error_block.get("Message", "")
-        
-        if code in ("AccessDeniedException", "UnrecognizedClientException", "InvalidSignatureException"):
+
+        if code in (
+            "AccessDeniedException",
+            "UnrecognizedClientException",
+            "InvalidSignatureException",
+        ):
             return InvalidAPIKeyError(provider_name=provider_name, masked_key="****")
         if code == "ThrottlingException":
             return RequestsPerMinuteExceededError(provider_name=provider_name)
@@ -114,7 +124,7 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
             return ModelNotSupportedError(provider_name=provider_name, model_name="unknown")
         if code in ("InternalServerException", "ServiceUnavailableException"):
             return ServiceDownError(provider_name=provider_name, status_code=503)
-            
+
     # Fallback
     return ProviderInternalError(
         f"Unhandled exception communicating with {provider_name}: {exc.__class__.__name__}",

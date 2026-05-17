@@ -111,9 +111,7 @@ class ProviderRegistry:
         2. Resolve the provider implementation class.
         3. Instantiate and return.
         """
-        static_config = self._config_loader.load_provider_config(
-            deployment_config.provider_name
-        )
+        static_config = self._config_loader.load_provider_config(deployment_config.provider_name)
 
         provider_class = self._resolve_implementation_class(static_config.implementation_class)
 

@@ -29,8 +29,8 @@ from app.providers.base_provider import BaseProvider
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
-    from app.schemas.responses import (
+    from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
+    from app.schemas.responses_schema import (
         ChatResponse,
         ChatStreamChunk,
         EmbedResponse,
@@ -148,7 +148,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def health_check(self) -> HealthStatus:
-        from app.schemas.responses import HealthStatus
+        from app.schemas.responses_schema import HealthStatus
 
         t0 = time.monotonic()
         try:
@@ -172,8 +172,6 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
                 latency_ms=latency_ms,
                 detail=str(exc),
             )
-
-
 
     # ------------------------------------------------------------------
     # Request Builder Helpers
@@ -199,10 +197,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
         if path:
             url = f"{url}/{path.lstrip('/')}"
         # Append api-version query param if configured
-        api_version = (
-            self._deployment.extra_config.get("api_version")
-            or "2024-02-15-preview"
-        )
+        api_version = self._deployment.extra_config.get("api_version") or "2024-02-15-preview"
         return f"{url}?api-version={api_version}"
 
     def _build_chat_payload(self, request: ChatRequest) -> dict[str, object]:
@@ -225,7 +220,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_chat_response(data: dict[str, object]) -> ChatResponse:
-        from app.schemas.responses import ChatResponse, Usage
+        from app.schemas.responses_schema import ChatResponse, Usage
 
         choice = data["choices"][0]  # type: ignore[index]
         message = choice["message"]  # type: ignore[index]
@@ -250,7 +245,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_stream_chunk(data: dict[str, object]) -> ChatStreamChunk:
-        from app.schemas.responses import ChatStreamChunk
+        from app.schemas.responses_schema import ChatStreamChunk
 
         delta = data["choices"][0].get("delta", {})  # type: ignore[index]
         return ChatStreamChunk(
@@ -262,7 +257,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_embed_response(data: dict[str, object]) -> EmbedResponse:
-        from app.schemas.responses import EmbedResponse, Usage
+        from app.schemas.responses_schema import EmbedResponse, Usage
 
         embeddings = [item["embedding"] for item in data["data"]]  # type: ignore[index]
         usage_raw = data.get("usage", {})

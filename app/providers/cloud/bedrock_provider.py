@@ -32,8 +32,8 @@ if TYPE_CHECKING:
 
     from app.core.settings.models.provider_config import ProviderStaticConfig
     from app.core.settings.models.tenant_config import DeploymentConfig
-    from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
-    from app.schemas.responses import (
+    from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
+    from app.schemas.responses_schema import (
         ChatResponse,
         ChatStreamChunk,
         EmbedResponse,
@@ -109,7 +109,7 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
-        from app.schemas.responses import EmbedResponse, Usage
+        from app.schemas.responses_schema import EmbedResponse, Usage
 
         t0 = time.monotonic()
         try:
@@ -152,7 +152,7 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     async def health_check(self) -> HealthStatus:
-        from app.schemas.responses import HealthStatus
+        from app.schemas.responses_schema import HealthStatus
 
         t0 = time.monotonic()
         try:
@@ -225,7 +225,7 @@ class BedrockProvider(BaseProvider[object]):
 
     @staticmethod
     def _parse_converse_response(response: dict[str, object]) -> ChatResponse:
-        from app.schemas.responses import ChatResponse, Usage
+        from app.schemas.responses_schema import ChatResponse, Usage
 
         output = response.get("output", {})
         message = output.get("message", {})  # type: ignore[union-attr]
@@ -255,7 +255,7 @@ class BedrockProvider(BaseProvider[object]):
 
     @staticmethod
     def _parse_converse_stream_event(event: dict[str, object]) -> ChatStreamChunk:
-        from app.schemas.responses import ChatStreamChunk
+        from app.schemas.responses_schema import ChatStreamChunk
 
         content = ""
         if "contentBlockDelta" in event:

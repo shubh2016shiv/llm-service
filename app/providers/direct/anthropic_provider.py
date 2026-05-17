@@ -28,8 +28,8 @@ from app.providers.base_provider import BaseProvider
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
-    from app.schemas.responses import (
+    from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
+    from app.schemas.responses_schema import (
         ChatResponse,
         ChatStreamChunk,
         EmbedResponse,
@@ -124,7 +124,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def health_check(self) -> HealthStatus:
-        from app.schemas.responses import HealthStatus
+        from app.schemas.responses_schema import HealthStatus
 
         t0 = time.monotonic()
         try:
@@ -148,8 +148,6 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
                 latency_ms=latency_ms,
                 detail=str(exc),
             )
-
-
 
     # ------------------------------------------------------------------
     # Request Builder Helpers
@@ -191,7 +189,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_messages_response(data: dict[str, object]) -> ChatResponse:
-        from app.schemas.responses import ChatResponse, Usage
+        from app.schemas.responses_schema import ChatResponse, Usage
 
         raw_content = data.get("content", [])
         content_blocks = raw_content if isinstance(raw_content, list) else []
@@ -223,7 +221,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_stream_event(data: dict[str, object]) -> ChatStreamChunk:
-        from app.schemas.responses import ChatStreamChunk
+        from app.schemas.responses_schema import ChatStreamChunk
 
         event_type = data.get("type", "")
         if event_type == "content_block_delta":
