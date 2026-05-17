@@ -1,5 +1,5 @@
 """
-app/schemas/requests.py — Inbound request schemas for the LLM gateway.
+app/schemas/requests_schema.py — Inbound request schemas for the LLM gateway.
 
 These Pydantic models represent requests entering the gateway from the API
 layer. They flow through: API router → request_dispatcher → provider.

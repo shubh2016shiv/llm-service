@@ -1,5 +1,5 @@
 """
-app/schemas/responses.py — Outbound response schemas for the LLM gateway.
+app/schemas/responses_schema.py — Outbound response schemas for the LLM gateway.
 
 These Pydantic models represent responses flowing back from providers through
 the dispatcher to the API layer.

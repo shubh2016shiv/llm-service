@@ -7,8 +7,8 @@ API router → request_dispatcher → provider → request_dispatcher → API ro
 Package Structure
 -----------------
     schemas/
-    ├── requests.py       ← ChatRequest, EmbedRequest, RerankRequest, ChatMessage
-    ├── responses.py      ← ChatResponse, ChatStreamChunk, EmbedResponse,
+    ├── requests_schema.py       ← ChatRequest, EmbedRequest, RerankRequest, ChatMessage
+    ├── responses_schema.py      ← ChatResponse, ChatStreamChunk, EmbedResponse,
     │                        RerankResponse, RerankResult, HealthStatus, Usage
     └── enums.py          ← ProviderType, OperationType, AuthMode
 
@@ -19,8 +19,8 @@ Usage
 """
 
 from app.schemas.enums import AuthMode, OperationType, ProviderType
-from app.schemas.requests import ChatMessage, ChatRequest, EmbedRequest, RerankRequest
-from app.schemas.responses import (
+from app.schemas.requests_schema import ChatMessage, ChatRequest, EmbedRequest, RerankRequest
+from app.schemas.responses_schema import (
     ChatResponse,
     ChatStreamChunk,
     EmbedResponse,
