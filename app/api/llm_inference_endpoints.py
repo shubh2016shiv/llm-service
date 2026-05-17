@@ -1,142 +1,159 @@
 """
-LLM Inference Endpoints — submit a prompt, get a job ID, poll for the result.
+LLM Inference Endpoints
 
-How this works (for any new developer):
-----------------------------------------
-1. Caller sends POST /api/v1/llm/jobs  with the prompt + provider + model.
-2. This endpoint puts the job onto a background worker queue and immediately
-   returns a job_id.  The caller does NOT wait for the LLM to respond here.
-3. Caller polls GET /api/v1/llm/jobs/{job_id} (handled by result_store/router.py)
-   until status is SUCCESS or FAILURE.
+Routes:
+    POST /api/v1/llm/chat    — Chat completions (JSON body or SSE stream)
+    POST /api/v1/llm/embed   — Text embeddings
+    POST /api/v1/llm/rerank  — Document re-ranking
 
-Why background workers instead of answering inline?
-   LLM calls take 1–30 seconds.  Blocking an HTTP connection for that long
-   kills throughput under any real load.  Workers run in parallel; the HTTP
-   layer stays fast.
+All routes require:
+    - X-Tenant-ID header       (UUID identifying the requesting tenant)
+    - X-Deployment-Key header  (string key selecting the target deployment)
 
-Priority queue:
-   Standard requests go to a pool of 7 workers.
-   Priority requests (header X-Priority: true) go to a separate pool of 3
-   dedicated workers that are never shared with standard traffic.
+The deployment key determines which provider, model, and credentials are used.
+Callers never specify those directly — the resolver handles that.
 
-Architecture:
--------------
-    Caller
-      │  POST /api/v1/llm/jobs
-      ▼
-    llm_inference_endpoints.py   ← you are here
-      │  submit_llm_job() / submit_priority_llm_job()
-      │  puts job on worker queue → returns job_id immediately (HTTP 202)
-      ▼
-    Celery worker (background)
-      │  standard_task.process_llm_request
-      │  priority_task.process_priority_llm_request
-      ▼
-    LLM provider (OpenAI / Anthropic / etc.)
-      │  result stored in Redis under job_id
-      ▼
-    Caller polls GET /api/v1/llm/jobs/{job_id}
+NOTE: All routes require authentication via the require_developer guard.
+Unauthenticated requests receive HTTP 401.
 
-Dependencies:
-    - app/llm_gateway/worker_queue.py                        — celery_app, queue name constants
-    - app/llm_gateway/gateway_tasks/standard_task.py         — process_llm_request task
-    - app/llm_gateway/gateway_tasks/priority_task.py         — process_priority_llm_request task
-
-Author: LLM Gateway Team
-Last Updated: 2026-05-11
+Dependency wiring:
+    main.py must create one InferenceService during startup and store it on
+    app.state.inference_service. The _get_inference_service() dependency below
+    retrieves it from there, ensuring the ProviderRegistry singleton cache
+    persists across requests.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from uuid import UUID, uuid4
+import json
+import logging
+from typing import TYPE_CHECKING, Annotated, Any, NoReturn
 
-from fastapi import APIRouter, HTTPException, status
-from loguru import logger
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 
-from app.llm_gateway.worker_queue import (
-    LLM_REQUESTS_QUEUE,
-    PRIORITY_REQUESTS_QUEUE,
-    celery_app,
+from app.auth import require_developer
+from app.core.exceptions import (
+    AuthenticationError,
+    ConcurrentRequestLimitError,
+    DeploymentInactiveError,
+    DeploymentNotFoundError,
+    LLMServiceError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+    ProviderValidationError,
+    QuotaExceededError,
+    RateLimitError,
+    TenantNotFoundError,
+    TenantSuspendedError,
 )
+from app.execution.inference_service import InferenceService
+from app.routing.exceptions import OperationNotSupportedError, ProviderNotAllowedError
+from app.schemas.auth_schemas import AuthTokenPayload
+from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
+from app.schemas.responses import ChatResponse, EmbedResponse, RerankResponse
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from app.schemas.responses import ChatStreamChunk
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/llm", tags=["LLM Inference"])
 
-# ---------------------------------------------------------------------------
-# Task names — must match the @celery_app.task(name=...) in each task file.
-# Celery routes by name; if these drift the job silently goes to the wrong
-# worker (or nowhere).
-# ---------------------------------------------------------------------------
-_STANDARD_TASK = "app.llm_gateway.gateway_tasks.standard_task.process_llm_request"
-_PRIORITY_TASK = "app.llm_gateway.gateway_tasks.priority_task.process_priority_llm_request"
-
 
 # ---------------------------------------------------------------------------
-# Request / response shapes
+# Dependency: InferenceService
+#
+# InferenceService owns the ProviderRegistry singleton cache. It must be
+# created once at process startup (in main.py's lifespan handler) and stored
+# on app.state so that the cache survives across requests. Creating it per-
+# request would destroy and recreate the provider cache on every call.
 # ---------------------------------------------------------------------------
 
 
-class LLMJobRequest(BaseModel):
-    """What the caller sends when submitting an LLM job.
+def _get_inference_service(request: Request) -> InferenceService:
+    """Retrieve the process-scoped InferenceService from app.state.
 
-    The caller MUST first call POST /api/v1/tokens/acquire and receive a
-    token_request_id in ACQUIRED state. That ID is required here. The worker
-    holds the tokens locked until the LLM call completes, then releases them
-    automatically. The caller never calls /tokens/release manually.
-
-    Fields:
-        token_request_id: The allocation ID from POST /api/v1/tokens/acquire.
-                          Must be in ACQUIRED state. This is the guardrail —
-                          no allocation, no LLM call.
-        user_id:          The requesting user's UUID (used for credential lookup).
-        llm_provider:     Which provider to call: "openai", "anthropic",
-                          "azure_openai", "aws_bedrock", or "gcp_vertex".
-        llm_model_name:   The model identifier, e.g. "gpt-4o".
-        user_prompt:      The prompt text to send to the model.
-        system_message:   Optional system-level instruction.
-        max_tokens:       Optional cap on completion length.
-        temperature:      Optional sampling temperature (0.0 – 2.0).
+    Raises:
+        RuntimeError: If main.py has not populated app.state.inference_service.
     """
-
-    token_request_id: str = Field(
-        ...,
-        description=(
-            "Allocation ID from POST /api/v1/tokens/acquire. "
-            "Tokens stay locked until the LLM call finishes. "
-            "The worker releases them — do not call /tokens/release manually."
-        ),
-    )
-    user_id: UUID = Field(..., description="Requesting user's UUID")
-    llm_provider: str = Field(
-        ...,
-        description="Provider name: openai | anthropic | azure_openai | aws_bedrock | gcp_vertex",
-    )
-    llm_model_name: str = Field(
-        ..., description="Model identifier (e.g. 'gpt-4o', 'claude-3-5-sonnet-20241022')"
-    )
-    user_prompt: str = Field(..., min_length=1, description="Prompt text to send to the model")
-    system_message: str | None = Field(None, description="Optional system instruction")
-    max_tokens: int | None = Field(None, gt=0, description="Optional max completion tokens")
-    temperature: float | None = Field(None, ge=0.0, le=2.0, description="Optional temperature")
+    service: InferenceService | None = getattr(request.app.state, "inference_service", None)
+    if service is None:
+        raise RuntimeError(
+            "app.state.inference_service is not initialised. "
+            "Ensure the lifespan handler in main.py creates and stores "
+            "an InferenceService instance before the application accepts traffic."
+        )
+    return service
 
 
-class LLMJobAccepted(BaseModel):
-    """Returned immediately when a job is queued successfully (HTTP 202).
+# ---------------------------------------------------------------------------
+# Exception → HTTP status mapping
+#
+# The domain exception hierarchy (app.core.exceptions) is translated here to
+# HTTP status codes. Walking the MRO means subclasses are matched before their
+# base class — no explicit ordering of the dict entries is required.
+# ---------------------------------------------------------------------------
 
-    The caller uses job_id to poll GET /api/v1/llm/jobs/{job_id}.
+_EXCEPTION_STATUS: dict[type[LLMServiceError], int] = {
+    TenantNotFoundError: status.HTTP_404_NOT_FOUND,
+    TenantSuspendedError: status.HTTP_403_FORBIDDEN,
+    DeploymentNotFoundError: status.HTTP_404_NOT_FOUND,
+    DeploymentInactiveError: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    QuotaExceededError: status.HTTP_429_TOO_MANY_REQUESTS,
+    ConcurrentRequestLimitError: status.HTTP_429_TOO_MANY_REQUESTS,
+    RateLimitError: status.HTTP_429_TOO_MANY_REQUESTS,
+    # 502 — the service's stored credential is wrong, not the caller's fault.
+    AuthenticationError: status.HTTP_502_BAD_GATEWAY,
+    ProviderValidationError: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ProviderNotAllowedError: status.HTTP_403_FORBIDDEN,
+    OperationNotSupportedError: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ProviderUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+    ProviderTimeoutError: status.HTTP_504_GATEWAY_TIMEOUT,
+}
 
-    Fields:
-        job_id:     Unique identifier for this job — use it to poll for the result.
-        poll_url:   Ready-to-use URL for polling.
-        submitted_at: UTC timestamp of when the job was queued.
-        queue:      Which worker queue received the job (informational).
+
+def _raise_http(exc: LLMServiceError) -> NoReturn:
+    """Translate a domain exception to an HTTPException and raise it.
+
+    Walks the exception's MRO so the most specific mapping wins.
+    Falls back to HTTP 500 for any LLMServiceError not in the map.
     """
+    for exc_type in type(exc).__mro__:
+        if exc_type in _EXCEPTION_STATUS:
+            raise HTTPException(
+                status_code=_EXCEPTION_STATUS[exc_type],
+                detail=str(exc),
+            )
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="An unexpected error occurred.",
+    )
 
-    job_id: str = Field(..., description="Unique job identifier — poll with this")
-    poll_url: str = Field(..., description="URL to poll for the result")
-    submitted_at: str = Field(..., description="UTC ISO-8601 submission time")
-    queue: str = Field(..., description="Worker queue the job was sent to")
+
+# ---------------------------------------------------------------------------
+# Streaming helper
+#
+# execute_stream_chat is an async generator. Resolution, quota check, and
+# provider lookup all happen during the first iteration step — after the HTTP
+# 200 header has already been sent. Any LLMServiceError raised there is caught
+# and serialised as an error SSE event so the client can handle it gracefully.
+# ---------------------------------------------------------------------------
+
+
+async def _sse_stream(chunks: AsyncIterator[ChatStreamChunk]) -> AsyncIterator[str]:
+    """Yield server-sent event strings from a ChatStreamChunk iterator."""
+    try:
+        async for chunk in chunks:
+            payload = chunk.model_dump(exclude={"raw_chunk"})
+            yield f"data: {json.dumps(payload)}\n\n"
+    except LLMServiceError as exc:
+        error_event: dict[str, Any] = {"error": {"code": exc.error_code, "message": str(exc)}}
+        yield f"data: {json.dumps(error_event)}\n\n"
+    finally:
+        yield "data: [DONE]\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -145,137 +162,110 @@ class LLMJobAccepted(BaseModel):
 
 
 @router.post(
-    "/jobs",
-    response_model=LLMJobAccepted,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Submit an LLM job",
+    "/chat",
+    response_model=ChatResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Chat completion",
     description=(
-        "Queues a prompt for background LLM execution and returns a job_id immediately. "
-        "The LLM call happens in a background worker — this endpoint does not wait for it. "
-        "Poll GET /api/v1/llm/jobs/{job_id} for the result."
+        "Submit a conversation and receive a completion from the resolved deployment. "
+        "Set stream=true to receive a server-sent event stream rather than a JSON body."
     ),
 )
-async def submit_llm_job(request: LLMJobRequest) -> LLMJobAccepted:
-    """Put an LLM inference job onto the standard worker queue.
+async def chat_completion(
+    body: ChatRequest,
+    x_tenant_id: Annotated[str, Header()],
+    x_deployment_key: Annotated[str, Header()],
+    inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
+    current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
+) -> ChatResponse | StreamingResponse:
+    try:
+        if body.stream:
+            chunks = inference_service.execute_stream_chat(
+                tenant_id=x_tenant_id,
+                deployment_key=x_deployment_key,
+                request=body,
+            )
+            return StreamingResponse(
+                _sse_stream(chunks),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
 
-    Returns HTTP 202 immediately with a job_id.  Does not wait for the LLM.
+        return await inference_service.execute_chat(
+            tenant_id=x_tenant_id,
+            deployment_key=x_deployment_key,
+            request=body,
+        )
 
-    Args:
-        request: Validated job request body.
-
-    Returns:
-        LLMJobAccepted with job_id, poll_url, and submission timestamp.
-
-    Raises:
-        HTTP 503: If the worker queue is unreachable.
-    """
-    return _enqueue_job(request, queue=LLM_REQUESTS_QUEUE, task_name=_STANDARD_TASK)
+    except LLMServiceError as exc:
+        logger.warning(
+            "Chat request failed | tenant=%s deployment=%s error_code=%s",
+            x_tenant_id,
+            x_deployment_key,
+            exc.error_code,
+        )
+        _raise_http(exc)
 
 
 @router.post(
-    "/jobs/priority",
-    response_model=LLMJobAccepted,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Submit a priority LLM job",
+    "/embed",
+    response_model=EmbedResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Text embeddings",
+    description="Embed one or more texts using the deployment's embedding model.",
+)
+async def embed(
+    body: EmbedRequest,
+    x_tenant_id: Annotated[str, Header()],
+    x_deployment_key: Annotated[str, Header()],
+    inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
+    current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
+) -> EmbedResponse:
+    try:
+        return await inference_service.execute_embed(
+            tenant_id=x_tenant_id,
+            deployment_key=x_deployment_key,
+            request=body,
+        )
+    except LLMServiceError as exc:
+        logger.warning(
+            "Embed request failed | tenant=%s deployment=%s error_code=%s",
+            x_tenant_id,
+            x_deployment_key,
+            exc.error_code,
+        )
+        _raise_http(exc)
+
+
+@router.post(
+    "/rerank",
+    response_model=RerankResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Document re-ranking",
     description=(
-        "Same as POST /api/v1/llm/jobs but routes to the priority worker pool. "
-        "Priority workers are never shared with standard traffic, so this queue "
-        "stays fast even when the standard queue is saturated. "
-        "Use sparingly — there are only 3 priority workers."
+        "Re-rank a list of documents against a query. "
+        "Only deployments backed by a model that supports re-ranking will succeed; "
+        "others return HTTP 422."
     ),
 )
-async def submit_priority_llm_job(request: LLMJobRequest) -> LLMJobAccepted:
-    """Put an LLM inference job onto the priority worker queue.
-
-    Priority workers (3 dedicated) never pick up standard jobs.
-    The caller gets the same HTTP 202 + job_id contract as the standard endpoint.
-
-    Args:
-        request: Validated job request body.
-
-    Returns:
-        LLMJobAccepted with job_id, poll_url, and submission timestamp.
-
-    Raises:
-        HTTP 503: If the worker queue is unreachable.
-    """
-    return _enqueue_job(request, queue=PRIORITY_REQUESTS_QUEUE, task_name=_PRIORITY_TASK)
-
-
-# ---------------------------------------------------------------------------
-# Internal helper
-# ---------------------------------------------------------------------------
-
-
-def _enqueue_job(
-    request: LLMJobRequest,
-    queue: str,
-    task_name: str,
-) -> LLMJobAccepted:
-    """Build the job payload and send it to the Celery worker queue.
-
-    The job_id is a fresh UUID generated here.  It is passed into the worker
-    payload so the worker can write Redis metadata under that same key —
-    keeping job_id stable and predictable from the moment of submission.
-
-    Args:
-        request:   Validated request body.
-        queue:     Target Celery queue name.
-        task_name: Fully-qualified Celery task name to invoke.
-
-    Returns:
-        LLMJobAccepted ready to be returned as the HTTP 202 body.
-
-    Raises:
-        HTTP 503: On any queue connectivity failure.
-    """
-    job_id = str(uuid4())
-    submitted_at = datetime.now(timezone.utc).isoformat()
-
-    payload = {
-        "job_id": job_id,
-        "token_request_id": request.token_request_id,
-        "user_id": str(request.user_id),
-        "llm_provider": request.llm_provider,
-        "llm_model_name": request.llm_model_name,
-        "user_prompt": request.user_prompt,
-        "submitted_at": submitted_at,
-        "system_message": request.system_message,
-        "max_tokens": request.max_tokens,
-        "temperature": request.temperature,
-    }
-
+async def rerank(
+    body: RerankRequest,
+    x_tenant_id: Annotated[str, Header()],
+    x_deployment_key: Annotated[str, Header()],
+    inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
+    current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
+) -> RerankResponse:
     try:
-        celery_app.send_task(
-            task_name,
-            kwargs=payload,
-            queue=queue,
-            task_id=job_id,
+        return await inference_service.execute_rerank(
+            tenant_id=x_tenant_id,
+            deployment_key=x_deployment_key,
+            request=body,
         )
-    except Exception as exc:
-        logger.error(
-            "[LLMInference] Failed to enqueue job | provider={provider} model={model} error={err}",
-            provider=request.llm_provider,
-            model=request.llm_model_name,
-            err=str(exc),
+    except LLMServiceError as exc:
+        logger.warning(
+            "Rerank request failed | tenant=%s deployment=%s error_code=%s",
+            x_tenant_id,
+            x_deployment_key,
+            exc.error_code,
         )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Worker queue is unreachable. Please retry in a few seconds.",
-        ) from exc
-
-    logger.info(
-        "[LLMInference] Job queued | job_id={job_id} provider={provider} "
-        "model={model} queue={queue}",
-        job_id=job_id,
-        provider=request.llm_provider,
-        model=request.llm_model_name,
-        queue=queue,
-    )
-
-    return LLMJobAccepted(
-        job_id=job_id,
-        poll_url=f"/api/v1/llm/jobs/{job_id}",
-        submitted_at=submitted_at,
-        queue=queue,
-    )
+        _raise_http(exc)
