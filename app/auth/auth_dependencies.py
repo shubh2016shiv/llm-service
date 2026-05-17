@@ -26,7 +26,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 
 from app.auth.jwt_token_service import decode_token, verify_token_type
-from app.schemas.auth_schemas import AuthTokenPayload
+from app.schemas.auth_schema import AuthTokenPayload
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +115,7 @@ class RoleGuard:
         unknown = set(permitted_roles) - _VALID_ROLES
         if unknown:
             raise ValueError(
-                f"Unknown roles: {sorted(unknown)}. "
-                f"Permitted values: {sorted(_VALID_ROLES)}"
+                f"Unknown roles: {sorted(unknown)}. Permitted values: {sorted(_VALID_ROLES)}"
             )
         self._permitted_roles: frozenset[str] = frozenset(permitted_roles)
 

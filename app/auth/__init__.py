@@ -29,7 +29,7 @@ from app.auth.jwt_token_service import (
     decode_token,
     verify_token_type,
 )
-from app.schemas.auth_schemas import AuthTokenPayload, AuthTokenResponse, UserRole
+from app.schemas.auth_schema import AuthTokenPayload, AuthTokenResponse, UserRole
 
 __all__ = [
     "AuthTokenPayload",

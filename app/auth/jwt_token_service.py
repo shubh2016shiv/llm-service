@@ -22,7 +22,7 @@ from uuid import UUID
 from jose import JWTError, jwt
 
 from app.core.settings.settings import get_application_settings
-from app.schemas.auth_schemas import AuthTokenPayload
+from app.schemas.auth_schema import AuthTokenPayload
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,7 @@ def _build_token_claims(
 
 def _assert_valid_role(role: str) -> None:
     if role not in _VALID_ROLES:
-        raise ValueError(
-            f"Role {role!r} is not valid. Must be one of: {sorted(_VALID_ROLES)}"
-        )
+        raise ValueError(f"Role {role!r} is not valid. Must be one of: {sorted(_VALID_ROLES)}")
 
 
 def create_access_token(user_id: UUID, role: str) -> str:
@@ -70,9 +68,7 @@ def create_access_token(user_id: UUID, role: str) -> str:
     """
     _assert_valid_role(role)
     settings = get_application_settings()
-    expires_at = datetime.now(UTC) + timedelta(
-        hours=settings.jwt_access_token_expire_hours
-    )
+    expires_at = datetime.now(UTC) + timedelta(hours=settings.jwt_access_token_expire_hours)
     claims = _build_token_claims(user_id, role, "access", expires_at)
 
     token: str = jwt.encode(
@@ -103,14 +99,10 @@ def create_refresh_token(user_id: UUID, role: str) -> str:
     """
     settings = get_application_settings()
     if not settings.jwt_refresh_enabled:
-        raise ValueError(
-            "Refresh tokens are disabled. Set JWT_REFRESH_ENABLED=true to enable."
-        )
+        raise ValueError("Refresh tokens are disabled. Set JWT_REFRESH_ENABLED=true to enable.")
 
     _assert_valid_role(role)
-    expires_at = datetime.now(UTC) + timedelta(
-        days=settings.jwt_refresh_token_expire_days
-    )
+    expires_at = datetime.now(UTC) + timedelta(days=settings.jwt_refresh_token_expire_days)
     claims = _build_token_claims(user_id, role, "refresh", expires_at)
 
     token: str = jwt.encode(
@@ -178,6 +170,5 @@ def verify_token_type(payload: AuthTokenPayload, expected_token_type: str) -> No
     """
     if payload.token_type != expected_token_type:
         raise ValueError(
-            f"Token type mismatch: expected {expected_token_type!r}, "
-            f"got {payload.token_type!r}"
+            f"Token type mismatch: expected {expected_token_type!r}, got {payload.token_type!r}"
         )
