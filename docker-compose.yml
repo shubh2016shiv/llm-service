@@ -1,0 +1,145 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # HashiCorp Vault — secret management
+  #
+  # Dev mode: starts pre-unsealed with a fixed root token. No persistence.
+  # Switch to a file/consul backend + proper TLS for staging/production.
+  # ---------------------------------------------------------------------------
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: llm_vault
+    restart: unless-stopped
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:-local-vault-root-token}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_ADDR: "http://0.0.0.0:8200"
+    cap_add:
+      - IPC_LOCK          # prevents Vault memory from being swapped to disk
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - llm_net
+
+  # ---------------------------------------------------------------------------
+  # Vault Init — runs once to bootstrap auth, policy, and KV engine.
+  # Exits 0 on success; docker compose waits for service_completed_successfully.
+  # ---------------------------------------------------------------------------
+  vault-init:
+    image: hashicorp/vault:1.18
+    container_name: llm_vault_init
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_ROOT_TOKEN: ${VAULT_ROOT_TOKEN:-local-vault-root-token}
+      VAULT_SERVICE_USERNAME: ${VAULT_SERVICE_USERNAME:-llm-service}
+      VAULT_SERVICE_PASSWORD: ${VAULT_SERVICE_PASSWORD:-local-vault-service-password}
+      VAULT_KV_PREFIX: ${VAULT_KV_PREFIX:-llm-provider-service}
+    volumes:
+      - ./vault/scripts/init.sh:/scripts/init.sh:ro
+      - ./vault/policies:/policies:ro
+    entrypoint: ["sh", "/scripts/init.sh"]
+    networks:
+      - llm_net
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — primary relational store (users, deployments, entitlements)
+  # ---------------------------------------------------------------------------
+  #
+  # The data directory is backed by a named Docker volume so local data survives
+  # container restarts. Schema creation is handled by
+  # infrastructure/manage_local_infrastructure.py instead of
+  # /docker-entrypoint-initdb.d because this repository contains historical SQL
+  # files that must not be executed accidentally.
+  postgres:
+    image: postgres:17-alpine
+    container_name: llm_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-llm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-postgres-password}
+      POSTGRES_DB: ${POSTGRES_DB:-llm_services}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-llm_user} -d ${POSTGRES_DB:-llm_services}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - llm_net
+
+  # ---------------------------------------------------------------------------
+  # Redis — deployment config cache, rate-limit counters, pub/sub
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: llm_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-local-redis-password}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-local-redis-password}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - llm_net
+
+  # ---------------------------------------------------------------------------
+  # LLM Provider Service — the application
+  # ---------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llm_app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-llm_user}:${POSTGRES_PASSWORD:-local-postgres-password}@postgres:5432/${POSTGRES_DB:-llm_services}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-local-redis-password}@redis:6379/0
+      SECRET_BACKEND: vault
+      VAULT_ADDR: http://vault:8200
+      VAULT_USERNAME: ${VAULT_SERVICE_USERNAME:-llm-service}
+      VAULT_PASSWORD: ${VAULT_SERVICE_PASSWORD:-local-vault-service-password}
+      VAULT_MOUNT_PATH: ${VAULT_MOUNT_PATH:-secret}
+      VAULT_KV_PREFIX: ${VAULT_KV_PREFIX:-llm-provider-service}
+    networks:
+      - llm_net
+
+volumes:
+  postgres_data:
+    name: llm_services_postgres_data
+  redis_data:
+    name: llm_services_redis_data
+
+networks:
+  llm_net:
+    driver: bridge
