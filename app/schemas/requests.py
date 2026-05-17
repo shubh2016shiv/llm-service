@@ -45,11 +45,7 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    """A chat completion request dispatched to a provider.
-
-    `resolved_api_key` is injected by the dispatcher AFTER authentication
-    resolution. It is NEVER deserialized from the user request body.
-    """
+    """A chat completion request dispatched to a provider."""
 
     model_config = ConfigDict(extra="forbid", frozen=False)
 
@@ -79,10 +75,9 @@ class ChatRequest(BaseModel):
         default=None,
         description="Stop sequences that halt generation. Provider defaults apply when None.",
     )
-    # --- Injected by dispatcher (not from user) ---
-    resolved_api_key: str = Field(
-        default="",
-        description="Resolved API key injected by the dispatcher after auth resolution.",
+    stream: bool = Field(
+        default=False,
+        description="When true, the response is a server-sent event stream rather than a JSON body.",
     )
 
 
@@ -100,11 +95,6 @@ class EmbedRequest(BaseModel):
         ...,
         min_length=1,
         description="Single text or list of texts to embed.",
-    )
-    # --- Injected by dispatcher (not from user) ---
-    resolved_api_key: str = Field(
-        default="",
-        description="Resolved API key injected by the dispatcher after auth resolution.",
     )
 
 
@@ -136,9 +126,4 @@ class RerankRequest(BaseModel):
         default=None,
         ge=1,
         description="Return only the top-N documents. Returns all when None.",
-    )
-    # --- Injected by dispatcher (not from user) ---
-    resolved_api_key: str = Field(
-        default="",
-        description="Resolved API key injected by the dispatcher after auth resolution.",
     )
