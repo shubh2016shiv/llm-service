@@ -49,14 +49,14 @@ from app.core.exceptions import (
 )
 from app.execution.inference_service import InferenceService
 from app.routing.exceptions import OperationNotSupportedError, ProviderNotAllowedError
-from app.schemas.auth_schemas import AuthTokenPayload
-from app.schemas.requests import ChatRequest, EmbedRequest, RerankRequest
-from app.schemas.responses import ChatResponse, EmbedResponse, RerankResponse
+from app.schemas.auth_schema import AuthTokenPayload
+from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
+from app.schemas.responses_schema import ChatResponse, EmbedResponse, RerankResponse
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from app.schemas.responses import ChatStreamChunk
+    from app.schemas.responses_schema import ChatStreamChunk
 
 logger = logging.getLogger(__name__)
 
