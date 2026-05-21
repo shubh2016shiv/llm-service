@@ -15,6 +15,12 @@ Table: tenants
   updated_at                      TIMESTAMPTZ
 """
 
+from __future__ import annotations
+
+from typing import Any
+
+from app.schemas.management_filters import TenantListFilters
+
 # ── Existence checks ──────────────────────────────────────────────────────────
 
 CHECK_TENANT_EXISTS_BY_ID_SQL = """
@@ -107,6 +113,48 @@ COUNT_TENANTS_BY_STATUS_SQL = """
 COUNT_TENANTS_BY_TIER_SQL = """
     SELECT COUNT(*) FROM tenants WHERE tier = :tier
 """
+
+
+def build_tenant_list_query(
+    filters: TenantListFilters,
+    limit: int,
+    offset: int,
+) -> tuple[str, dict[str, Any]]:
+    """Build the tenant list query for the supplied filters."""
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if filters.status_filter is not None:
+        where_clauses.append("status = :status")
+        params["status"] = filters.status_filter
+    if filters.tier_filter is not None:
+        where_clauses.append("tier = :tier")
+        params["tier"] = filters.tier_filter
+
+    sql = """
+        SELECT *
+        FROM tenants
+    """
+    if where_clauses:
+        sql = f"{sql} WHERE {' AND '.join(where_clauses)}"
+    sql = f"{sql} ORDER BY tenant_name LIMIT :limit OFFSET :offset"
+    return sql, params
+
+
+def build_tenant_count_query(filters: TenantListFilters) -> tuple[str, dict[str, Any]]:
+    """Build the tenant count query for the supplied filters."""
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if filters.status_filter is not None:
+        where_clauses.append("status = :status")
+        params["status"] = filters.status_filter
+    if filters.tier_filter is not None:
+        where_clauses.append("tier = :tier")
+        params["tier"] = filters.tier_filter
+
+    sql = "SELECT COUNT(*) FROM tenants"
+    if where_clauses:
+        sql = f"{sql} WHERE {' AND '.join(where_clauses)}"
+    return sql, params
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 

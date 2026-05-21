@@ -348,6 +348,16 @@ class UserPersistence(BasePersistence):
             )
             raise
 
+    async def count_users(self) -> int:
+        """Return the total number of users."""
+        try:
+            async with self.get_session() as session:
+                result = await session.execute(text("SELECT COUNT(*) FROM users"))
+                return result.scalar_one_or_none() or 0
+        except Exception:
+            logger.error("UserPersistence: count_users failed", exc_info=True)
+            raise
+
     async def count_users_by_role(self, platform_role: str) -> int:
         """Return the number of users with the given platform_role."""
         self.validate_platform_role(platform_role)

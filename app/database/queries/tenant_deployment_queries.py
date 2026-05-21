@@ -33,6 +33,12 @@ Unique: (tenant_id, deployment_key)
 Partial unique index: (tenant_id, provider_id) WHERE is_default = TRUE
 """
 
+from __future__ import annotations
+
+from typing import Any
+
+from app.schemas.management_filters import TenantDeploymentListFilters
+
 # ── Existence checks ──────────────────────────────────────────────────────────
 
 CHECK_DEPLOYMENT_EXISTS_BY_ID_SQL = """
@@ -169,6 +175,8 @@ _DEPLOYMENT_SAFE_COLUMNS = """
     updated_at
 """
 
+DEPLOYMENT_SAFE_COLUMNS = _DEPLOYMENT_SAFE_COLUMNS
+
 GET_DEPLOYMENT_BY_ID_SQL = f"""
     SELECT {_DEPLOYMENT_SAFE_COLUMNS}
     FROM tenant_deployments
@@ -246,6 +254,49 @@ COUNT_ACTIVE_DEPLOYMENTS_BY_TENANT_SQL = """
     SELECT COUNT(*) FROM tenant_deployments
     WHERE tenant_id = :tenant_id AND status = 'active'
 """
+
+
+def build_tenant_deployment_list_query(
+    tenant_id: str,
+    filters: TenantDeploymentListFilters,
+    safe_columns: str,
+    limit: int,
+    offset: int,
+) -> tuple[str, dict[str, Any]]:
+    """Build the tenant deployment list query for the supplied filters."""
+    where_clauses: list[str] = ["tenant_id = :tenant_id"]
+    params: dict[str, Any] = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
+    if filters.provider_id is not None:
+        where_clauses.append("provider_id = :provider_id")
+        params["provider_id"] = str(filters.provider_id)
+    if filters.active_only:
+        where_clauses.append("status = 'active'")
+
+    sql = f"""
+        SELECT {safe_columns}
+        FROM tenant_deployments
+        WHERE {' AND '.join(where_clauses)}
+        ORDER BY routing_priority DESC, deployment_name
+        LIMIT :limit OFFSET :offset
+    """
+    return sql, params
+
+
+def build_tenant_deployment_count_query(
+    tenant_id: str,
+    filters: TenantDeploymentListFilters,
+) -> tuple[str, dict[str, Any]]:
+    """Build the tenant deployment count query for the supplied filters."""
+    where_clauses: list[str] = ["tenant_id = :tenant_id"]
+    params: dict[str, Any] = {"tenant_id": tenant_id}
+    if filters.provider_id is not None:
+        where_clauses.append("provider_id = :provider_id")
+        params["provider_id"] = str(filters.provider_id)
+    if filters.active_only:
+        where_clauses.append("status = 'active'")
+
+    sql = "SELECT COUNT(*) FROM tenant_deployments WHERE " + " AND ".join(where_clauses)
+    return sql, params
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 

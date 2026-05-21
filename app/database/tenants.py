@@ -22,17 +22,15 @@ from app.database.base import BasePersistence
 from app.database.queries.tenant_queries import (
     CHECK_TENANT_EXISTS_BY_ID_SQL,
     CHECK_TENANT_EXISTS_BY_SLUG_SQL,
-    COUNT_TENANTS_BY_STATUS_SQL,
-    COUNT_TENANTS_SQL,
     CREATE_TENANT_SQL,
     DELETE_TENANT_BY_ID_SQL,
     GET_TENANT_BY_ID_SQL,
     GET_TENANT_BY_SLUG_SQL,
-    LIST_TENANTS_BY_STATUS_SQL,
-    LIST_TENANTS_BY_TIER_SQL,
-    LIST_TENANTS_SQL,
+    build_tenant_count_query,
+    build_tenant_list_query,
 )
 from app.database.session import DatabaseSessionManager
+from app.schemas.management_filters import TenantListFilters
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -187,30 +185,17 @@ class TenantPersistence(BasePersistence):
 
     async def list_tenants(
         self,
-        status_filter: str | None = None,
-        tier_filter: str | None = None,
+        filters: TenantListFilters,
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Return a paginated tenant list with optional status/tier filters."""
         self.validate_pagination_parameters(limit, offset)
-        if status_filter:
-            self.validate_enum_value(status_filter, _VALID_STATUSES, "status_filter")
-        if tier_filter:
-            self.validate_enum_value(tier_filter, _VALID_TIERS, "tier_filter")
-
-        if status_filter:
-            sql, params = (
-                LIST_TENANTS_BY_STATUS_SQL,
-                {"status": status_filter, "limit": limit, "offset": offset},
-            )
-        elif tier_filter:
-            sql, params = (
-                LIST_TENANTS_BY_TIER_SQL,
-                {"tier": tier_filter, "limit": limit, "offset": offset},
-            )
-        else:
-            sql, params = LIST_TENANTS_SQL, {"limit": limit, "offset": offset}
+        if filters.status_filter:
+            self.validate_enum_value(filters.status_filter, _VALID_STATUSES, "status_filter")
+        if filters.tier_filter:
+            self.validate_enum_value(filters.tier_filter, _VALID_TIERS, "tier_filter")
+        sql, params = build_tenant_list_query(filters, limit, offset)
 
         try:
             async with self.get_session() as session:
@@ -220,15 +205,13 @@ class TenantPersistence(BasePersistence):
             logger.error("TenantPersistence: list_tenants failed", exc_info=True)
             raise
 
-    async def count_tenants(self, status_filter: str | None = None) -> int:
-        """Return tenant count, optionally scoped to a status."""
-        if status_filter:
-            self.validate_enum_value(status_filter, _VALID_STATUSES, "status_filter")
-            sql = COUNT_TENANTS_BY_STATUS_SQL
-            params: dict[str, Any] = {"status": status_filter}
-        else:
-            sql = COUNT_TENANTS_SQL
-            params = {}
+    async def count_tenants(self, filters: TenantListFilters) -> int:
+        """Return tenant count for the supplied filters."""
+        if filters.status_filter:
+            self.validate_enum_value(filters.status_filter, _VALID_STATUSES, "status_filter")
+        if filters.tier_filter:
+            self.validate_enum_value(filters.tier_filter, _VALID_TIERS, "tier_filter")
+        sql, params = build_tenant_count_query(filters)
         try:
             async with self.get_session() as session:
                 result = await session.execute(text(sql), params)

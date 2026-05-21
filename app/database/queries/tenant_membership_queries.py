@@ -14,6 +14,12 @@ Table: tenant_memberships
 Unique constraint: (tenant_id, user_id)
 """
 
+from __future__ import annotations
+
+from typing import Any
+
+from app.schemas.management_filters import TenantMembershipListFilters
+
 # ── Existence checks ──────────────────────────────────────────────────────────
 
 CHECK_MEMBERSHIP_EXISTS_SQL = """
@@ -114,6 +120,48 @@ COUNT_ACTIVE_MEMBERSHIPS_BY_TENANT_SQL = """
 COUNT_TENANTS_FOR_USER_SQL = """
     SELECT COUNT(*) FROM tenant_memberships WHERE user_id = :user_id
 """
+
+
+def build_tenant_membership_list_query(
+    tenant_id: str,
+    filters: TenantMembershipListFilters,
+    limit: int,
+    offset: int,
+) -> tuple[str, dict[str, Any]]:
+    """Build the tenant membership list query for the supplied filters."""
+    where_clauses: list[str] = ["tenant_id = :tenant_id"]
+    params: dict[str, Any] = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
+    if filters.tenant_role_filter is not None:
+        where_clauses.append("tenant_role = :tenant_role")
+        params["tenant_role"] = filters.tenant_role_filter
+    if filters.active_only:
+        where_clauses.append("status = 'active'")
+
+    sql = """
+        SELECT *
+        FROM tenant_memberships
+        WHERE {where_clause}
+        ORDER BY created_at DESC
+        LIMIT :limit OFFSET :offset
+    """.format(where_clause=" AND ".join(where_clauses))
+    return sql, params
+
+
+def build_tenant_membership_count_query(
+    tenant_id: str,
+    filters: TenantMembershipListFilters,
+) -> tuple[str, dict[str, Any]]:
+    """Build the tenant membership count query for the supplied filters."""
+    where_clauses: list[str] = ["tenant_id = :tenant_id"]
+    params: dict[str, Any] = {"tenant_id": tenant_id}
+    if filters.tenant_role_filter is not None:
+        where_clauses.append("tenant_role = :tenant_role")
+        params["tenant_role"] = filters.tenant_role_filter
+    if filters.active_only:
+        where_clauses.append("status = 'active'")
+
+    sql = "SELECT COUNT(*) FROM tenant_memberships WHERE " + " AND ".join(where_clauses)
+    return sql, params
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 

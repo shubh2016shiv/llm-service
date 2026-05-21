@@ -27,15 +27,26 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.database.session import DatabaseSessionManager
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Mapping
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+
+class MissingReferencedResourceError(ValueError):
+    """Raised when a write references a row that does not exist."""
+
+    def __init__(self, resource_name: str, resource_id: str) -> None:
+        """Initialize with the missing resource name and identifier."""
+        self.resource_name = resource_name
+        self.resource_id = resource_id
+        super().__init__(f"{resource_name} not found: {resource_id!r}.")
 
 
 class BasePersistence:
@@ -370,3 +381,22 @@ class BasePersistence:
             logger.info(message)
         else:
             logger.error(message)
+
+    def raise_for_foreign_key_violation(
+        self,
+        exc: Exception,
+        constraint_map: Mapping[str, tuple[str, str]],
+    ) -> None:
+        """Raise MissingReferencedResourceError when an integrity error is a known FK miss."""
+        if not isinstance(exc, IntegrityError):
+            return
+        message = str(getattr(exc, "orig", exc)).lower()
+        if "foreign key" not in message:
+            return
+        constraint_name = str(getattr(getattr(exc, "orig", None), "constraint_name", "")).lower()
+        for expected_constraint, resource in constraint_map.items():
+            resource_name, resource_id = resource
+            if constraint_name == expected_constraint.lower():
+                raise MissingReferencedResourceError(resource_name, resource_id) from exc
+            if expected_constraint.lower() in message:
+                raise MissingReferencedResourceError(resource_name, resource_id) from exc

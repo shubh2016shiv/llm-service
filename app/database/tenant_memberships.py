@@ -22,20 +22,18 @@ from sqlalchemy import text
 from app.database.base import BasePersistence
 from app.database.queries.tenant_membership_queries import (
     CHECK_MEMBERSHIP_EXISTS_SQL,
-    COUNT_ACTIVE_MEMBERSHIPS_BY_TENANT_SQL,
-    COUNT_MEMBERSHIPS_BY_TENANT_SQL,
     COUNT_TENANTS_FOR_USER_SQL,
     CREATE_MEMBERSHIP_SQL,
     DELETE_MEMBERSHIP_BY_ID_SQL,
     DELETE_MEMBERSHIP_BY_TENANT_AND_USER_SQL,
     GET_MEMBERSHIP_BY_ID_SQL,
     GET_MEMBERSHIP_BY_TENANT_AND_USER_SQL,
-    LIST_ACTIVE_MEMBERSHIPS_BY_TENANT_SQL,
-    LIST_MEMBERSHIPS_BY_TENANT_AND_ROLE_SQL,
-    LIST_MEMBERSHIPS_BY_TENANT_SQL,
     LIST_MEMBERSHIPS_BY_USER_SQL,
+    build_tenant_membership_count_query,
+    build_tenant_membership_list_query,
 )
 from app.database.session import DatabaseSessionManager
+from app.schemas.management_filters import TenantMembershipListFilters
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -127,7 +125,18 @@ class TenantMembershipPersistence(BasePersistence):
                 return dict(row)
         except (ValueError, RuntimeError):
             raise
-        except Exception:
+        except Exception as exc:
+            self.raise_for_foreign_key_violation(
+                exc,
+                {
+                    "tenant_memberships_tenant_id_fkey": ("Tenant", str(tenant_id)),
+                    "tenant_memberships_user_id_fkey": ("User", str(user_id)),
+                    "tenant_memberships_created_by_user_id_fkey": (
+                        "User",
+                        str(created_by_user_id),
+                    ),
+                },
+            )
             logger.error(
                 "TenantMembershipPersistence: create_membership failed — tenant=%s user=%s",
                 tenant_id,
@@ -177,31 +186,20 @@ class TenantMembershipPersistence(BasePersistence):
     async def list_tenant_memberships(
         self,
         tenant_id: UUID,
-        tenant_role_filter: str | None = None,
-        active_only: bool = False,
+        filters: TenantMembershipListFilters,
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Return memberships for a tenant, with optional role and status filters."""
         self.validate_uuid(tenant_id, "tenant_id")
         self.validate_pagination_parameters(limit, offset)
-        if tenant_role_filter:
-            self.validate_enum_value(tenant_role_filter, _VALID_TENANT_ROLES, "tenant_role_filter")
-
-        if tenant_role_filter:
-            sql = LIST_MEMBERSHIPS_BY_TENANT_AND_ROLE_SQL
-            params: dict[str, Any] = {
-                "tenant_id": str(tenant_id),
-                "tenant_role": tenant_role_filter,
-                "limit": limit,
-                "offset": offset,
-            }
-        elif active_only:
-            sql = LIST_ACTIVE_MEMBERSHIPS_BY_TENANT_SQL
-            params = {"tenant_id": str(tenant_id), "limit": limit, "offset": offset}
-        else:
-            sql = LIST_MEMBERSHIPS_BY_TENANT_SQL
-            params = {"tenant_id": str(tenant_id), "limit": limit, "offset": offset}
+        if filters.tenant_role_filter:
+            self.validate_enum_value(
+                filters.tenant_role_filter,
+                _VALID_TENANT_ROLES,
+                "tenant_role_filter",
+            )
+        sql, params = build_tenant_membership_list_query(str(tenant_id), filters, limit, offset)
 
         try:
             async with self.get_session() as session:
@@ -236,17 +234,23 @@ class TenantMembershipPersistence(BasePersistence):
             )
             raise
 
-    async def count_tenant_members(self, tenant_id: UUID, active_only: bool = False) -> int:
+    async def count_tenant_members(
+        self,
+        tenant_id: UUID,
+        filters: TenantMembershipListFilters,
+    ) -> int:
         """Return member count for a tenant."""
         self.validate_uuid(tenant_id, "tenant_id")
-        sql = (
-            COUNT_ACTIVE_MEMBERSHIPS_BY_TENANT_SQL
-            if active_only
-            else COUNT_MEMBERSHIPS_BY_TENANT_SQL
-        )
+        if filters.tenant_role_filter:
+            self.validate_enum_value(
+                filters.tenant_role_filter,
+                _VALID_TENANT_ROLES,
+                "tenant_role_filter",
+            )
+        sql, params = build_tenant_membership_count_query(str(tenant_id), filters)
         try:
             async with self.get_session() as session:
-                result = await session.execute(text(sql), {"tenant_id": str(tenant_id)})
+                result = await session.execute(text(sql), params)
                 return result.scalar_one_or_none() or 0
         except Exception:
             logger.error("TenantMembershipPersistence: count_tenant_members failed", exc_info=True)

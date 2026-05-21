@@ -23,6 +23,7 @@ from app.database.queries.provider_catalog_queries import (
     CHECK_PROVIDER_EXISTS_BY_ID_SQL,
     CHECK_PROVIDER_EXISTS_BY_NAME_SQL,
     COUNT_ACTIVE_PROVIDERS_SQL,
+    COUNT_ALL_PROVIDERS_SQL,
     CREATE_PROVIDER_SQL,
     DELETE_PROVIDER_BY_ID_SQL,
     GET_PROVIDER_BY_ID_SQL,
@@ -228,6 +229,16 @@ class ProviderCatalogPersistence(BasePersistence):
                 return result.scalar_one_or_none() or 0
         except Exception:
             logger.error("ProviderCatalogPersistence: count_active_providers failed", exc_info=True)
+            raise
+
+    async def count_all_providers(self) -> int:
+        """Return the count of all providers including inactive ones."""
+        try:
+            async with self.get_session() as session:
+                result = await session.execute(text(COUNT_ALL_PROVIDERS_SQL))
+                return result.scalar_one_or_none() or 0
+        except Exception:
+            logger.error("ProviderCatalogPersistence: count_all_providers failed", exc_info=True)
             raise
 
     # =========================================================================

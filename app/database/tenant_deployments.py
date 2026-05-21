@@ -33,20 +33,19 @@ from app.database.base import BasePersistence
 from app.database.queries.tenant_deployment_queries import (
     CHECK_DEFAULT_DEPLOYMENT_EXISTS_SQL,
     CHECK_DEPLOYMENT_KEY_EXISTS_SQL,
-    COUNT_ACTIVE_DEPLOYMENTS_BY_TENANT_SQL,
-    COUNT_DEPLOYMENTS_BY_TENANT_SQL,
     CREATE_DEPLOYMENT_SQL,
     DELETE_DEPLOYMENT_BY_ID_SQL,
+    DEPLOYMENT_SAFE_COLUMNS,
     GET_DEFAULT_DEPLOYMENT_SQL,
     GET_DEPLOYMENT_BY_ID_SQL,
     GET_DEPLOYMENT_BY_KEY_SQL,
     GET_DEPLOYMENT_SECRET_REFERENCE_SQL,
     LIST_ACTIVE_DEPLOYMENTS_BY_PROVIDER_AND_MODEL_SQL,
-    LIST_ACTIVE_DEPLOYMENTS_BY_TENANT_SQL,
-    LIST_DEPLOYMENTS_BY_PROVIDER_SQL,
-    LIST_DEPLOYMENTS_BY_TENANT_SQL,
+    build_tenant_deployment_count_query,
+    build_tenant_deployment_list_query,
 )
 from app.database.session import DatabaseSessionManager
+from app.schemas.management_filters import TenantDeploymentListFilters
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -243,7 +242,19 @@ class TenantDeploymentPersistence(BasePersistence):
                 return dict(row)
         except (ValueError, RuntimeError):
             raise
-        except Exception:
+        except Exception as exc:
+            self.raise_for_foreign_key_violation(
+                exc,
+                {
+                    "tenant_deployments_tenant_id_fkey": ("Tenant", str(tenant_id)),
+                    "tenant_deployments_provider_id_fkey": ("Provider", str(provider_id)),
+                    "tenant_deployments_model_id_fkey": ("Model", str(model_id)),
+                    "tenant_deployments_created_by_user_id_fkey": (
+                        "User",
+                        str(created_by_user_id),
+                    ),
+                },
+            )
             logger.error(
                 "TenantDeploymentPersistence: create_deployment failed — key=%s tenant=%s",
                 deployment_key,
@@ -342,30 +353,22 @@ class TenantDeploymentPersistence(BasePersistence):
     async def list_deployments(
         self,
         tenant_id: UUID,
-        provider_id: UUID | None = None,
-        active_only: bool = False,
+        filters: TenantDeploymentListFilters,
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Return deployments for a tenant, with optional provider and status filters."""
         self.validate_uuid(tenant_id, "tenant_id")
         self.validate_pagination_parameters(limit, offset)
-
-        if provider_id is not None:
-            self.validate_uuid(provider_id, "provider_id")
-            sql = LIST_DEPLOYMENTS_BY_PROVIDER_SQL
-            params: dict[str, Any] = {
-                "tenant_id": str(tenant_id),
-                "provider_id": str(provider_id),
-                "limit": limit,
-                "offset": offset,
-            }
-        elif active_only:
-            sql = LIST_ACTIVE_DEPLOYMENTS_BY_TENANT_SQL
-            params = {"tenant_id": str(tenant_id), "limit": limit, "offset": offset}
-        else:
-            sql = LIST_DEPLOYMENTS_BY_TENANT_SQL
-            params = {"tenant_id": str(tenant_id), "limit": limit, "offset": offset}
+        if filters.provider_id is not None:
+            self.validate_uuid(filters.provider_id, "provider_id")
+        sql, params = build_tenant_deployment_list_query(
+            str(tenant_id),
+            filters,
+            DEPLOYMENT_SAFE_COLUMNS,
+            limit,
+            offset,
+        )
 
         try:
             async with self.get_session() as session:
@@ -411,17 +414,19 @@ class TenantDeploymentPersistence(BasePersistence):
             )
             raise
 
-    async def count_deployments(self, tenant_id: UUID, active_only: bool = False) -> int:
+    async def count_deployments(
+        self,
+        tenant_id: UUID,
+        filters: TenantDeploymentListFilters,
+    ) -> int:
         """Return deployment count for a tenant."""
         self.validate_uuid(tenant_id, "tenant_id")
-        sql = (
-            COUNT_ACTIVE_DEPLOYMENTS_BY_TENANT_SQL
-            if active_only
-            else COUNT_DEPLOYMENTS_BY_TENANT_SQL
-        )
+        if filters.provider_id is not None:
+            self.validate_uuid(filters.provider_id, "provider_id")
+        sql, params = build_tenant_deployment_count_query(str(tenant_id), filters)
         try:
             async with self.get_session() as session:
-                result = await session.execute(text(sql), {"tenant_id": str(tenant_id)})
+                result = await session.execute(text(sql), params)
                 return result.scalar_one_or_none() or 0
         except Exception:
             logger.error("TenantDeploymentPersistence: count_deployments failed", exc_info=True)
