@@ -10,6 +10,7 @@ Package Structure
     ├── requests_schema.py       ← ChatRequest, EmbedRequest, RerankRequest, ChatMessage
     ├── responses_schema.py      ← ChatResponse, ChatStreamChunk, EmbedResponse,
     │                        RerankResponse, RerankResult, HealthStatus, Usage
+    ├── management_schema.py     ← CRUD request/response contracts
     └── enums.py          ← ProviderType, OperationType, AuthMode
 
 Usage
@@ -19,6 +20,24 @@ Usage
 """
 
 from app.schemas.enums import AuthMode, OperationType, ProviderType
+from app.schemas.management_schema import (
+    DeploymentCreateRequest,
+    DeploymentUpdateRequest,
+    EntitlementCreateRequest,
+    EntitlementUpdateRequest,
+    MembershipCreateRequest,
+    MembershipUpdateRequest,
+    ModelCreateRequest,
+    ModelUpdateRequest,
+    PaginatedResponse,
+    ProviderCreateRequest,
+    ProviderUpdateRequest,
+    ResourceResponse,
+    TenantCreateRequest,
+    TenantUpdateRequest,
+    UserCreateRequest,
+    UserUpdateRequest,
+)
 from app.schemas.requests_schema import ChatMessage, ChatRequest, EmbedRequest, RerankRequest
 from app.schemas.responses_schema import (
     ChatResponse,
@@ -32,6 +51,22 @@ from app.schemas.responses_schema import (
 __all__ = [
     # ── Enums ──
     "AuthMode",
+    "DeploymentCreateRequest",
+    "DeploymentUpdateRequest",
+    "EntitlementCreateRequest",
+    "EntitlementUpdateRequest",
+    "MembershipCreateRequest",
+    "MembershipUpdateRequest",
+    "ModelCreateRequest",
+    "ModelUpdateRequest",
+    "PaginatedResponse",
+    "ProviderCreateRequest",
+    "ProviderUpdateRequest",
+    "ResourceResponse",
+    "TenantCreateRequest",
+    "TenantUpdateRequest",
+    "UserCreateRequest",
+    "UserUpdateRequest",
     # ── Requests ──
     "ChatMessage",
     "ChatRequest",

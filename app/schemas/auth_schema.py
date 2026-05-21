@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Canonical set of roles in ascending privilege order.
 # Higher roles inherit all permissions of lower roles.
 UserRole = Literal["developer", "operator", "admin", "owner"]
+TenantRole = Literal["owner", "admin", "operator", "developer", "viewer"]
 
 
 class AuthTokenPayload(BaseModel):
@@ -34,6 +35,25 @@ class AuthTokenPayload(BaseModel):
     )
     expires_at: datetime = Field(description="UTC datetime at which the token expires.")
     issued_at: datetime = Field(description="UTC datetime at which the token was issued.")
+
+
+class InferenceAccessContext(BaseModel):
+    """Authorized tenant context for one inference route.
+
+    Contains only routing authorization metadata. It intentionally excludes
+    secret references and plaintext credentials so it is safe to cache.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    tenant_id: UUID = Field(description="Tenant the caller is authorized to invoke under.")
+    user_id: UUID = Field(description="Authenticated user receiving inference access.")
+    deployment_key: str = Field(description="Tenant-scoped deployment route key.")
+    deployment_id: UUID = Field(description="Resolved tenant deployment identifier.")
+    provider_id: UUID = Field(description="Provider catalog identifier from the deployment.")
+    model_id: UUID = Field(description="Model catalog identifier from the deployment.")
+    tenant_role: TenantRole = Field(description="Caller role inside the tenant.")
+    entitlement_id: UUID = Field(description="Active entitlement granting this route.")
 
 
 class AuthTokenResponse(BaseModel):
