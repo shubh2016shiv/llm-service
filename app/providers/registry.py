@@ -36,13 +36,13 @@ if TYPE_CHECKING:
     from app.core.secret_store import SecretStore
     from app.core.settings.loader import ConfigLoader
     from app.core.settings.models.tenant_config import DeploymentConfig
-    from app.infrastructure.cache import RedisCache
+    from app.infrastructure.redis_cache import RedisCache
     from app.infrastructure.http_client_factory import HTTPClientFactory
     from app.providers.base_provider import BaseProvider
 
 from pydantic import SecretStr
 
-from app.infrastructure.circuit_breaker import get_provider_circuit_breaker
+from app.infrastructure.provider_circuit_breaker import get_provider_circuit_breaker
 
 
 class ProviderRegistry:

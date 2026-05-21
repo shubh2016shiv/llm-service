@@ -8,7 +8,7 @@ Table: users
   first_name      TEXT NOT NULL
   last_name       TEXT NOT NULL
   password_hash   TEXT NOT NULL
-  platform_role   TEXT NOT NULL  -- 'owner' | 'admin' | 'operator' | 'user'
+  platform_role   TEXT NOT NULL  -- 'owner' | 'admin' | 'operator' | 'developer'
   status          TEXT NOT NULL  -- 'active' | 'suspended' | 'inactive' | 'deleted'
   created_at      TIMESTAMPTZ
   updated_at      TIMESTAMPTZ

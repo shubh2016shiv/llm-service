@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS users (
     -- This is platform-wide access, not tenant membership. Tenant roles are
     -- stored separately so one user can have different responsibilities in
     -- different tenants.
-    platform_role TEXT NOT NULL DEFAULT 'user'
-        CHECK (platform_role IN ('owner', 'admin', 'operator', 'user')),
+    platform_role TEXT NOT NULL DEFAULT 'developer'
+        CHECK (platform_role IN ('owner', 'admin', 'operator', 'developer')),
     status TEXT NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'suspended', 'inactive', 'deleted')),
 

@@ -4,7 +4,7 @@ UserPersistence
 PostgreSQL CRUD for the `users` table.
 
 Schema column of note:
-  platform_role — stores the platform-wide role ('owner' | 'admin' | 'operator' | 'user').
+  platform_role — stores the platform-wide role ('owner' | 'admin' | 'operator' | 'developer').
   This is distinct from tenant_role which lives in tenant_memberships.
 
 password_hash is never returned by any read method. It is accepted only by
@@ -53,7 +53,7 @@ class UserPersistence(BasePersistence):
     """
 
     # Valid values match the CHECK constraint in create_users.sql
-    VALID_PLATFORM_ROLES: ClassVar[list[str]] = ["owner", "admin", "operator", "user"]
+    VALID_PLATFORM_ROLES: ClassVar[list[str]] = ["owner", "admin", "operator", "developer"]
     VALID_USER_STATUSES: ClassVar[list[str]] = ["active", "suspended", "inactive", "deleted"]
 
     def __init__(self, database_manager: DatabaseSessionManager | None = None) -> None:
@@ -148,7 +148,7 @@ class UserPersistence(BasePersistence):
         first_name: str,
         last_name: str,
         password_hash: str,
-        platform_role: str = "user",
+        platform_role: str = "developer",
         status: str = "active",
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
@@ -162,7 +162,7 @@ class UserPersistence(BasePersistence):
             first_name: Given name.
             last_name: Family name.
             password_hash: bcrypt hash of the plaintext password (never stored raw).
-            platform_role: Platform-wide role. Defaults to 'user'.
+            platform_role: Platform-wide role. Defaults to 'developer'.
             status: Account lifecycle status. Defaults to 'active'.
             created_at: Override creation timestamp (defaults to UTC now).
             updated_at: Override update timestamp (defaults to UTC now).
@@ -371,6 +371,44 @@ class UserPersistence(BasePersistence):
             logger.error(
                 "UserPersistence: count_users_by_role failed — role=%s",
                 platform_role,
+                exc_info=True,
+            )
+            raise
+
+    async def count_users_filtered(
+        self,
+        platform_role_filter: str | None = None,
+        status_filter: str | None = None,
+    ) -> int:
+        """Return the count of users matching any combination of filters.
+
+        Mirrors the WHERE clause of get_all_users so that list and count
+        always agree on the same predicate.
+        """
+        if platform_role_filter:
+            self.validate_platform_role(platform_role_filter)
+        if status_filter:
+            self.validate_user_status(status_filter)
+
+        sql = "SELECT COUNT(*) FROM users WHERE 1=1"
+        params: dict[str, Any] = {}
+
+        if platform_role_filter:
+            sql += " AND platform_role = :platform_role"
+            params["platform_role"] = platform_role_filter
+        if status_filter:
+            sql += " AND status = :status"
+            params["status"] = status_filter
+
+        try:
+            async with self.get_session() as session:
+                result = await session.execute(text(sql), params)
+                return result.scalar_one_or_none() or 0
+        except Exception:
+            logger.error(
+                "UserPersistence: count_users_filtered failed — role=%s status=%s",
+                platform_role_filter,
+                status_filter,
                 exc_info=True,
             )
             raise

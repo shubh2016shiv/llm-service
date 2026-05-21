@@ -30,7 +30,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 JsonObject = dict[str, object]
-PlatformRole = Literal["owner", "admin", "operator", "user"]
+PlatformRole = Literal["owner", "admin", "operator", "developer"]
 TenantRole = Literal["owner", "admin", "operator", "developer", "viewer"]
 LifecycleStatus = Literal["active", "inactive", "suspended", "deleted"]
 
@@ -153,7 +153,7 @@ class UserCreateRequest(BaseModel):
     first_name: str = Field(min_length=1)
     last_name: str = Field(min_length=1)
     password: str = Field(min_length=12, description="Plaintext password, hashed in service.")
-    platform_role: PlatformRole = Field(default="user")
+    platform_role: PlatformRole = Field(default="developer")
     status: LifecycleStatus = Field(default="active")
 
 

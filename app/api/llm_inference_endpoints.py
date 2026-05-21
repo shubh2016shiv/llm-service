@@ -13,8 +13,9 @@ All routes require:
 The deployment key determines which provider, model, and credentials are used.
 Callers never specify those directly — the resolver handles that.
 
-NOTE: All routes require authentication via the require_developer guard.
-Unauthenticated requests receive HTTP 401.
+NOTE: All routes require authentication plus tenant-specific inference
+authorization via the require_inference_access dependency. Unauthenticated
+requests receive HTTP 401; unauthorized tenant/deployment access receives HTTP 403.
 
 Dependency wiring:
     main.py must create one InferenceService during startup and store it on
@@ -29,10 +30,10 @@ import json
 import logging
 from typing import TYPE_CHECKING, Annotated, Any, NoReturn
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
-from app.auth import require_developer
+from app.api.dependencies import require_inference_access
 from app.core.exceptions import (
     AuthenticationError,
     ConcurrentRequestLimitError,
@@ -49,18 +50,64 @@ from app.core.exceptions import (
 )
 from app.execution.inference_service import InferenceService
 from app.routing.exceptions import OperationNotSupportedError, ProviderNotAllowedError
-from app.schemas.auth_schema import AuthTokenPayload
+from app.schemas.auth_schema import InferenceAccessContext
 from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
-from app.schemas.responses_schema import ChatResponse, EmbedResponse, RerankResponse
+from app.schemas.responses_schema import (
+    ChatResponse,
+    ChatStreamChunk,
+    EmbedResponse,
+    RerankResponse,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from app.schemas.responses_schema import ChatStreamChunk
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/llm", tags=["LLM Inference"])
+
+# ---------------------------------------------------------------------------
+# OpenAPI contract for the dual-mode /chat endpoint
+#
+# POST /chat has two distinct response shapes depending on the `stream` flag
+# in the request body:
+#
+#   stream=false (default) → application/json       → ChatResponse
+#   stream=true            → text/event-stream (SSE) → stream of ChatStreamChunk
+#
+# FastAPI auto-generates the application/json entry from response_model=ChatResponse.
+# The SSE entry must be declared manually via the `responses` parameter because
+# FastAPI has no built-in concept of server-sent event streams.
+#
+# The SSE wire format (RFC 8895):
+#   data: <JSON-encoded ChatStreamChunk, raw_chunk excluded>\n\n
+#   ...
+#   data: [DONE]\n\n                       ← terminal sentinel, always present
+#   data: {"error": {"code": "...", "message": "..."}}\n\n  ← only on error
+# ---------------------------------------------------------------------------
+
+_CHAT_STREAM_CHUNK_SCHEMA: dict[str, object] = ChatStreamChunk.model_json_schema()
+
+_CHAT_SSE_RESPONSE_CONTENT: dict[str, object] = {
+    "schema": {
+        "type": "string",
+        "description": (
+            "Server-sent event stream (RFC 8895). "
+            "Each event is a `data:` line containing a JSON-encoded `ChatStreamChunk` "
+            "(all fields except `raw_chunk`), followed by a blank line. "
+            "The stream always terminates with `data: [DONE]`. "
+            "On a mid-stream provider error a single error event is emitted before [DONE]: "
+            '`data: {"error": {"code": "<ERROR_CODE>", "message": "<detail>"}}`.'
+        ),
+    },
+    "example": (
+        'data: {"content": "The", "finish_reason": null, "index": 0}\n\n'
+        'data: {"content": " answer", "finish_reason": null, "index": 0}\n\n'
+        'data: {"content": " is 42.", "finish_reason": null, "index": 0}\n\n'
+        'data: {"content": "", "finish_reason": "stop", "index": 0}\n\n'
+        "data: [DONE]\n\n"
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -167,22 +214,39 @@ async def _sse_stream(chunks: AsyncIterator[ChatStreamChunk]) -> AsyncIterator[s
     status_code=status.HTTP_200_OK,
     summary="Chat completion",
     description=(
-        "Submit a conversation and receive a completion from the resolved deployment. "
-        "Set stream=true to receive a server-sent event stream rather than a JSON body."
+        "Submit a conversation and receive a completion from the resolved deployment.\n\n"
+        "**JSON mode** (`stream=false`, default): "
+        "Returns a single `ChatResponse` object as `application/json`.\n\n"
+        "**Stream mode** (`stream=true`): "
+        "Returns a `text/event-stream` (SSE) response. "
+        "Each `data:` line carries a JSON-encoded `ChatStreamChunk` (all fields except `raw_chunk`). "
+        "The stream always ends with `data: [DONE]`. "
+        "On a provider error a single error event is emitted before [DONE]."
     ),
+    responses={
+        200: {
+            "description": (
+                "Chat completion — response shape depends on the `stream` field in the request body.\n\n"
+                "- `stream=false` → `application/json` body containing a `ChatResponse` object.\n"
+                "- `stream=true`  → `text/event-stream` body; each `data:` line is a "
+                "JSON-encoded `ChatStreamChunk`; stream ends with `data: [DONE]`."
+            ),
+            "content": {
+                "text/event-stream": _CHAT_SSE_RESPONSE_CONTENT,
+            },
+        },
+    },
 )
 async def chat_completion(
     body: ChatRequest,
-    x_tenant_id: Annotated[str, Header()],
-    x_deployment_key: Annotated[str, Header()],
     inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
-    current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
+    inference_context: Annotated[InferenceAccessContext, Depends(require_inference_access)],
 ) -> ChatResponse | StreamingResponse:
     try:
         if body.stream:
             chunks = inference_service.execute_stream_chat(
-                tenant_id=x_tenant_id,
-                deployment_key=x_deployment_key,
+                tenant_id=inference_context.tenant_id,
+                deployment_key=inference_context.deployment_key,
                 request=body,
             )
             return StreamingResponse(
@@ -192,16 +256,16 @@ async def chat_completion(
             )
 
         return await inference_service.execute_chat(
-            tenant_id=x_tenant_id,
-            deployment_key=x_deployment_key,
+            tenant_id=inference_context.tenant_id,
+            deployment_key=inference_context.deployment_key,
             request=body,
         )
 
     except LLMServiceError as exc:
         logger.warning(
             "Chat request failed | tenant=%s deployment=%s error_code=%s",
-            x_tenant_id,
-            x_deployment_key,
+            inference_context.tenant_id,
+            inference_context.deployment_key,
             exc.error_code,
         )
         _raise_http(exc)
@@ -216,22 +280,20 @@ async def chat_completion(
 )
 async def embed(
     body: EmbedRequest,
-    x_tenant_id: Annotated[str, Header()],
-    x_deployment_key: Annotated[str, Header()],
     inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
-    current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
+    inference_context: Annotated[InferenceAccessContext, Depends(require_inference_access)],
 ) -> EmbedResponse:
     try:
         return await inference_service.execute_embed(
-            tenant_id=x_tenant_id,
-            deployment_key=x_deployment_key,
+            tenant_id=inference_context.tenant_id,
+            deployment_key=inference_context.deployment_key,
             request=body,
         )
     except LLMServiceError as exc:
         logger.warning(
             "Embed request failed | tenant=%s deployment=%s error_code=%s",
-            x_tenant_id,
-            x_deployment_key,
+            inference_context.tenant_id,
+            inference_context.deployment_key,
             exc.error_code,
         )
         _raise_http(exc)
@@ -250,22 +312,20 @@ async def embed(
 )
 async def rerank(
     body: RerankRequest,
-    x_tenant_id: Annotated[str, Header()],
-    x_deployment_key: Annotated[str, Header()],
     inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
-    current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
+    inference_context: Annotated[InferenceAccessContext, Depends(require_inference_access)],
 ) -> RerankResponse:
     try:
         return await inference_service.execute_rerank(
-            tenant_id=x_tenant_id,
-            deployment_key=x_deployment_key,
+            tenant_id=inference_context.tenant_id,
+            deployment_key=inference_context.deployment_key,
             request=body,
         )
     except LLMServiceError as exc:
         logger.warning(
             "Rerank request failed | tenant=%s deployment=%s error_code=%s",
-            x_tenant_id,
-            x_deployment_key,
+            inference_context.tenant_id,
+            inference_context.deployment_key,
             exc.error_code,
         )
         _raise_http(exc)

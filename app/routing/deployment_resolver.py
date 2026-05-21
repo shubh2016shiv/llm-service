@@ -32,7 +32,7 @@ from app.core.settings.models.tenant_config import DeploymentConfig
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from app.infrastructure.cache import RedisCache
+    from app.infrastructure.redis_cache import RedisCache
 
 
 class DeploymentNotFoundError(LLMServiceError):
