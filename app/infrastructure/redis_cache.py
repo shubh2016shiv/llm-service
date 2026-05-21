@@ -1,5 +1,5 @@
 """
-app/infrastructure/cache.py — Async Redis cache wrapper.
+app/infrastructure/redis_cache.py — Async Redis cache wrapper.
 
 Architecture
 ------------
@@ -117,8 +117,8 @@ class RedisCache:
             logger.debug("Redis GET failed for key=%s", key, exc_info=True)
             return None
 
-    async def set(self, key: str, value: bytes, ttl_seconds: int = 300) -> bool:
-        """Set a key with TTL. Returns True on success, False if Redis is down."""
+    async def set(self, key: str, value: bytes, ttl_seconds: int | None = 300) -> bool:
+        """Set a key with an optional TTL. Returns True on success, False if Redis is down."""
         if not self._connected or self._redis is None:
             return False
         try:

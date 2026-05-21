@@ -14,19 +14,19 @@ Architecture:
                     │ get_provider_circuit_breaker(name)
                     ▼
     ┌─────────────────────────────────┐
-    │  circuit_breaker.py             │
+    │  provider_circuit_breaker.py             │
     │  _registry (local cache)        │
     └───────────────┬─────────────────┘
                     │ CircuitRedisStorage
                     ▼
     ┌─────────────────────────────────┐
     │  RedisCache                     │
-    │  (app/infrastructure/cache.py)  │
+    │  (app/infrastructure/redis_cache.py)  │
     └─────────────────────────────────┘
 
 Dependencies:
     - aiobreaker: circuit breaker implementation
-    - app/infrastructure/cache.py: Redis client
+    - app/infrastructure/redis_cache.py: Redis client
 
 Author: Engineering Team
 Last Updated: 2026-05-16
@@ -47,7 +47,7 @@ from aiobreaker.storage.redis import CircuitRedisStorage
 if TYPE_CHECKING:
     from aiobreaker.storage.base import CircuitBreakerStorage
 
-    from app.infrastructure.cache import RedisCache
+    from app.infrastructure.redis_cache import RedisCache
 
 logger = logging.getLogger(__name__)
 

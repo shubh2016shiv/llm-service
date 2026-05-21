@@ -8,8 +8,8 @@ Package Structure
 -----------------
     infrastructure/
     ├── http_client_factory.py   ← HTTPClientFactory (pooled httpx + aioboto3)
-    ├── cache.py                 ← RedisCache (async Redis with pub/sub)
-    └── circuit_breaker.py       ← Provider circuit breakers backed by Redis
+    ├── redis_cache.py                 ← RedisCache (async Redis with pub/sub)
+    └── provider_circuit_breaker.py       ← Provider circuit breakers backed by Redis
 
 Usage
 -----
@@ -22,7 +22,7 @@ Configuration Loading
         from app.core.settings import ConfigLoader
 """
 
-from app.infrastructure.cache import RedisCache
+from app.infrastructure.redis_cache import RedisCache
 from app.infrastructure.http_client_factory import HTTPClientFactory
 
 __all__ = [
