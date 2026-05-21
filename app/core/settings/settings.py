@@ -110,6 +110,12 @@ class ApplicationSettings(BaseSettings):
         ge=1,
         description="Maximum Redis connection pool size.",
     )
+    inference_authorization_cache_ttl_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=300,
+        description="TTL for successful inference authorization cache entries.",
+    )
 
     # ── Encryption ────────────────────────────────────────────────────────
     # WHY: We derive per-tenant keys via HKDF(master_key + tenant_id) so that

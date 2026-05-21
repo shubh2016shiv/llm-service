@@ -529,6 +529,87 @@ class DeploymentInactiveError(DeploymentError):
         self.status = status
 
 
+# ── Management API Errors ─────────────────────────────────────────────────────
+
+
+class ManagementError(LLMServiceError):
+    """Base for CRUD and tenant-access failures in the management API."""
+
+    error_code: str = "MANAGEMENT_ERROR"
+
+
+class ResourceNotFoundError(ManagementError):
+    """Raised when a requested management resource does not exist."""
+
+    error_code: str = "RESOURCE_NOT_FOUND"
+
+    def __init__(self, resource_name: str, resource_id: str) -> None:
+        """Initialise with the missing resource name and identifier."""
+        super().__init__(
+            f"{resource_name} not found: {resource_id!r}.",
+            details={"resource_name": resource_name, "resource_id": resource_id},
+        )
+        self.resource_name = resource_name
+        self.resource_id = resource_id
+
+
+class ResourceConflictError(ManagementError):
+    """Raised when a create/update violates an existing resource invariant."""
+
+    error_code: str = "RESOURCE_CONFLICT"
+
+    def __init__(self, message: str) -> None:
+        """Initialise with a conflict message containing the offending value."""
+        super().__init__(message)
+
+
+class ManagementValidationError(ManagementError):
+    """Raised when management input fails domain-level validation."""
+
+    error_code: str = "MANAGEMENT_VALIDATION_ERROR"
+
+    def __init__(self, message: str) -> None:
+        """Initialise with a validation message containing the offending value."""
+        super().__init__(message)
+
+
+class TenantAccessDeniedError(ManagementError):
+    """Raised when the caller lacks the required tenant-scoped authority."""
+
+    error_code: str = "TENANT_ACCESS_DENIED"
+
+    def __init__(self, user_id: str, tenant_id: str, required_role: str) -> None:
+        """Initialise with caller, tenant, and required role context."""
+        super().__init__(
+            f"User {user_id!r} lacks {required_role!r} access for tenant {tenant_id!r}.",
+            details={
+                "user_id": user_id,
+                "tenant_id": tenant_id,
+                "required_role": required_role,
+            },
+        )
+        self.user_id = user_id
+        self.tenant_id = tenant_id
+        self.required_role = required_role
+
+
+class InvalidStateTransitionError(ManagementError):
+    """Raised when a lifecycle endpoint cannot apply the requested transition."""
+
+    error_code: str = "INVALID_STATE_TRANSITION"
+
+    def __init__(self, resource_name: str, current_status: str, target_status: str) -> None:
+        """Initialise with lifecycle transition details."""
+        super().__init__(
+            f"Cannot move {resource_name!r} from {current_status!r} to {target_status!r}.",
+            details={
+                "resource_name": resource_name,
+                "current_status": current_status,
+                "target_status": target_status,
+            },
+        )
+
+
 # ── Config Errors ─────────────────────────────────────────────────────────────
 
 
