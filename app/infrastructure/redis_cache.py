@@ -1,26 +1,25 @@
 """
-app/infrastructure/redis_cache.py — Async Redis cache wrapper.
+Redis Cache Adapter
+===================
 
-Architecture
-------------
-    ┌──────────────────────────────┐
-    │         RedisCache           │
-    │                              │
-    │  + get(key) → bytes | None   │
-    │  + set(key, value, ttl)      │
-    │  + delete(key)               │
-    │  + publish(channel, msg)     │
-    │  + subscribe(channel) → ...  │
-    │  + health_check() → bool     │
-    └──────────────────────────────┘
+Async Redis wrapper for key/value caching and pub/sub notifications.
 
-Design (per implementation_plan.md §10)
----------------------------------------
-- Async via ``redis.asyncio`` (redis-py ≥ 5.0).
-- Config change propagation: ProviderRegistry subscribes to ``config:changes``
-  to invalidate cached provider instances.
-- Graceful fallback: if Redis is unreachable, cache operations are no-ops and
-  health_check returns False. The service remains operational (just slower).
+Why this module exists:
+    Infrastructure and authorization paths need a simple, resilient cache API.
+    Wrapping Redis access behind this class keeps callers independent of Redis
+    client details and allows graceful behavior when Redis is unavailable.
+
+Step-by-step usage flow:
+    1. Startup calls ``connect()`` once.
+    2. Callers use ``get``/``set``/``delete`` for cache operations.
+    3. Config or invalidation events use ``publish``/``subscribe``.
+    4. Shutdown calls ``disconnect()``.
+
+Degradation model:
+    If Redis is down, operations return safe fallback values instead of raising
+    hard failures. The service keeps running, but with reduced performance.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -37,47 +36,52 @@ logger = logging.getLogger(__name__)
 
 
 class RedisCache:
-    """Async Redis cache wrapper with pub/sub support.
+    """Redis adapter with async key/value and pub/sub helpers.
 
-    Used for:
-    - Caching serialized DeploymentConfig / TenantConfig (reduces DB load).
-    - Publishing config-change events → ProviderRegistry invalidates singletons.
-    - General-purpose key/value caching with TTL.
+    What this abstracts:
+        - Connection lifecycle management.
+        - Safe cache operations with predictable fallback behavior.
+        - Pub/sub message loops for distributed invalidation.
 
-    Graceful degradation: if Redis is unreachable at startup, all methods
-    become safe no-ops. Call ``health_check()`` to verify connectivity.
+    Example:
+        >>> cache = RedisCache("redis://localhost:6379/0")
+        >>> await cache.connect()
+        >>> await cache.set("demo:key", b"value", ttl_seconds=60)
+        True
+        >>> await cache.get("demo:key")
+        b'value'
     """
 
-    # Channel for config-change events.
     CONFIG_CHANGES_CHANNEL = "config:changes"
 
     def __init__(self, redis_url: str = "redis://localhost:6379") -> None:
+        """Store Redis connection URL and initialize disconnected state."""
         self._redis_url = redis_url
-        self._redis: object | None = None  # redis.asyncio.Redis
+        self._redis: object | None = None
         self._connected = False
         logger.info("RedisCache configured: url=%s", redis_url)
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     async def connect(self) -> None:
-        """Establish the Redis connection pool.
+        """Establish Redis connection pool if available.
 
-        Safe to call multiple times; subsequent calls are no-ops.
+        Safe to call repeatedly; additional calls become no-ops.
+
+        Rationale:
+            Idempotent connect simplifies startup flows and avoids accidental
+            duplicate initialization when components call connect defensively.
         """
         if self._connected:
             return
         try:
             import redis.asyncio as aioredis  # type: ignore[import-untyped]
         except ImportError:
-            logger.warning("redis is not installed. Cache is disabled.")
+            logger.warning("redis package is not installed. Cache is disabled.")
             return
 
         try:
             self._redis = aioredis.from_url(
                 self._redis_url,
-                decode_responses=False,  # Raw bytes for serialized Pydantic models
+                decode_responses=False,
                 socket_connect_timeout=5,
                 socket_keepalive=True,
                 health_check_interval=30,
@@ -87,8 +91,7 @@ class RedisCache:
             logger.info("RedisCache connected: %s", self._redis_url)
         except Exception:
             logger.warning(
-                "RedisCache unavailable at %s. Cache is disabled; service will "
-                "operate without caching.",
+                "Redis unavailable at %s. Cache is disabled; service continues without it.",
                 self._redis_url,
                 exc_info=True,
             )
@@ -96,19 +99,25 @@ class RedisCache:
             self._connected = False
 
     async def disconnect(self) -> None:
-        """Close the Redis connection pool gracefully."""
+        """Close Redis connection pool and mark adapter disconnected.
+
+        Always safe to call during shutdown hooks.
+        """
         if self._redis is not None:
             await self._redis.aclose()  # type: ignore[union-attr]
             self._redis = None
         self._connected = False
         logger.info("RedisCache disconnected.")
 
-    # ------------------------------------------------------------------
-    # Key / Value
-    # ------------------------------------------------------------------
-
     async def get(self, key: str) -> bytes | None:
-        """Retrieve a raw value by key. Returns None on miss or if Redis is down."""
+        """Fetch raw bytes by key.
+
+        Returns ``None`` when key is missing or Redis is unavailable.
+
+        Why ``None`` on backend errors:
+            Callers can treat cache failures as cache misses and continue with
+            source-of-truth reads instead of failing requests.
+        """
         if not self._connected or self._redis is None:
             return None
         try:
@@ -118,7 +127,15 @@ class RedisCache:
             return None
 
     async def set(self, key: str, value: bytes, ttl_seconds: int | None = 300) -> bool:
-        """Set a key with an optional TTL. Returns True on success, False if Redis is down."""
+        """Set bytes under a key with optional TTL.
+
+        Returns ``True`` on success and ``False`` when Redis is unavailable or
+        the write fails.
+
+        Rationale:
+            Write failures should degrade gracefully because cache is an
+            optimization layer, not a hard dependency for correctness.
+        """
         if not self._connected or self._redis is None:
             return False
         try:
@@ -129,7 +146,13 @@ class RedisCache:
             return False
 
     async def delete(self, key: str) -> bool:
-        """Delete a key. Returns True on success, False if Redis is down."""
+        """Delete key from Redis.
+
+        Returns ``True`` on success and ``False`` when unavailable/failing.
+
+        Deletion failures are intentionally non-fatal to keep request paths
+        resilient during temporary Redis issues.
+        """
         if not self._connected or self._redis is None:
             return False
         try:
@@ -139,15 +162,14 @@ class RedisCache:
             logger.debug("Redis DELETE failed for key=%s", key, exc_info=True)
             return False
 
-    # ------------------------------------------------------------------
-    # Pub / Sub
-    # ------------------------------------------------------------------
-
     async def publish(self, channel: str, message: str) -> bool:
-        """Publish a message to a channel.
+        """Publish message on a Redis channel.
 
-        Used to broadcast config-change events so all service replicas
-        invalidate their provider caches.
+        Common use: broadcasting configuration invalidation events across
+        service replicas.
+
+        Returns boolean so callers can log or meter missed broadcasts without
+        turning cache-layer turbulence into user-facing errors.
         """
         if not self._connected or self._redis is None:
             return False
@@ -160,15 +182,15 @@ class RedisCache:
             return False
 
     async def subscribe(self, channel: str) -> AsyncIterator[str]:
-        """Subscribe to a Redis channel and yield messages as they arrive.
+        """Subscribe to a channel and yield message payloads as UTF-8 strings.
 
-        Usage::
+        Example:
+            >>> async for message in cache.subscribe("config:changes"):
+            ...     print(message)
 
-            async for message in cache.subscribe("config:changes"):
-                registry.invalidate(...)
+        If Redis is unavailable, this yields nothing and exits cleanly.
         """
         if not self._connected or self._redis is None:
-            # Yield nothing if Redis is down — caller's loop exits immediately.
             return
 
         pubsub = None
@@ -195,12 +217,11 @@ class RedisCache:
                 with contextlib.suppress(Exception):
                     await pubsub.unsubscribe(channel)
 
-    # ------------------------------------------------------------------
-    # Health
-    # ------------------------------------------------------------------
-
     async def health_check(self) -> bool:
-        """Return True if Redis is connected and responsive."""
+        """Return ``True`` only when Redis is connected and responsive.
+
+        Intended for liveness/readiness diagnostics.
+        """
         if not self._connected or self._redis is None:
             return False
         try:

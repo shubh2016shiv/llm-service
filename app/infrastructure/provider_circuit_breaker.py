@@ -1,35 +1,27 @@
 """
-Provider Circuit Breaker
-========================
+Provider Circuit Breaker Registry
+=================================
 
-Redis-backed, per-provider aiobreaker instances shared across all
-FastAPI asynchronous workers.
+Redis-backed circuit breakers scoped per provider.
 
-Architecture:
--------------
-    ┌─────────────────────────────────┐
-    │  BaseProvider.generate()        │
-    │  (app/providers/base.py)        │
-    └───────────────┬─────────────────┘
-                    │ get_provider_circuit_breaker(name)
-                    ▼
-    ┌─────────────────────────────────┐
-    │  provider_circuit_breaker.py             │
-    │  _registry (local cache)        │
-    └───────────────┬─────────────────┘
-                    │ CircuitRedisStorage
-                    ▼
-    ┌─────────────────────────────────┐
-    │  RedisCache                     │
-    │  (app/infrastructure/redis_cache.py)  │
-    └─────────────────────────────────┘
+Why this module exists:
+    Circuit breakers protect the system from repeatedly calling an unhealthy
+    upstream provider. A per-provider breaker prevents one failing provider
+    from degrading traffic for all others.
 
-Dependencies:
-    - aiobreaker: circuit breaker implementation
-    - app/infrastructure/redis_cache.py: Redis client
+Step-by-step runtime flow:
+    1. Provider call path requests breaker via ``get_provider_circuit_breaker``.
+    2. Registry returns cached breaker or creates one on first use.
+    3. Breaker state is stored in Redis when available.
+    4. On Redis issues, module falls back to local in-memory OPEN state.
+    5. Listener logs state transitions for observability.
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Jargon explained:
+    - Circuit breaker OPEN: calls are blocked immediately.
+    - Circuit breaker CLOSED: calls are allowed normally.
+    - Reset timeout: cooling period before trying calls again.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -54,29 +46,36 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _ProviderBreakerConfig:
-    """Immutable per-provider circuit breaker parameters."""
+    """Immutable breaker thresholds for one provider profile.
+
+    Rationale:
+        Provider behavior differs. Regional endpoints may require stricter
+        thresholds than globally distributed endpoints.
+    """
 
     failure_threshold: int
     reset_timeout_seconds: int
 
 
 _PROVIDER_CONFIGS: dict[str, _ProviderBreakerConfig] = {
-    # Global endpoints — recover fast; tolerate up to 5 failures
     "openai": _ProviderBreakerConfig(failure_threshold=5, reset_timeout_seconds=60),
     "anthropic": _ProviderBreakerConfig(failure_threshold=5, reset_timeout_seconds=60),
-    # Regional cloud endpoints — tighter tolerance, faster failover
     "azure_openai": _ProviderBreakerConfig(failure_threshold=3, reset_timeout_seconds=30),
     "gcp_vertex": _ProviderBreakerConfig(failure_threshold=3, reset_timeout_seconds=30),
     "aws_bedrock": _ProviderBreakerConfig(failure_threshold=3, reset_timeout_seconds=45),
 }
 
 _DEFAULT_PROVIDER_CONFIG = _ProviderBreakerConfig(failure_threshold=5, reset_timeout_seconds=60)
-
 _CB_NAMESPACE_PREFIX = "cb:provider"
 
 
 class _CircuitBreakerListener(aiobreaker.CircuitBreakerListener):
-    """Listens to circuit breaker state changes and logs them structurally."""
+    """Log breaker state transitions for diagnosis and alerting.
+
+    Why it matters:
+        OPEN/HALF_OPEN/CLOSED changes are key operational signals during
+        provider incidents and help explain sudden traffic fail-fast behavior.
+    """
 
     def state_change(
         self,
@@ -95,17 +94,17 @@ class _CircuitBreakerListener(aiobreaker.CircuitBreakerListener):
 
 
 _LISTENER = _CircuitBreakerListener()
-
-# ---------------------------------------------------------------------------
-# Registry — async-safe singleton cache
-# ---------------------------------------------------------------------------
-
 _registry: dict[str, aiobreaker.CircuitBreaker] = {}
 _registry_lock = asyncio.Lock()
 
 
 def _build_provider_storage(provider_name: str, cache: RedisCache) -> CircuitBreakerStorage:
-    """Build a Redis-backed storage for a single provider's circuit breaker."""
+    """Build storage backend for a provider breaker.
+
+    Redis storage is preferred so multiple worker processes share breaker state.
+    If Redis is unavailable, an in-memory OPEN breaker is returned as a safety
+    fallback that fails fast rather than silently allowing risky traffic.
+    """
     try:
         redis_client = cache._redis
         if redis_client is None:
@@ -127,7 +126,10 @@ def _build_provider_storage(provider_name: str, cache: RedisCache) -> CircuitBre
 def _create_provider_circuit_breaker(
     provider_name: str, cache: RedisCache
 ) -> aiobreaker.CircuitBreaker:
-    """Instantiate a new circuit breaker for the given provider."""
+    """Create configured breaker for one provider namespace.
+
+    A dedicated namespace prevents state collisions across providers.
+    """
     config = _PROVIDER_CONFIGS.get(provider_name, _DEFAULT_PROVIDER_CONFIG)
     storage = _build_provider_storage(provider_name, cache)
 
@@ -152,16 +154,18 @@ def _create_provider_circuit_breaker(
 async def get_provider_circuit_breaker(
     provider_name: str, cache: RedisCache
 ) -> aiobreaker.CircuitBreaker:
-    """Return the circuit breaker for the named LLM provider.
+    """Return a singleton breaker for one provider key.
 
-    Creates and registers a new breaker on first call for a given provider;
-    returns the cached instance on every subsequent call. Async-safe.
+    The registry uses double-checked locking to avoid duplicate breaker
+    creation during concurrent first-time access.
 
     Args:
-        provider_name: Canonical provider key (e.g. "openai", "azure_openai").
+        provider_name: Canonical provider identifier such as ``openai``.
+        cache: Redis cache wrapper used for distributed breaker state.
 
-    Returns:
-        A thread-safe aiobreaker.CircuitBreaker instance.
+    Rationale:
+        Registry caching avoids repeatedly constructing breaker objects and
+        keeps provider-level state consistent within a worker process.
     """
     if provider_name in _registry:
         return _registry[provider_name]
@@ -176,7 +180,10 @@ async def get_provider_circuit_breaker(
 
 
 def get_all_provider_breaker_states() -> dict[str, str]:
-    """Return current state of every registered provider circuit breaker."""
+    """Return snapshot of all registered provider breaker states.
+
+    Useful for health endpoints, dashboards, or admin diagnostics.
+    """
     return {
         provider_name: breaker.current_state.name.upper()
         for provider_name, breaker in _registry.items()

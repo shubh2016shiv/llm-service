@@ -1,31 +1,42 @@
 """
-app/infrastructure — Infrastructure adapters for the LLM gateway.
+Infrastructure Package
+======================
 
-These adapters encapsulate external I/O concerns such as HTTP connection
-pooling and Redis caching/pub-sub.
+Adapters for external systems and runtime platform concerns.
 
-Package Structure
------------------
-    infrastructure/
-    ├── http_client_factory.py   ← HTTPClientFactory (pooled httpx + aioboto3)
-    ├── redis_cache.py                 ← RedisCache (async Redis with pub/sub)
-    └── provider_circuit_breaker.py       ← Provider circuit breakers backed by Redis
+Scope:
+    ``app.infrastructure`` contains I/O-facing building blocks such as shared
+    HTTP transport creation, Redis access, circuit-breaker state storage, and
+    secret retrieval backends. Business rules should stay in services, not here.
 
-Usage
------
-    from app.infrastructure import HTTPClientFactory, RedisCache
+Step-by-step relationship flow:
+    1. Startup wires infrastructure dependencies from settings.
+    2. Provider construction asks ``HTTPClientFactory`` for transport clients.
+    3. Authorization/config layers use ``RedisCache`` for cache/pub-sub paths.
+    4. Provider execution uses circuit breakers backed by Redis where possible.
+    5. Provider credentials are fetched via ``SecretStore`` implementations.
 
-Configuration Loading
----------------------
-    Import ConfigLoader from app.core.settings:
+Subpackages:
+    - ``provider_credentials``: secret store contracts plus concrete backends
+      (environment, AES-GCM encrypted DB, Vault KV v2).
 
-        from app.core.settings import ConfigLoader
+Author: Shubham Singh
 """
 
-from app.infrastructure.redis_cache import RedisCache
 from app.infrastructure.http_client_factory import HTTPClientFactory
+from app.infrastructure.provider_credentials import (
+    AESGCMSecretStore,
+    EnvironmentSecretStore,
+    SecretStore,
+    VaultSecretStore,
+)
+from app.infrastructure.redis_cache import RedisCache
 
 __all__ = [
+    "AESGCMSecretStore",
+    "EnvironmentSecretStore",
     "HTTPClientFactory",
     "RedisCache",
+    "SecretStore",
+    "VaultSecretStore",
 ]

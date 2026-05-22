@@ -1,24 +1,27 @@
 """
-app/infrastructure/http_client_factory.py — Shared, pooled HTTP client factory.
+HTTP Client Factory
+===================
 
-Architecture
-------------
-    ┌─────────────────────────────────┐
-    │     HTTPClientFactory            │
-    │                                 │
-    │  _pool_config: HTTPPoolConfig   │
-    │  _shared_transport: AsyncHTTP.. │
-    │                                 │
-    │  + create_client(provider_type) │
-    │    → httpx.AsyncClient           │  (rest_api)
-    │    → aioboto3.Session            │  (aws_sdk)
-    └─────────────────────────────────┘
+Shared transport/client factory for provider integrations.
 
-Design (per implementation_plan.md §8)
---------------------------------------
-- One shared httpx.AsyncHTTPTransport for all REST providers → same TCP/TLS pool.
-- Retries = 0 at the transport layer; retry logic lives in each provider via tenacity.
-- Bedrock (aws_sdk) gets its own aioboto3.Session with a separate connection pool.
+Why this module exists:
+    If every provider creates its own HTTP transport, connection reuse suffers
+    and socket usage grows quickly under load. This factory centralizes client
+    construction so REST-based providers can share one pooled transport.
+
+Step-by-step flow:
+    1. Startup creates ``HTTPClientFactory`` with ``HTTPPoolConfig``.
+    2. Factory builds one shared ``httpx.AsyncHTTPTransport``.
+    3. Provider registry requests a client per provider type.
+    4. REST providers receive ``httpx.AsyncClient`` bound to shared transport.
+    5. AWS SDK providers receive ``aioboto3.Session``.
+
+Jargon explained:
+    - Transport: low-level HTTP engine that owns connection pooling.
+    - Keep-alive pool: reusable TCP connections kept open for future requests.
+    - Provider type: integration style (REST API vs AWS SDK).
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -35,20 +38,29 @@ logger = logging.getLogger(__name__)
 
 
 class HTTPClientFactory:
-    """Creates shared, pooled HTTP clients for LLM providers.
+    """Create transport clients with predictable performance and failure behavior.
 
-    REST API providers (OpenAI, Anthropic, vLLM, Azure OpenAI) share a single
-    httpx transport for connection pooling. AWS SDK providers (Bedrock) get a
-    dedicated aioboto3 session.
+    What a new developer should know:
+        This class does not perform provider calls itself. It only constructs
+        client objects configured for efficient reuse. Centralizing this avoids
+        duplicated timeout/pool settings scattered across provider adapters.
 
-    Usage::
-
-        factory = HTTPClientFactory(pool_config)
-        openai_client = factory.create_client(ProviderType.REST_API)
-        bedrock_session = factory.create_client(ProviderType.AWS_SDK)
+    Example:
+        >>> factory = HTTPClientFactory(pool_config)
+        >>> rest_client = factory.create_client("rest_api")
+        >>> aws_session = factory.create_client("aws_sdk")
     """
 
     def __init__(self, pool_config: HTTPPoolConfig) -> None:
+        """Initialize the shared REST transport from pool configuration.
+
+        Args:
+            pool_config: Global HTTP pooling and timeout defaults.
+
+        Rationale:
+            A shared transport gives all REST providers one connection pool.
+            This reduces handshake overhead and improves throughput under load.
+        """
         self._pool_config = pool_config
         self._shared_transport = httpx.AsyncHTTPTransport(
             limits=httpx.Limits(
@@ -56,7 +68,9 @@ class HTTPClientFactory:
                 max_keepalive_connections=pool_config.max_keepalive_connections,
                 keepalive_expiry=pool_config.keepalive_expiry_seconds,
             ),
-            retries=0,  # Retry logic lives in provider layer via tenacity
+            # Retries are intentionally disabled here; provider adapters own
+            # retry policy so behavior can differ by provider/error type.
+            retries=0,
         )
         logger.info(
             "HTTP transport pool created: max_connections=%d, keepalive=%d",
@@ -64,23 +78,23 @@ class HTTPClientFactory:
             pool_config.max_keepalive_connections,
         )
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def create_client(self, provider_type: str) -> httpx.AsyncClient | object:
-        """Return a client appropriate for the provider type.
+        """Return an appropriate client/session for a provider integration style.
 
         Args:
-            provider_type: One of ``"rest_api"``, ``"aws_sdk"``, or ``"grpc"``.
+            provider_type: ``rest_api``, ``aws_sdk``, or ``grpc``.
 
         Returns:
-            - ``httpx.AsyncClient`` for ``rest_api``
-            - ``aioboto3.Session`` for ``aws_sdk``
-            - Raises ``ValueError`` for unknown types.
+            - ``httpx.AsyncClient`` for REST providers.
+            - ``aioboto3.Session`` for AWS SDK providers.
 
         Raises:
-            ValueError: If *provider_type* is not supported.
+            ValueError: If provider_type is unsupported.
+            NotImplementedError: For ``grpc`` placeholder path.
+
+        Rationale:
+            Keeping provider-type branching in one place makes it obvious which
+            transport stack each integration uses and simplifies future updates.
         """
         if provider_type == "rest_api":
             return self._create_rest_client()
@@ -90,15 +104,19 @@ class HTTPClientFactory:
             return self._create_grpc_stub()
         raise ValueError(
             f"Unsupported provider_type: {provider_type!r}. "
-            f"Expected one of: rest_api, aws_sdk, grpc."
+            "Expected one of: rest_api, aws_sdk, grpc."
         )
 
-    # ------------------------------------------------------------------
-    # Internal: REST
-    # ------------------------------------------------------------------
-
     def _create_rest_client(self) -> httpx.AsyncClient:
-        """Return an httpx client sharing the pooled transport."""
+        """Create a REST client bound to the shared transport pool.
+
+        A new ``AsyncClient`` instance is returned, but transport and sockets
+        are shared, which is the key performance optimization.
+
+        Why not a singleton AsyncClient:
+            Returning a client per provider keeps adapter composition simple,
+            while shared transport still preserves pool reuse.
+        """
         return httpx.AsyncClient(
             transport=self._shared_transport,
             timeout=httpx.Timeout(
@@ -110,15 +128,15 @@ class HTTPClientFactory:
             ),
         )
 
-    # ------------------------------------------------------------------
-    # Internal: AWS SDK (aioboto3)
-    # ------------------------------------------------------------------
-
     def _create_aws_session(self) -> object:
-        """Create and return an aioboto3.Session.
+        """Create an ``aioboto3.Session`` for AWS SDK-based providers.
 
-        Falls back gracefully if aioboto3 is not installed — BedrockProvider
-        will surface the error at call time.
+        Returns a sentinel object when ``aioboto3`` is unavailable so runtime
+        errors are explicit and actionable.
+
+        Rationale:
+            This fails loudly with guidance instead of silently returning an
+            unusable object that would break deeper in call paths.
         """
         try:
             import aioboto3  # type: ignore[import-untyped]
@@ -132,26 +150,17 @@ class HTTPClientFactory:
         logger.debug("aioboto3 session created for Bedrock provider.")
         return aioboto3.Session()
 
-    # ------------------------------------------------------------------
-    # Internal: gRPC (reserved)
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _create_grpc_stub() -> object:
-        """Reserved for future gRPC-based providers."""
+        """Placeholder for future gRPC provider transport support."""
         raise NotImplementedError("gRPC provider transport is not yet implemented.")
 
 
-# ---------------------------------------------------------------------------
-# Sentinel for missing aioboto3
-# ---------------------------------------------------------------------------
-
-
 class _MissingAioBoto3Session:
-    """Sentinel returned when aioboto3 is not installed.
+    """Sentinel returned when ``aioboto3`` is not installed.
 
-    Raises a clear RuntimeError if any method is called, giving the operator
-    an actionable error message instead of an opaque AttributeError.
+    Any attribute access raises a clear runtime error so operators get a direct
+    remediation path instead of an opaque attribute failure.
     """
 
     def __getattr__(self, name: str) -> object:
