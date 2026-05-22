@@ -12,6 +12,13 @@ Rationale:
     - Keeping Azure path/query/auth details localized prevents leakage of
       platform-specific rules into shared inference services.
 
+Step-by-step call flow:
+    1. Build Azure-specific headers and deployment-scoped URL.
+    2. Build payload from domain request.
+    3. Execute request via shared HTTP client.
+    4. Parse Azure response format into normalized schemas.
+    5. Emit structured telemetry with latency/usage.
+
 Author: Shubham Singh
 """
 
@@ -42,6 +49,10 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
     """Azure OpenAI Service provider.
 
     Thread-safe: all state is immutable settings + shared async HTTP client.
+
+    Design intent:
+        Keep Azure deployment naming and API-version nuances in one place so
+        the rest of the stack can treat Azure like any other provider adapter.
     """
 
     # ------------------------------------------------------------------
@@ -49,6 +60,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _generate(self, request: ChatRequest) -> ChatResponse:
+        """Call Azure OpenAI chat completions endpoint and normalize response."""
         headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         url = self._build_url("chat/completions")
@@ -74,6 +86,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
             raise self._handle_provider_error(exc) from exc
 
     async def _stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
+        """Stream Azure OpenAI SSE chunks into unified stream chunk schema."""
         headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         payload["stream"] = True
@@ -104,6 +117,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
+        """Call Azure OpenAI embeddings endpoint and normalize response payload."""
         headers = self._build_request_headers()
         payload = {
             "input": request.input if isinstance(request.input, list) else [request.input],
@@ -147,6 +161,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def health_check(self) -> HealthStatus:
+        """Run lightweight Azure endpoint health probe."""
         from app.schemas.responses_schema import HealthStatus
 
         t0 = time.monotonic()
@@ -212,6 +227,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
         return f"{url}?api-version={api_version}"
 
     def _build_chat_payload(self, request: ChatRequest) -> dict[str, object]:
+        """Translate domain chat request into Azure OpenAI payload fields."""
         payload: dict[str, object] = {
             "messages": [m.model_dump(mode="json") for m in request.messages],
         }
@@ -231,6 +247,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_chat_response(data: dict[str, object]) -> ChatResponse:
+        """Parse Azure chat response into normalized ``ChatResponse``."""
         from app.schemas.responses_schema import ChatResponse, Usage
 
         choice = data["choices"][0]  # type: ignore[index]
@@ -256,6 +273,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_stream_chunk(data: dict[str, object]) -> ChatStreamChunk:
+        """Parse one Azure stream event into normalized stream chunk."""
         from app.schemas.responses_schema import ChatStreamChunk
 
         delta = data["choices"][0].get("delta", {})  # type: ignore[index]
@@ -268,6 +286,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_embed_response(data: dict[str, object]) -> EmbedResponse:
+        """Parse Azure embeddings response into normalized ``EmbedResponse``."""
         from app.schemas.responses_schema import EmbedResponse, Usage
 
         embeddings = [item["embedding"] for item in data["data"]]  # type: ignore[index]

@@ -16,6 +16,14 @@ Enterprise Pattern: Adapter + Registry + Resilience Boundary
     - Registry: provider instances are cached and reused by resolved route fingerprint.
     - Resilience boundary: circuit breaker and error mapping isolate upstream instability.
 
+Step-by-step runtime relationship:
+    1. Inference routing resolves provider/model/endpoint/credential reference.
+    2. ``ProviderRegistry`` returns cached or newly built provider adapter.
+    3. Adapter method (`generate`/`embed`/...) runs through shared base-provider
+       resilience and error-mapping logic.
+    4. Provider-native response is translated into normalized schema models.
+    5. Upstream services receive consistent contracts regardless of provider.
+
 Author: Shubham Singh
 """
 

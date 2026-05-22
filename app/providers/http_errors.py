@@ -6,7 +6,7 @@ Maps raw transport/SDK exceptions into canonical domain-level provider errors.
 
 Why this module exists:
     - Each provider and SDK emits different exception types and payload shapes.
-    - Upstream layers should not branch on httpx, otocore, or provider-specific
+    - Upstream layers should not branch on httpx, botocore, or provider-specific
       error formats.
     - A normalized error surface keeps retry, alerting, and HTTP translation stable.
 
@@ -17,6 +17,12 @@ Rationale:
       behavior (for example Retry-After) can remain deterministic.
 
 Enterprise Pattern: Anti-Corruption Error Boundary
+
+Step-by-step classification flow:
+    1. Detect transport family (httpx vs botocore).
+    2. Map status/error-code patterns to canonical provider errors.
+    3. Preserve provider name and safe diagnostics.
+    4. Fall back to ``ProviderInternalError`` for unknown cases.
 
 Author: Shubham Singh
 """
@@ -66,6 +72,10 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
 
     Returns:
         An instantiated subclass of ProviderError — never raises.
+
+    Rationale:
+        This function always returns a domain error object so callers can
+        apply consistent retry/HTTP-mapping logic without exception-family checks.
     """
     if isinstance(exc, httpx.TimeoutException):
         return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=0.0)

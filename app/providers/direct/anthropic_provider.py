@@ -13,6 +13,13 @@ Rationale:
     - Explicitly raising unsupported-operation errors is safer than silent fallback
       because it prevents accidental capability assumptions.
 
+Step-by-step call flow:
+    1. Build Anthropic-specific headers and messages payload.
+    2. Call Messages API endpoint.
+    3. Parse Anthropic response/event format.
+    4. Emit shared structured telemetry.
+    5. Return normalized schema object.
+
 Author: Shubham Singh
 """
 
@@ -43,6 +50,10 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     """Anthropic Messages API provider.
 
     Thread-safe: all state is immutable settings + shared async HTTP client.
+
+    Design intent:
+        Keep Anthropic-specific wire details contained in this adapter while
+        preserving common provider contracts for upstream services.
     """
 
     # ------------------------------------------------------------------
@@ -50,6 +61,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _generate(self, request: ChatRequest) -> ChatResponse:
+        """Call Anthropic Messages API and normalize non-stream response."""
         headers = self._build_request_headers()
         payload = self._build_messages_payload(request)
         t0 = time.monotonic()
@@ -74,6 +86,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
             raise self._handle_provider_error(exc) from exc
 
     async def _stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
+        """Stream Anthropic SSE events and map them to stream chunk schema."""
         headers = self._build_request_headers()
         payload = self._build_messages_payload(request)
         payload["stream"] = True
@@ -125,6 +138,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def health_check(self) -> HealthStatus:
+        """Probe Anthropic models endpoint to assess provider health."""
         from app.schemas.responses_schema import HealthStatus
 
         t0 = time.monotonic()
@@ -165,6 +179,11 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         return headers
 
     def _build_messages_payload(self, request: ChatRequest) -> dict[str, object]:
+        """Build Anthropic messages payload from domain request fields.
+
+        Includes system-prompt extraction because Anthropic separates system
+        instructions from conversation message array.
+        """
         # Separate system prompt from conversation messages
         system_prompts = [m for m in request.messages if m.role == "system"]
         messages = [m.model_dump(mode="json") for m in request.messages if m.role != "system"]
@@ -190,6 +209,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_messages_response(data: dict[str, object]) -> ChatResponse:
+        """Parse Anthropic messages response into normalized ``ChatResponse``."""
         from app.schemas.responses_schema import ChatResponse, Usage
 
         raw_content = data.get("content", [])
@@ -222,6 +242,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_stream_event(data: dict[str, object]) -> ChatStreamChunk:
+        """Parse Anthropic stream event into unified stream chunk contract."""
         from app.schemas.responses_schema import ChatStreamChunk
 
         event_type = data.get("type", "")

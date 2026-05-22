@@ -13,6 +13,13 @@ Rationale:
     - Keep compatibility logic local to this adapter so upstream services do not
       branch on self-hosted vs managed-provider behavior.
 
+Step-by-step call flow:
+    1. Build vLLM-compatible headers and payload.
+    2. Call OpenAI-style endpoint exposed by vLLM.
+    3. Parse response into normalized schemas.
+    4. Emit structured logs with latency/usage.
+    5. Return adapter-independent response contract.
+
 Author: Shubham Singh
 """
 
@@ -43,6 +50,10 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     """vLLM OpenAI-compatible self-hosted provider.
 
     Thread-safe: all state is immutable settings + shared async HTTP client.
+
+    Design intent:
+        Treat vLLM as an OpenAI-compatible backend while keeping any subtle
+        compatibility adjustments isolated in this module.
     """
 
     # ------------------------------------------------------------------
@@ -50,6 +61,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _generate(self, request: ChatRequest) -> ChatResponse:
+        """Call vLLM chat completions endpoint and normalize response."""
         headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         t0 = time.monotonic()
@@ -74,6 +86,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
             raise self._handle_provider_error(exc) from exc
 
     async def _stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
+        """Stream vLLM SSE completion chunks into unified stream schema."""
         headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         payload["stream"] = True
@@ -103,6 +116,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
+        """Call vLLM embeddings endpoint and normalize response payload."""
         headers = self._build_request_headers()
         payload = {
             "model": self._context.model_name,
@@ -146,6 +160,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def health_check(self) -> HealthStatus:
+        """Check vLLM health endpoint as low-cost availability probe."""
         from app.schemas.responses_schema import HealthStatus
 
         t0 = time.monotonic()
@@ -184,6 +199,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
         return headers
 
     def _build_chat_payload(self, request: ChatRequest) -> dict[str, object]:
+        """Translate domain chat request into vLLM OpenAI-style payload."""
         payload: dict[str, object] = {
             "model": self._context.model_name,
             "messages": [m.model_dump(mode="json") for m in request.messages],
@@ -204,6 +220,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_chat_response(data: dict[str, object]) -> ChatResponse:
+        """Parse vLLM chat response into normalized ``ChatResponse``."""
         from app.schemas.responses_schema import ChatResponse, Usage
 
         choice = data["choices"][0]  # type: ignore[index]
@@ -229,6 +246,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_stream_chunk(data: dict[str, object]) -> ChatStreamChunk:
+        """Parse one vLLM stream event into normalized stream chunk."""
         from app.schemas.responses_schema import ChatStreamChunk
 
         delta = data["choices"][0].get("delta", {})  # type: ignore[index]
@@ -241,6 +259,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_embed_response(data: dict[str, object]) -> EmbedResponse:
+        """Parse vLLM embeddings response into normalized ``EmbedResponse``."""
         from app.schemas.responses_schema import EmbedResponse, Usage
 
         embeddings = [item["embedding"] for item in data["data"]]  # type: ignore[index]

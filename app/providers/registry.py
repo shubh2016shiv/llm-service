@@ -16,6 +16,13 @@ Rationale for design choices:
     - Fingerprint keying ensures cache separation when provider/model/endpoint/
       credential reference changes.
 
+Step-by-step build flow:
+    1. Caller requests provider for resolved execution context.
+    2. Registry checks route-fingerprint cache.
+    3. On miss, registry builds provider class dynamically.
+    4. Registry obtains transport, circuit breaker, and plaintext secret.
+    5. Registry stores provider instance for subsequent reuse.
+
 Enterprise Pattern: Singleton Registry + Double-Checked Locking
 
 Author: Shubham Singh
@@ -30,8 +37,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from app.inference_routing.models import ResolvedExecutionContext
     from app.infrastructure.http_client_factory import HTTPClientFactory
+    from app.infrastructure.provider_credentials import SecretStore
     from app.infrastructure.redis_cache import RedisCache
-    from app.infrastructure.secret_store import SecretStore
     from app.providers.base_provider import BaseProvider
 
 from pydantic import SecretStr
@@ -44,6 +51,10 @@ class ProviderRegistry:
 
     One provider instance per unique route fingerprint (provider + model + endpoint +
     credential scope). Uses double-checked locking via asyncio.Lock for safe creation.
+
+    Why this matters:
+        Provider construction may involve network/secret operations. Reusing
+        built instances lowers latency and reduces repeated setup overhead.
     """
 
     def __init__(
@@ -67,6 +78,9 @@ class ProviderRegistry:
 
         Fast-path read (no lock) for the common case where the provider is
         already cached. Falls back to double-checked locking for creation.
+
+        The cache key is ``context.route_fingerprint`` so route-affecting
+        changes naturally map to new provider instances.
         """
         cache_key = context.route_fingerprint
 
@@ -87,6 +101,9 @@ class ProviderRegistry:
 
         Called when settings changes propagate via Redis pub/sub event.
         The route_fingerprint is the same SHA-256 digest stored on ResolvedExecutionContext.
+
+        Rationale:
+            Invalidation avoids stale providers after config/credential changes.
         """
         async with self._lock:
             self._providers.pop(route_fingerprint, None)
@@ -100,6 +117,10 @@ class ProviderRegistry:
 
         The provider_static_config, implementation_class, and secret_reference are
         all pre-resolved by the OrchestrationPipeline — no additional config lookups needed.
+
+        Security note:
+            Plaintext secret is fetched only at build time and injected as
+            ``SecretStr``; routing layer never carries plaintext credentials.
         """
         provider_class = self._resolve_implementation_class(
             context.provider_static_config.implementation_class
@@ -132,8 +153,11 @@ class ProviderRegistry:
 
         Returns:
             The resolved class object (a concrete BaseProvider subclass).
+
+        Example:
+            ``app.providers.direct.openai_provider.OpenAIProvider`` ->
+            ``OpenAIProvider`` class object.
         """
         module_path, class_name = fully_qualified_name.rsplit(".", 1)
         module = importlib.import_module(module_path)
         return getattr(module, class_name)
-

@@ -15,6 +15,13 @@ Rationale:
     - Provider-native payload is kept in responses for diagnostics while API-facing
       response contracts remain normalized.
 
+Step-by-step call flow:
+    1. Build provider-specific headers and payload.
+    2. Perform HTTP call through shared client.
+    3. Validate status and parse provider response.
+    4. Emit structured telemetry with latency/usage.
+    5. Return normalized schema response to service layer.
+
 Author: Shubham Singh
 """
 
@@ -46,6 +53,10 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     Thread-safe: all state is immutable settings + shared async HTTP client.
     Per-request variables (headers, payloads) are local to each call frame.
+
+    Design intent:
+        Keep OpenAI wire-format specifics here so upstream code can remain
+        provider-agnostic and interact only with base-provider contracts.
     """
 
     # ------------------------------------------------------------------
@@ -53,6 +64,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _generate(self, request: ChatRequest) -> ChatResponse:
+        """Call OpenAI chat completions endpoint and normalize response."""
         headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         t0 = time.monotonic()
@@ -77,6 +89,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
             raise self._handle_provider_error(exc) from exc
 
     async def _stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
+        """Stream OpenAI chat completion chunks via SSE ``data:`` frames."""
         headers = self._build_request_headers()
         payload = self._build_chat_payload(request)
         payload["stream"] = True
@@ -106,6 +119,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
+        """Call OpenAI embeddings endpoint and normalize embedding payload."""
         headers = self._build_request_headers()
         payload = self._build_embed_payload(request)
         t0 = time.monotonic()
@@ -148,6 +162,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def health_check(self) -> HealthStatus:
+        """Probe OpenAI models endpoint as lightweight availability check."""
         from app.schemas.responses_schema import HealthStatus
 
         t0 = time.monotonic()
@@ -178,12 +193,14 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     def _build_request_headers(self) -> dict[str, str]:
+        """Build OpenAI auth/content headers plus resolved extra headers."""
         headers = self._build_auth_headers()
         headers["Content-Type"] = "application/json"
         headers.update(self._context.extra_headers)
         return headers
 
     def _build_chat_payload(self, request: ChatRequest) -> dict[str, object]:
+        """Translate domain chat request into OpenAI chat-completions payload."""
         payload: dict[str, object] = {
             "model": self._context.model_name,
             "messages": [m.model_dump(mode="json") for m in request.messages],
@@ -199,6 +216,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
         return payload
 
     def _build_embed_payload(self, request: EmbedRequest) -> dict[str, object]:
+        """Translate domain embed request into OpenAI embeddings payload."""
         return {
             "model": self._context.model_name,
             "input": request.input if isinstance(request.input, list) else [request.input],
@@ -210,6 +228,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_chat_response(data: dict[str, object]) -> ChatResponse:
+        """Parse OpenAI chat response JSON into normalized ``ChatResponse``."""
         from app.schemas.responses_schema import ChatResponse, Usage
 
         choice = data["choices"][0]  # type: ignore[index]
@@ -235,6 +254,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_stream_chunk(data: dict[str, object]) -> ChatStreamChunk:
+        """Parse one OpenAI stream chunk event into ``ChatStreamChunk``."""
         from app.schemas.responses_schema import ChatStreamChunk
 
         delta = data["choices"][0].get("delta", {})  # type: ignore[index]
@@ -247,6 +267,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     @staticmethod
     def _parse_embed_response(data: dict[str, object]) -> EmbedResponse:
+        """Parse OpenAI embeddings response into normalized ``EmbedResponse``."""
         from app.schemas.responses_schema import EmbedResponse, Usage
 
         embeddings = [item["embedding"] for item in data["data"]]  # type: ignore[index]

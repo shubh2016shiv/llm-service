@@ -50,6 +50,13 @@ Enterprise Pattern: Template Method + Resilience Boundary
     The base class defines the workflow, and subclasses fill in the provider
     specific pieces.
 
+Step-by-step execution boundary:
+    1. Registry injects resolved context, transport, breaker, and credential.
+    2. Public methods call provider-specific implementations through breaker.
+    3. Provider-specific methods translate payloads and parse responses.
+    4. Shared helpers emit structured logs and normalize provider errors.
+    5. Upstream services receive stable schema contracts.
+
 Author: Shubham Singh
 """
 
@@ -157,6 +164,11 @@ class BaseProvider[TransportT](ABC):
         This lets the type checker verify that self._http_client is used
         correctly in each subclass without forcing every provider to share
         the same concrete transport type.
+
+    Architecture decision:
+        Keep the orchestration contract (`generate`, `embed`, etc.) in this
+        base class, and keep wire-format specifics in subclasses. That split
+        avoids duplicate resilience and logging logic across providers.
     """
 
     def __init__(
@@ -178,15 +190,19 @@ class BaseProvider[TransportT](ABC):
     # ------------------------------------------------------------------
 
     async def generate(self, request: ChatRequest) -> ChatResponse:
-        """Send a chat completion request through the circuit breaker."""
+        """Execute non-streaming chat generation through resilience boundary.
+
+        Subclass implementation performs provider-specific I/O in ``_generate``.
+        This wrapper guarantees breaker policy is consistently applied.
+        """
         return await self._call_with_breaker(self._generate, request)
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
-        """Generate embeddings through the circuit breaker."""
+        """Execute embedding request through shared breaker wrapper."""
         return await self._call_with_breaker(self._embed, request)
 
     async def rerank(self, request: RerankRequest) -> RerankResponse:
-        """Re-rank documents through the circuit breaker."""
+        """Execute rerank request through shared breaker wrapper."""
         return await self._call_with_breaker(self._rerank, request)
 
     async def stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
@@ -196,6 +212,10 @@ class BaseProvider[TransportT](ABC):
         breaker semantics for stream failures and half-open trial calls, a
         producer coroutine consumes the provider stream under call_async while
         this method yields chunks to the caller through a bounded queue.
+
+        Rationale:
+            This design preserves stream backpressure and error propagation
+            while still counting stream failures as breaker-visible failures.
         """
         queue: asyncio.Queue[ChatStreamChunk | _StreamError | _StreamComplete] = asyncio.Queue(
             maxsize=1
@@ -325,6 +345,10 @@ class BaseProvider[TransportT](ABC):
 
         Override in subclasses that use a non-Bearer auth scheme (e.g. Anthropic,
         Azure, AWS SigV4).
+
+        Security rationale:
+            Secret value is materialized only when constructing outbound headers
+            and is not persisted on request payload objects.
         """
         auth = self._static.auth
         header_name = auth.header_name or "Authorization"
@@ -344,6 +368,10 @@ class BaseProvider[TransportT](ABC):
         """Emit a structured log record for observability.
 
         Subclasses may enrich with provider-specific fields before calling super().
+
+        Why centralized:
+            Keeping shared telemetry shape in one method makes dashboards and
+            alert queries consistent across providers.
         """
         extra: dict[str, object] = {
             "provider_name": self._context.provider_name,
@@ -359,7 +387,11 @@ class BaseProvider[TransportT](ABC):
         self._logger.info("Provider call completed", extra=extra)
 
     def _handle_provider_error(self, exc: Exception) -> ProviderError:
-        """Map a provider-specific exception to a canonical ProviderError."""
+        """Normalize provider-specific exceptions to canonical domain errors.
+
+        This is the anti-corruption boundary between transport/SDK exceptions
+        and internal service error contracts.
+        """
         from app.providers.http_errors import classify_error
 
         return classify_error(exc, provider_name=self._static.provider_name)

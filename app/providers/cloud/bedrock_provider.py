@@ -14,6 +14,13 @@ Rationale:
     - Bedrock transport is intentionally separated from httpx providers so
       SDK-specific lifecycle, auth, and error behavior stay encapsulated.
 
+Step-by-step call flow:
+    1. Build Bedrock-native payload from domain request.
+    2. Create short-lived Bedrock runtime client from session.
+    3. Invoke converse/invoke_model operation.
+    4. Parse AWS response objects into normalized schemas.
+    5. Emit structured telemetry.
+
 Author: Shubham Singh
 """
 
@@ -49,6 +56,10 @@ class BedrockProvider(BaseProvider[object]):
 
     Overrides __init__ to accept an aioboto3 session instead of httpx.AsyncClient
     (per implementation_plan.md §Q2: Bedrock uses its own SDK transport).
+
+    Design intent:
+        Keep AWS SDK invocation details isolated so service layers interact with
+        the same base-provider contract as REST-based providers.
     """
 
     def __init__(
@@ -66,6 +77,7 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     async def _generate(self, request: ChatRequest) -> ChatResponse:
+        """Invoke Bedrock Converse API and normalize chat response."""
         payload = self._build_converse_payload(request)
         t0 = time.monotonic()
         try:
@@ -86,6 +98,7 @@ class BedrockProvider(BaseProvider[object]):
             raise self._handle_provider_error(exc) from exc
 
     async def _stream_generate(self, request: ChatRequest) -> AsyncIterator[ChatStreamChunk]:
+        """Invoke Bedrock Converse stream API and yield normalized chunks."""
         payload = self._build_converse_stream_payload(request)
         t0 = time.monotonic()
         try:
@@ -108,6 +121,7 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
+        """Invoke Bedrock model endpoint for embeddings and normalize output."""
         from app.schemas.responses_schema import EmbedResponse, Usage
 
         t0 = time.monotonic()
@@ -151,6 +165,7 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     async def health_check(self) -> HealthStatus:
+        """Use Bedrock foundation-model listing as a health/permission probe."""
         from app.schemas.responses_schema import HealthStatus
 
         t0 = time.monotonic()
@@ -182,6 +197,7 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     def _build_converse_payload(self, request: ChatRequest) -> dict[str, object]:
+        """Build Bedrock Converse request payload from domain chat request."""
         return {
             "modelId": self._context.model_name,
             "messages": self._convert_messages_to_bedrock(request),
@@ -192,6 +208,7 @@ class BedrockProvider(BaseProvider[object]):
         }
 
     def _build_converse_stream_payload(self, request: ChatRequest) -> dict[str, object]:
+        """Build Bedrock Converse stream payload (currently same base fields)."""
         payload = self._build_converse_payload(request)
         payload["inferenceConfig"] = {
             **(payload.get("inferenceConfig", {})),  # type: ignore[arg-type]
@@ -199,6 +216,7 @@ class BedrockProvider(BaseProvider[object]):
         return payload
 
     def _build_embed_body(self, request: EmbedRequest) -> dict[str, object]:
+        """Build Bedrock embedding invoke-model body from domain embed request."""
         input_text = request.input if isinstance(request.input, str) else request.input[0]
         return {"inputText": input_text}
 
@@ -224,6 +242,7 @@ class BedrockProvider(BaseProvider[object]):
 
     @staticmethod
     def _parse_converse_response(response: dict[str, object]) -> ChatResponse:
+        """Parse Bedrock Converse response into normalized ``ChatResponse``."""
         from app.schemas.responses_schema import ChatResponse, Usage
 
         output = response.get("output", {})
@@ -254,6 +273,7 @@ class BedrockProvider(BaseProvider[object]):
 
     @staticmethod
     def _parse_converse_stream_event(event: dict[str, object]) -> ChatStreamChunk:
+        """Parse Bedrock stream event object into normalized stream chunk."""
         from app.schemas.responses_schema import ChatStreamChunk
 
         content = ""
@@ -276,7 +296,13 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     def _resolve_aws_region(self) -> str:
-        """Resolve AWS region from execution context or default to us-east-1."""
+        """Resolve AWS region from resolved context with safe fallback.
+
+        Resolution order:
+            1. ``context.cloud_region`` (explicit route-level value)
+            2. ``context.extra_config['aws_region']`` (provider-specific override)
+            3. hard default ``us-east-1``
+        """
         if self._context.cloud_region:
             return self._context.cloud_region
         value = self._context.extra_config.get("aws_region")
