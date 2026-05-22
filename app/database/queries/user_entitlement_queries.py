@@ -262,6 +262,45 @@ COUNT_TENANT_ENTITLEMENTS_SQL = """
     WHERE tenant_id = :tenant_id
 """
 
+# ── Routing reads (JOIN-resolved, includes secret_reference) ─────────────────
+# Used exclusively by the inference routing layer. JOINs resolve provider_name
+# and model_name from catalog IDs so the routing layer works with names, not
+# UUIDs. secret_reference is included because the routing layer needs it to
+# fetch credentials at call time.
+
+LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_SQL = """
+    SELECT
+        ue.entitlement_id,
+        ue.tenant_id,
+        ue.user_id,
+        ue.entitlement_name,
+        ue.status,
+        ue.api_endpoint_url,
+        ue.secret_reference,
+        ue.cloud_provider,
+        ue.cloud_region,
+        ue.extra_config,
+        p.provider_name,
+        m.model_name
+    FROM user_entitlements ue
+    JOIN provider_catalog p ON ue.provider_id = p.provider_id
+    JOIN model_catalog m ON ue.model_id = m.model_id
+    WHERE ue.tenant_id = :tenant_id
+      AND ue.user_id   = :user_id
+      AND ue.deployment_key = :deployment_key
+      AND ue.status = 'active'
+"""
+
+LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_WITH_MODEL_SQL = (
+    LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_SQL + "\n      AND m.model_name = :model_name"
+)
+
+# Narrows to the single entitlement already verified by the auth layer so the
+# pipeline cannot independently re-resolve to a different candidate.
+LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_WITH_ENTITLEMENT_ID_SQL = (
+    LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_SQL + "\n      AND ue.entitlement_id = :entitlement_id"
+)
+
 # ── Delete ────────────────────────────────────────────────────────────────────
 
 DELETE_ENTITLEMENT_BY_ID_SQL = """

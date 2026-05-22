@@ -26,6 +26,7 @@ from app.database.queries.tenant_queries import (
     DELETE_TENANT_BY_ID_SQL,
     GET_TENANT_BY_ID_SQL,
     GET_TENANT_BY_SLUG_SQL,
+    GET_TENANT_FOR_ROUTING_BY_ID_SQL,
     build_tenant_count_query,
     build_tenant_list_query,
 )
@@ -164,6 +165,28 @@ class TenantPersistence(BasePersistence):
         except Exception:
             logger.error(
                 "TenantPersistence: get_tenant_by_id failed — id=%s", tenant_id, exc_info=True
+            )
+            raise
+
+    async def get_tenant_config_for_routing(self, tenant_id: UUID | str) -> dict[str, Any] | None:
+        """Return the explicit-column routing projection for a tenant, or None if not found.
+
+        Uses a fixed column list so the routing layer is never silently affected
+        by columns added to the tenants table in the future.
+        """
+        self.validate_uuid(tenant_id, "tenant_id")
+        try:
+            async with self.get_session() as session:
+                result = await session.execute(
+                    text(GET_TENANT_FOR_ROUTING_BY_ID_SQL), {"tenant_id": str(tenant_id)}
+                )
+                row = result.mappings().one_or_none()
+                return dict(row) if row else None
+        except Exception:
+            logger.error(
+                "TenantPersistence: get_tenant_config_for_routing failed — id=%s",
+                tenant_id,
+                exc_info=True,
             )
             raise
 

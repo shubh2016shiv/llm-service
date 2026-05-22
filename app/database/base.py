@@ -139,7 +139,7 @@ class BasePersistence:
         Args:
             sql_query: Parameterised INSERT SQL string.
             parameter_list: One dict per row to insert.
-            page_size: Rows per execution page (default 1000). Tune downward
+            page_size: Rows per services page (default 1000). Tune downward
                 for rows with large JSONB payloads.
 
         Returns:

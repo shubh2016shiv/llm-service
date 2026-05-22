@@ -196,6 +196,35 @@ GET_DEPLOYMENT_SECRET_REFERENCE_SQL = """
     WHERE deployment_id = :deployment_id
 """
 
+# Full routing projection: includes secret_reference and resolves provider/model names via JOIN.
+# Only used by the routing layer, never by the management API.
+GET_DEPLOYMENT_FOR_ROUTING_BY_KEY_SQL = """
+    SELECT
+        td.deployment_id,
+        td.tenant_id,
+        td.deployment_key,
+        td.deployment_name,
+        td.status,
+        p.provider_name,
+        m.model_name,
+        td.api_endpoint_url,
+        td.secret_reference,
+        td.cloud_region,
+        td.timeout_seconds,
+        td.max_retries,
+        td.default_temperature,
+        td.default_max_output_tokens,
+        td.is_default,
+        td.routing_priority,
+        td.extra_headers,
+        td.extra_config
+    FROM tenant_deployments td
+    JOIN provider_catalog p ON td.provider_id = p.provider_id
+    JOIN model_catalog m ON td.model_id = m.model_id
+    WHERE td.tenant_id = :tenant_id
+      AND td.deployment_key = :deployment_key
+"""
+
 GET_DEFAULT_DEPLOYMENT_SQL = f"""
     SELECT {_DEPLOYMENT_SAFE_COLUMNS}
     FROM tenant_deployments

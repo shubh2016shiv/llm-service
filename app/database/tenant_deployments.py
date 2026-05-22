@@ -39,6 +39,7 @@ from app.database.queries.tenant_deployment_queries import (
     GET_DEFAULT_DEPLOYMENT_SQL,
     GET_DEPLOYMENT_BY_ID_SQL,
     GET_DEPLOYMENT_BY_KEY_SQL,
+    GET_DEPLOYMENT_FOR_ROUTING_BY_KEY_SQL,
     GET_DEPLOYMENT_SECRET_REFERENCE_SQL,
     LIST_ACTIVE_DEPLOYMENTS_BY_PROVIDER_AND_MODEL_SQL,
     build_tenant_deployment_count_query,
@@ -302,6 +303,35 @@ class TenantDeploymentPersistence(BasePersistence):
         except Exception:
             logger.error(
                 "TenantDeploymentPersistence: get_deployment_by_key failed — key=%s",
+                deployment_key,
+                exc_info=True,
+            )
+            raise
+
+    async def get_deployment_config_for_routing(
+        self, tenant_id: UUID | str, deployment_key: str
+    ) -> dict[str, Any] | None:
+        """Return the full routing projection for a deployment, or None if not found.
+
+        Unlike get_deployment_by_key, this projection:
+          - includes secret_reference (required by the routing layer for credential lookup)
+          - resolves provider_name and model_name via JOIN (routing works with names, not UUIDs)
+        """
+        self.validate_uuid(tenant_id, "tenant_id")
+        self.validate_string_not_empty(deployment_key, "deployment_key")
+        try:
+            async with self.get_session() as session:
+                result = await session.execute(
+                    text(GET_DEPLOYMENT_FOR_ROUTING_BY_KEY_SQL),
+                    {"tenant_id": str(tenant_id), "deployment_key": deployment_key},
+                )
+                row = result.mappings().one_or_none()
+                return dict(row) if row else None
+        except Exception:
+            logger.error(
+                "TenantDeploymentPersistence: get_deployment_config_for_routing failed "
+                "— tenant_id=%s deployment_key=%s",
+                tenant_id,
                 deployment_key,
                 exc_info=True,
             )

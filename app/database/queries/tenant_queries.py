@@ -69,6 +69,24 @@ GET_TENANT_BY_ID_SQL = """
     WHERE tenant_id = :tenant_id
 """
 
+# Routing-specific projection: only the fields that TenantConfig requires.
+# Explicit columns are intentional — the routing layer must not silently pick
+# up new columns added to the table in the future.
+GET_TENANT_FOR_ROUTING_BY_ID_SQL = """
+    SELECT
+        tenant_id,
+        tenant_name,
+        tenant_slug,
+        status,
+        tier,
+        rate_limit_requests_per_minute,
+        rate_limit_tokens_per_minute,
+        rate_limit_concurrent_requests,
+        allowed_provider_names
+    FROM tenants
+    WHERE tenant_id = :tenant_id
+"""
+
 GET_TENANT_BY_SLUG_SQL = """
     SELECT *
     FROM tenants
