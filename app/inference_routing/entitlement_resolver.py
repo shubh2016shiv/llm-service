@@ -13,6 +13,11 @@ Rules:
 Enterprise Pattern: Precedence Rule Pattern
     User override wins only when it is valid and unambiguous.
 
+Architecture rationale:
+    Entitlements are optional overrides. Treating them as a dedicated resolver
+    keeps precedence logic explicit and prevents deployment fallback behavior
+    from being accidentally mixed with user-override policy.
+
 Author: Shubham Singh
 """
 
@@ -30,7 +35,11 @@ if TYPE_CHECKING:
 
 
 class UserEntitlementResolver:
-    """Resolves an optional user-scoped entitlement override."""
+    """Resolve optional user-level routing override candidates.
+
+    A resolved entitlement does not automatically bypass tenant policy; tenant
+    provider allow-list checks are still enforced.
+    """
 
     def __init__(
         self,
@@ -45,12 +54,25 @@ class UserEntitlementResolver:
         tenant_config: TenantConfig,
         request: ResolutionRequest,
     ) -> UserEntitlementConfig | None:
-        """Return a single active, tenant-allowed user entitlement if one matches."""
+        """Return single valid entitlement override or ``None``.
+
+        Step-by-step:
+            1. Query entitlement candidates for request scope.
+            2. Filter to active candidates only.
+            3. Reject ambiguous multi-match result sets.
+            4. Enforce tenant provider allow-list.
+            5. Return entitlement override.
+
+        Returns:
+            Matching active entitlement when exactly one candidate survives,
+            otherwise ``None`` when no active match exists.
+        """
         candidates = await self._entitlement_reader.find_matching_entitlements(
             tenant_id=request.tenant_id,
             user_id=request.user_id,
             deployment_key=request.deployment_key,
             requested_model_name=request.requested_model_name,
+            entitlement_id=request.pre_authorized_entitlement_id,
         )
 
         active_candidates = [c for c in candidates if c.is_active]

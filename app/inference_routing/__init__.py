@@ -26,17 +26,42 @@ The resolution pipeline (in order):
        in the secrets manager).
     6. Build and return a frozen (immutable) execution context.
 
+Architecture decisions and rationale:
+    - Separation from inference execution:
+      This package decides "what should run" but never performs provider calls.
+      That split keeps policy/routing logic independent from transport logic.
+    - Immutable context output:
+      Resolved context is frozen to prevent accidental mutation across layers
+      after routing decisions are made.
+    - Protocol-based data readers:
+      Resolvers depend on contracts, not concrete persistence classes. This
+      keeps resolver logic testable and lets storage implementations evolve.
+    - Security boundary on secrets:
+      Routing resolves only ``secret_reference`` values. Plaintext secrets are
+      materialized later by secret-store components in infrastructure.
+
 Enterprise Pattern: Orchestration Pipeline + Facade
     - Facade: this ``__init__.py`` re-exports the public API so callers only
       need one import.
     - Orchestration: ``OrchestrationPipeline`` coordinates focused resolver
       components, each with one clear job, to produce a single result.
 
+Step-by-step integration with request lifecycle:
+    1. API/auth layer validates identity and tenant/deployment access.
+    2. API constructs ``ResolutionRequest`` and calls ``OrchestrationPipeline``.
+    3. Pipeline returns ``ResolvedExecutionContext``.
+    4. Inference service executes provider call using that context.
+    5. Usage/quota/reporting operate on context fields (provider/model/quota key).
+
 Author: Shubham Singh
 """
 
 from app.inference_routing.context_factory import ResolvedExecutionContextFactory
-from app.inference_routing.contracts import TenantConfigReader, UserEntitlementReader
+from app.inference_routing.contracts import (
+    DeploymentConfigReader,
+    TenantConfigReader,
+    UserEntitlementReader,
+)
 from app.inference_routing.credential_resolver import CredentialResolver, CredentialSelection
 from app.inference_routing.deployment_resolver import DeploymentResolver
 from app.inference_routing.entitlement_resolver import UserEntitlementResolver
@@ -54,6 +79,7 @@ __all__ = [
     "CredentialResolver",
     "CredentialScope",
     "CredentialSelection",
+    "DeploymentConfigReader",
     "DeploymentResolver",
     "OrchestrationPipeline",
     "ProviderRouteValidator",

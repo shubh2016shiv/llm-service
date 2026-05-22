@@ -8,6 +8,10 @@ capability checks fail.
 Enterprise Pattern: Canonical Exception Surface
     Routing raises stable domain errors so API translation remains consistent.
 
+Why this matters:
+    API handlers should map typed errors to stable HTTP/status payloads without
+    parsing message strings. This file defines that stable error vocabulary.
+
 Author: Shubham Singh
 """
 
@@ -17,13 +21,13 @@ from app.core.exceptions import LLMServiceError
 
 
 class ResolutionError(LLMServiceError):
-    """Base error for the inference route resolution pipeline."""
+    """Base class for all routing-resolution failures."""
 
     error_code: str = "RESOLUTION_ERROR"
 
 
 class ProviderNotAllowedError(ResolutionError):
-    """The resolved provider is not permitted by tenant policy."""
+    """Raised when tenant allow-list denies selected provider route."""
 
     error_code: str = "PROVIDER_NOT_ALLOWED"
 
@@ -36,7 +40,7 @@ class ProviderNotAllowedError(ResolutionError):
 
 
 class OperationNotSupportedError(ResolutionError):
-    """The resolved model/provider pair cannot serve the requested operation."""
+    """Raised when model/provider cannot serve requested operation type."""
 
     error_code: str = "OPERATION_NOT_SUPPORTED"
 
@@ -51,7 +55,7 @@ class OperationNotSupportedError(ResolutionError):
 
 
 class AmbiguousUserEntitlementError(ResolutionError):
-    """More than one user entitlement matched the same request intent."""
+    """Raised when multiple active entitlement matches create precedence ambiguity."""
 
     error_code: str = "AMBIGUOUS_USER_ENTITLEMENT"
 

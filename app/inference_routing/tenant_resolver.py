@@ -12,6 +12,11 @@ What it guarantees:
 Enterprise Pattern: Policy Gate Pattern
     Tenant policy checks happen early so invalid routes fail fast.
 
+Architecture rationale:
+    Tenant state and policy are global guards for all downstream route choices.
+    Running these checks first avoids unnecessary entitlement/deployment lookups
+    for requests that are invalid at tenant scope.
+
 Author: Shubham Singh
 """
 
@@ -30,13 +35,22 @@ if TYPE_CHECKING:
 
 
 class TenantResolver:
-    """Loads tenant metadata and enforces tenant-level routing policy."""
+    """Resolve tenant config and enforce tenant-level routing constraints.
+
+    This resolver is intentionally narrow: it answers tenant policy questions
+    only and does not perform provider/model capability checks.
+    """
 
     def __init__(self, tenant_reader: TenantConfigReader) -> None:
         self._tenant_reader = tenant_reader
 
     async def resolve_tenant(self, tenant_id: UUID | str) -> TenantConfig:
-        """Load the tenant configuration and enforce active status."""
+        """Load tenant config and enforce tenant lifecycle eligibility.
+
+        Raises:
+            TenantNotFoundError: No tenant config exists for identifier.
+            TenantSuspendedError: Tenant exists but cannot process requests.
+        """
         tenant = await self._tenant_reader.get_tenant_config(tenant_id)
         if tenant is None:
             raise TenantNotFoundError(str(tenant_id))
@@ -49,7 +63,12 @@ class TenantResolver:
         tenant_config: TenantConfig,
         provider_name: str,
     ) -> None:
-        """Reject providers that are outside the tenant allow-list."""
+        """Enforce tenant provider allow-list policy.
+
+        Rationale:
+            Even if deployment or entitlement references a provider, tenant
+            policy may restrict that provider for compliance or cost reasons.
+        """
         if not tenant_config.allows_provider(provider_name):
             raise ProviderNotAllowedError(str(tenant_config.tenant_id), provider_name)
 

@@ -16,6 +16,10 @@ Enterprise Pattern: Credential Reference Pattern
     Routing returns a pointer to a secret; secret materialization stays in
     the secrets-management layer. Routing and secrets never mix in memory.
 
+Architecture rationale:
+    Keeping secret references and secret retrieval separate reduces accidental
+    credential exposure and keeps routing code independent from secret backends.
+
 Author: Shubham Singh
 """
 
@@ -30,7 +34,11 @@ if TYPE_CHECKING:
 
 
 class CredentialSelection(NamedTuple):
-    """Resolved route-specific credential reference and endpoint details."""
+    """Route-specific credential reference and endpoint details.
+
+    This value is intentionally lightweight and immutable so it can be passed
+    across resolvers/factory without risk of accidental mutation.
+    """
 
     credential_scope: CredentialScope
     secret_reference: str
@@ -39,13 +47,21 @@ class CredentialSelection(NamedTuple):
 
 
 class CredentialResolver:
-    """Chooses credential references without fetching plaintext secrets."""
+    """Resolve which credential reference should be used for a route.
+
+    In plain terms:
+        This class answers "which key pointer should be used?" not "what is the
+        key value?".
+    """
 
     @staticmethod
     def from_user_entitlement(
         entitlement: UserEntitlementConfig,
     ) -> CredentialSelection:
-        """Resolve credential reference data from a user entitlement."""
+        """Build credential selection from user entitlement route metadata.
+
+        User entitlement scope means credential ownership is user-level.
+        """
         return CredentialSelection(
             credential_scope=CredentialScope.USER,
             secret_reference=entitlement.secret_reference,
@@ -57,7 +73,10 @@ class CredentialResolver:
     def from_deployment(
         deployment: DeploymentConfig,
     ) -> CredentialSelection:
-        """Resolve credential reference data from a tenant deployment."""
+        """Build credential selection from tenant deployment route metadata.
+
+        Deployment scope means credential ownership is tenant-level.
+        """
         return CredentialSelection(
             credential_scope=CredentialScope.TENANT,
             secret_reference=deployment.secret_reference,

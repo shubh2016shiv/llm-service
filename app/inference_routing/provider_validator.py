@@ -8,6 +8,11 @@ requested operation is supported by the resolved model.
 Enterprise Pattern: Contract Validation Pattern
     Resolution is accepted only when catalog contracts are satisfied.
 
+Architecture rationale:
+    Static provider/model configuration defines hard capabilities. This module
+    is the gate that prevents runtime routes from selecting combinations that
+    cannot actually serve the requested operation.
+
 Author: Shubham Singh
 """
 
@@ -26,7 +31,11 @@ if TYPE_CHECKING:
 
 
 class ProviderRouteValidator:
-    """Validates provider metadata and model capability using the static YAML config."""
+    """Validate provider/model route against static catalog contracts.
+
+    This resolver does not inspect tenant policy or deployment status. It only
+    answers: "Is this provider/model combination capable of this operation?"
+    """
 
     def __init__(self, config_loader: ConfigLoader) -> None:
         self._config_loader = config_loader
@@ -37,7 +46,15 @@ class ProviderRouteValidator:
         model_name: str,
         operation: OperationType,
     ) -> tuple[ProviderStaticConfig, LLMModelSpec]:
-        """Load provider static config and validate the selected model and operation."""
+        """Resolve provider config and validate model + operation capability.
+
+        Step-by-step:
+            1. Load provider static YAML config by provider name.
+            2. Resolve model spec from provider catalog.
+            3. Map runtime operation to required model capability.
+            4. Verify model supports capability.
+            5. Return provider config and model spec.
+        """
         try:
             provider_config = self._config_loader.load_provider_config(provider_name)
         except FileNotFoundError as exc:
@@ -61,7 +78,12 @@ class ProviderRouteValidator:
 
     @staticmethod
     def _to_model_capability(operation: OperationType) -> ModelCapability:
-        """Map runtime operation types to model capabilities."""
+        """Translate runtime operation enum into model capability enum.
+
+        Rationale:
+            Routing receives API-level operation types, while model specs use
+            capability enums. This method is the explicit mapping boundary.
+        """
         mapping = {
             OperationType.CHAT: ModelCapability.CHAT,
             OperationType.EMBED: ModelCapability.EMBED,

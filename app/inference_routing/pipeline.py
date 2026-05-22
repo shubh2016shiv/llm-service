@@ -15,6 +15,17 @@ Flow (in order):
 Enterprise Pattern: Pipeline Orchestration Pattern
     Each step has one clear responsibility and can be tested independently.
 
+Why this architecture is important:
+    - Deterministic precedence:
+      User entitlement overrides are evaluated before tenant deployment fallback.
+      This gives predictable behavior for "bring your own credential" scenarios.
+    - Fail-fast policy checks:
+      Tenant status/provider allow-list/capability validation happen before any
+      provider call, reducing wasted downstream work.
+    - Narrow output contract:
+      Only one immutable ``ResolvedExecutionContext`` leaves this module, so
+      downstream services consume a stable, fully resolved shape.
+
 Author: Shubham Singh
 """
 
@@ -33,7 +44,17 @@ if TYPE_CHECKING:
 
 
 class OrchestrationPipeline:
-    """Applies precedence rules and returns a single services-ready execution context."""
+    """Coordinate all resolvers to produce one services-ready execution context.
+
+    In plain language:
+        This class is the conductor. It does not own tenant lookup details,
+        entitlement queries, or model capability rules directly; it delegates
+        those to specialized components in a strict order.
+
+    Core precedence rule:
+        If a valid active user entitlement matches, it wins. Otherwise the
+        pipeline falls back to tenant deployment routing.
+    """
 
     def __init__(
         self,
@@ -55,7 +76,21 @@ class OrchestrationPipeline:
         self,
         request: ResolutionRequest,
     ) -> ResolvedExecutionContext:
-        """Resolve tenant, route, provider, model, and credential precedence."""
+        """Resolve one inference request into a concrete execution context.
+
+        Step-by-step:
+            1. Resolve tenant and verify tenant status.
+            2. Attempt user entitlement override path.
+            3. If entitlement path succeeds, validate provider/model capability
+               and build user-entitlement context.
+            4. Otherwise resolve tenant deployment route.
+            5. Validate provider allow-list and provider/model capability.
+            6. Build deployment-based context.
+
+        Rationale:
+            Centralizing order here ensures every caller gets identical routing
+            behavior and removes precedence ambiguity from API handlers.
+        """
         tenant_config = await self._tenant_resolver.resolve_tenant(request.tenant_id)
 
         user_entitlement = await self._entitlement_resolver.resolve_override(

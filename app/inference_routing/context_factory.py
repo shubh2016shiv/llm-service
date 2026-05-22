@@ -17,6 +17,10 @@ Enterprise Pattern: Factory Pattern
     Assembly logic is centralized so downstream services receive one complete,
     typed, read-only context object.
 
+Architecture decision:
+    Route fingerprint generation lives in this factory so both precedence paths
+    (deployment and entitlement) use one canonical hashing strategy.
+
 Author: Shubham Singh
 """
 
@@ -40,7 +44,12 @@ if TYPE_CHECKING:
 
 
 class ResolvedExecutionContextFactory:
-    """Builds the final immutable context used by downstream service layers."""
+    """Assemble immutable execution contexts from resolved routing components.
+
+    Why centralize here:
+        Without a factory, context assembly would be duplicated across pipeline
+        branches, increasing drift risk in defaults, quota keys, or fingerprints.
+    """
 
     def build_for_deployment(
         self,
@@ -51,7 +60,11 @@ class ResolvedExecutionContextFactory:
         model_spec: LLMModelSpec,
         credential_selection: CredentialSelection,
     ) -> ResolvedExecutionContext:
-        """Build a resolved context from a tenant deployment route."""
+        """Build context for tenant deployment routing path.
+
+        Includes deployment overrides for timeout/retries/temperature/max_tokens
+        when those overrides are configured.
+        """
         effective_max_tokens = deployment_config.default_max_tokens or model_spec.max_output_tokens
         route_fingerprint = self._compute_route_fingerprint(
             resolution_source=ResolutionSource.TENANT_DEPLOYMENT,
@@ -88,6 +101,9 @@ class ResolvedExecutionContextFactory:
             ),
             effective_temperature=deployment_config.default_temperature,
             effective_max_tokens=effective_max_tokens,
+            extra_headers=deployment_config.extra_headers,
+            extra_config=deployment_config.extra_config,
+            quota_key=deployment_config.deployment_key,
             route_fingerprint=route_fingerprint,
         )
 
@@ -100,7 +116,12 @@ class ResolvedExecutionContextFactory:
         model_spec: LLMModelSpec,
         credential_selection: CredentialSelection,
     ) -> ResolvedExecutionContext:
-        """Build a resolved context from a user-scoped entitlement route."""
+        """Build context for user entitlement override path.
+
+        Entitlement path uses provider defaults for timeout/retry/temperature
+        because deployment-level override values are not the authoritative
+        source for user-owned entitlement credentials.
+        """
         route_fingerprint = self._compute_route_fingerprint(
             resolution_source=ResolutionSource.USER_ENTITLEMENT,
             tenant_id=str(tenant_config.tenant_id),
@@ -130,11 +151,19 @@ class ResolvedExecutionContextFactory:
             effective_max_retries=provider_static_config.default_max_retries,
             effective_temperature=provider_static_config.default_temperature,
             effective_max_tokens=model_spec.max_output_tokens,
+            extra_headers={},
+            extra_config=user_entitlement_config.extra_config,
+            quota_key=str(user_entitlement_config.entitlement_id),
             route_fingerprint=route_fingerprint,
         )
 
     @staticmethod
     def _compute_route_fingerprint(**payload: str | None) -> str:
-        """Compute a stable, opaque digest for the resolved route."""
+        """Compute stable opaque digest for resolved route attributes.
+
+        Rationale:
+            Fingerprints support cache correlation and route identity checks
+            without exposing raw secret references in logs or keys.
+        """
         normalized_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(normalized_payload.encode("utf-8")).hexdigest()
