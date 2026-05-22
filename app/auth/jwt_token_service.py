@@ -16,18 +16,19 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, get_args
 from uuid import UUID
 
 from jose import JWTError, jwt
 
 from app.core.settings.settings import get_application_settings
-from app.schemas.auth_schema import AuthTokenPayload
+from app.schemas.auth_schema import AuthTokenPayload, UserRole
 
 logger = logging.getLogger(__name__)
 
-# Roles accepted by this service, listed from lowest to highest privilege.
-_VALID_ROLES: frozenset[str] = frozenset({"developer", "operator", "admin", "owner"})
+# Derived from the canonical UserRole Literal so adding a role in auth_schema.py
+# is the single change required — no need to update this set manually.
+_VALID_ROLES: frozenset[str] = frozenset(get_args(UserRole))
 
 
 def _build_token_claims(

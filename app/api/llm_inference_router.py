@@ -28,28 +28,15 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, NoReturn
+from typing import TYPE_CHECKING, Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import require_inference_access
-from app.core.exceptions import (
-    AuthenticationError,
-    ConcurrentRequestLimitError,
-    DeploymentInactiveError,
-    DeploymentNotFoundError,
-    LLMServiceError,
-    ProviderTimeoutError,
-    ProviderUnavailableError,
-    ProviderValidationError,
-    QuotaExceededError,
-    RateLimitError,
-    TenantNotFoundError,
-    TenantSuspendedError,
-)
-from app.execution.inference_service import InferenceService
-from app.routing.exceptions import OperationNotSupportedError, ProviderNotAllowedError
+from app.api.exception_handlers import translate_inference_error
+from app.core.exceptions import LLMServiceError
+from app.services.inference_service import InferenceService
 from app.schemas.auth_schema import InferenceAccessContext
 from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
 from app.schemas.responses_schema import (
@@ -135,49 +122,6 @@ def _get_inference_service(request: Request) -> InferenceService:
         )
     return service
 
-
-# ---------------------------------------------------------------------------
-# Exception → HTTP status mapping
-#
-# The domain exception hierarchy (app.core.exceptions) is translated here to
-# HTTP status codes. Walking the MRO means subclasses are matched before their
-# base class — no explicit ordering of the dict entries is required.
-# ---------------------------------------------------------------------------
-
-_EXCEPTION_STATUS: dict[type[LLMServiceError], int] = {
-    TenantNotFoundError: status.HTTP_404_NOT_FOUND,
-    TenantSuspendedError: status.HTTP_403_FORBIDDEN,
-    DeploymentNotFoundError: status.HTTP_404_NOT_FOUND,
-    DeploymentInactiveError: status.HTTP_422_UNPROCESSABLE_CONTENT,
-    QuotaExceededError: status.HTTP_429_TOO_MANY_REQUESTS,
-    ConcurrentRequestLimitError: status.HTTP_429_TOO_MANY_REQUESTS,
-    RateLimitError: status.HTTP_429_TOO_MANY_REQUESTS,
-    # 502 — the service's stored credential is wrong, not the caller's fault.
-    AuthenticationError: status.HTTP_502_BAD_GATEWAY,
-    ProviderValidationError: status.HTTP_422_UNPROCESSABLE_CONTENT,
-    ProviderNotAllowedError: status.HTTP_403_FORBIDDEN,
-    OperationNotSupportedError: status.HTTP_422_UNPROCESSABLE_CONTENT,
-    ProviderUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
-    ProviderTimeoutError: status.HTTP_504_GATEWAY_TIMEOUT,
-}
-
-
-def _raise_http(exc: LLMServiceError) -> NoReturn:
-    """Translate a domain exception to an HTTPException and raise it.
-
-    Walks the exception's MRO so the most specific mapping wins.
-    Falls back to HTTP 500 for any LLMServiceError not in the map.
-    """
-    for exc_type in type(exc).__mro__:
-        if exc_type in _EXCEPTION_STATUS:
-            raise HTTPException(
-                status_code=_EXCEPTION_STATUS[exc_type],
-                detail=str(exc),
-            )
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="An unexpected error occurred.",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +212,7 @@ async def chat_completion(
             inference_context.deployment_key,
             exc.error_code,
         )
-        _raise_http(exc)
+        translate_inference_error(exc)
 
 
 @router.post(
@@ -296,7 +240,7 @@ async def embed(
             inference_context.deployment_key,
             exc.error_code,
         )
-        _raise_http(exc)
+        translate_inference_error(exc)
 
 
 @router.post(
@@ -328,4 +272,4 @@ async def rerank(
             inference_context.deployment_key,
             exc.error_code,
         )
-        _raise_http(exc)
+        translate_inference_error(exc)

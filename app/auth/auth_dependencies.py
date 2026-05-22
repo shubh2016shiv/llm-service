@@ -19,14 +19,14 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, get_args
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
 
 from app.auth.jwt_token_service import decode_token, verify_token_type
-from app.schemas.auth_schema import AuthTokenPayload
+from app.schemas.auth_schema import AuthTokenPayload, UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,8 @@ _oauth2_scheme = OAuth2PasswordBearer(
     auto_error=False,
 )
 
-_VALID_ROLES: frozenset[str] = frozenset({"developer", "operator", "admin", "owner"})
+# Derived from the canonical UserRole Literal — single source of truth.
+_VALID_ROLES: frozenset[str] = frozenset(get_args(UserRole))
 
 
 async def get_current_user(
