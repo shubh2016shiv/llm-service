@@ -2,23 +2,22 @@
 Management API Schemas
 ======================
 
-Pydantic contracts for schema-aligned CRUD endpoints.
+Pydantic request and response contracts for management endpoints (tenants,
+users, providers, models, deployments, memberships, and entitlements).
 
-Architecture:
--------------
-    app/api/*_endpoints.py
-        │
-        ▼
-    app.schemas.management_schema
-        │
-        ▼
-    app.execution management services
+Why are Create and Update separate models for the same entity?
+    Creating a resource (POST) requires certain fields to be present — for
+    example, a tenant must have a name. Updating a resource (PATCH) makes
+    every field optional so callers can send only the fields they want to
+    change. If both operations shared one model, PATCH would either force
+    callers to resend unchanged data or reject valid partial updates. Keeping
+    them separate prevents this class of bug entirely.
 
-Dependencies:
-    - app.schemas.auth_schema — role vocabulary used by auth guards
+Enterprise Pattern: CRUD Contract Segregation Pattern
+    Create and update operations use separate models to keep API behavior
+    clear and prevent accidental field misuse.
 
-Author: Engineering Team
-Last Updated: 2026-05-18
+Author: Shubham Singh
 """
 
 from __future__ import annotations

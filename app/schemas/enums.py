@@ -1,9 +1,13 @@
 """
-app/schemas/enums.py — Canonical enumerations for the LLM gateway.
+Schema Enums
+============
 
-These enums are the single source of truth for provider types, operations,
-and authentication modes. They are used across config models, provider
-implementations, and API validation.
+Canonical enumerations used across configuration, routing, and validation.
+
+Enterprise Pattern: Single Source of Truth Pattern
+    Shared enums avoid string drift and keep behavior consistent across modules.
+
+Author: Shubham Singh
 """
 
 from enum import StrEnum
@@ -45,3 +49,4 @@ class AuthMode(StrEnum):
     API_KEY_HEADER = "api_key_header"  # Custom header (x-api-key, api-key, etc.)
     AWS_SIGV4 = "aws_sigv4"  # AWS Signature V4 (Bedrock)
     OAUTH = "oauth"  # Reserved for OAuth2 client credentials
+

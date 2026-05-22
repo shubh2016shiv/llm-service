@@ -1,8 +1,25 @@
 """
-app/schemas/auth_schema.py — JWT token payload and auth response schemas.
+Authentication Schemas
+======================
 
-These models represent the decoded identity inside every authenticated request.
-They are Pydantic models so FastAPI can serialise/validate them at route boundaries.
+Typed models that define the shape of user identity and authorization data
+that flows through the system after a user logs in.
+
+TL;DR for new developers:
+    When a user logs in, the system creates a JWT token containing their
+    user ID and role. ``AuthTokenPayload`` is the Python object that
+    represents that decoded token inside route handlers. When a user calls
+    an inference endpoint, the authorization system checks their access and
+    produces an ``InferenceAccessContext`` — a frozen snapshot of which
+    tenant, deployment, provider, and model they are allowed to use. Both
+    models are immutable (frozen) so no part of the system can accidentally
+    change them after they are created.
+
+Enterprise Pattern: Security Context Contract Pattern
+    Authenticated identity and route-authorization data are passed as
+    immutable, explicit objects instead of ad-hoc dictionaries.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations

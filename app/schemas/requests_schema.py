@@ -1,13 +1,13 @@
 """
-app/schemas/requests_schema.py — Inbound request schemas for the LLM gateway.
+Request Schemas
+===============
 
-These Pydantic models represent requests entering the gateway from the API
-layer. They flow through: API router → request_dispatcher → provider.
+Inbound request models for chat, embeddings, and rerank operations.
 
-Design rules (per Agents.md §4.6):
-- Pydantic v2 with model_config = ConfigDict(...).
-- Every field has a type annotation and a docstring.
-- Use discriminators or Literal unions where appropriate.
+Enterprise Pattern: Boundary Validation Pattern
+    Inputs are validated once at the API boundary using strict typed schemas.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -127,3 +127,4 @@ class RerankRequest(BaseModel):
         ge=1,
         description="Return only the top-N documents. Returns all when None.",
     )
+

@@ -1,13 +1,13 @@
 """
-app/schemas/responses_schema.py — Outbound response schemas for the LLM gateway.
+Response Schemas
+================
 
-These Pydantic models represent responses flowing back from providers through
-the dispatcher to the API layer.
+Outbound response models returned by inference endpoints.
 
-Design rules (per Agents.md §4.6):
-- Pydantic v2 with model_config = ConfigDict(...).
-- frozen=False for responses (may be enriched by middleware).
-- Every field has a type annotation and a docstring.
+Enterprise Pattern: Stable Response Contract Pattern
+    Provider-specific payloads are normalized into one predictable API shape.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -220,3 +220,4 @@ class HealthStatus(BaseModel):
 # Union type for all possible responses — used in type signatures where a
 # single code path may return one of several response types.
 ResponseUnion = ChatResponse | EmbedResponse | RerankResponse | HealthStatus
+

@@ -1,22 +1,19 @@
 """
-app/schemas — Pydantic request/response schemas for the LLM gateway.
+Schemas Package
+===============
 
-These models are the canonical data shapes flowing through the system:
-API router → request_dispatcher → provider → request_dispatcher → API router.
+This package contains the typed data contracts used at API boundaries.
+These models define exactly what requests we accept and what responses we return.
 
-Package Structure
------------------
-    schemas/
-    ├── requests_schema.py       ← ChatRequest, EmbedRequest, RerankRequest, ChatMessage
-    ├── responses_schema.py      ← ChatResponse, ChatStreamChunk, EmbedResponse,
-    │                        RerankResponse, RerankResult, HealthStatus, Usage
-    ├── management_schema.py     ← CRUD request/response contracts
-    └── enums.py          ← ProviderType, OperationType, AuthMode
+Enterprise Pattern: Contract-First Schema Layer
+    Routers, services, and clients share one canonical schema vocabulary so
+    behavior stays consistent across the system.
 
-Usage
------
-    from app.schemas import ChatRequest, ChatResponse, HealthStatus
-    from app.schemas.enums import ProviderType, OperationType
+High-level flow:
+    API request -> request schema validation -> service execution
+    -> response schema serialization -> API response
+
+Author: Shubham Singh
 """
 
 from app.schemas.enums import AuthMode, OperationType, ProviderType
@@ -49,36 +46,33 @@ from app.schemas.responses_schema import (
 )
 
 __all__ = [
-    # ── Enums ──
     "AuthMode",
+    "ChatMessage",
+    "ChatRequest",
+    "ChatResponse",
+    "ChatStreamChunk",
     "DeploymentCreateRequest",
     "DeploymentUpdateRequest",
+    "EmbedRequest",
+    "EmbedResponse",
     "EntitlementCreateRequest",
     "EntitlementUpdateRequest",
+    "HealthStatus",
     "MembershipCreateRequest",
     "MembershipUpdateRequest",
     "ModelCreateRequest",
     "ModelUpdateRequest",
+    "OperationType",
     "PaginatedResponse",
     "ProviderCreateRequest",
+    "ProviderType",
     "ProviderUpdateRequest",
+    "RerankRequest",
+    "RerankResponse",
     "ResourceResponse",
     "TenantCreateRequest",
     "TenantUpdateRequest",
+    "Usage",
     "UserCreateRequest",
     "UserUpdateRequest",
-    # ── Requests ──
-    "ChatMessage",
-    "ChatRequest",
-    # ── Responses ──
-    "ChatResponse",
-    "ChatStreamChunk",
-    "EmbedRequest",
-    "EmbedResponse",
-    "HealthStatus",
-    "OperationType",
-    "ProviderType",
-    "RerankRequest",
-    "RerankResponse",
-    "Usage",
 ]

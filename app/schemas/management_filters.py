@@ -2,23 +2,21 @@
 Management List Filters
 =======================
 
-Typed filter DTOs shared by management list and count operations.
+Typed filter objects shared by management list and count operations.
 
-Architecture:
--------------
-    management API routes
-        |
-        v
-    management filter DTOs
-        |
-        v
-    execution services -> database persistence
+Why explicit filter objects instead of just passing raw query parameters?
+    Each management endpoint accepts optional filters (status, tier, provider,
+    active-only, etc.). Wrapping them in a frozen dataclass gives the filter
+    a name, a type, and a single place to live. The route handler parses query
+    strings into a filter object; the service and persistence layers receive
+    one typed argument instead of a handful of loose strings and booleans.
+    This keeps the query-parsing concern out of the business logic.
 
-Dependencies:
-    - stdlib dataclasses and UUID types only
+Enterprise Pattern: Query Filter Object Pattern
+    Route handlers produce filter objects from HTTP query strings. Services
+    consume filter objects without knowing where the values came from.
 
-Author: Engineering Team
-Last Updated: 2026-05-22
+Author: Shubham Singh
 """
 
 from __future__ import annotations
