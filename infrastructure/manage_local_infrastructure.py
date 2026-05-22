@@ -1,26 +1,50 @@
-"""
-Local Infrastructure Manager - controlled lifecycle for local dependencies.
+﻿"""
+Local Infrastructure Manager CLI.
 
 Architecture:
 -------------
-    Developer Shell
-          |
-          v
-    LocalInfrastructureManager
-          |
-          v
-    Docker Compose CLI
-          |
-          +-- postgres - durable relational data
-          +-- redis - local cache and counters
-          +-- vault - ephemeral local secret backend
+    Developer terminal command
+            |
+            v
+    LocalInfrastructureManager (orchestration layer)
+            |
+            v
+    DockerComposeClient (execution adapter)
+            |
+            +-- postgres container (relational storage)
+            +-- redis container (cache/counters)
+            +-- vault container (local secret backend)
+            +-- vault-init one-shot bootstrap container
+
+Why this script exists:
+    Local development needs repeatable infrastructure setup without manual
+    Docker commands. This script centralizes startup order, readiness checks,
+    schema application, and local secret defaults so every developer gets a
+    consistent environment.
+
+Step-by-step start flow:
+    1. Ensure `.env` has required values (generate missing local secrets).
+    2. Start infrastructure containers with Docker Compose.
+    3. Wait until Postgres, Redis, and Vault report ready.
+    4. Bootstrap Vault via `vault-init`.
+    5. Apply PostgreSQL schema files in approved manifest order.
+    6. Print connection details for local tools.
+
+Secrets rationale:
+    Generated values are intentionally local-only and gitignored through `.env`.
+    They reduce accidental credential reuse across machines and avoid hardcoded
+    static passwords in source control.
+
+Example:
+    python infrastructure/manage_local_infrastructure.py start
+    python infrastructure/manage_local_infrastructure.py status
+    python infrastructure/manage_local_infrastructure.py connect postgres
 
 Dependencies:
-    - docker-compose.yml - local service definitions and named volumes.
-    - postgres_schema/schema_creation_order.md - schema files allowed to run.
+    - docker-compose.yml: local service definitions and named volumes.
+    - postgres_schema/schema_creation_order.md: approved SQL creation order.
 
-Author: Engineering Team
-Last Updated: 2026-05-17
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -64,7 +88,15 @@ REQUIRED_ENVIRONMENT_DEFAULTS: Mapping[str, str] = {
 
 @dataclass(frozen=True)
 class LocalInfrastructureEnvironment:
-    """Resolved local infrastructure connection values."""
+    """Resolved connection and credential values for local containers.
+
+    This value object keeps all runtime connection values in one place so
+    startup, status, schema, and connect operations use the same resolved data.
+
+    Example:
+        postgres_url -> postgresql+asyncpg://<user>:<password>@localhost:5432/<db>
+        redis_url    -> redis://:<password>@localhost:6379/0
+    """
 
     postgres_user: str
     postgres_password: str
@@ -77,7 +109,7 @@ class LocalInfrastructureEnvironment:
 
     @property
     def postgres_url(self) -> str:
-        """Return the host-side async PostgreSQL URL used by the application."""
+        """Return host-side async PostgreSQL URL used by application services."""
         return (
             "postgresql+asyncpg://"
             f"{self.postgres_user}:{self.postgres_password}"
@@ -86,23 +118,36 @@ class LocalInfrastructureEnvironment:
 
     @property
     def redis_url(self) -> str:
-        """Return the host-side Redis URL used by local tools."""
+        """Return host-side Redis URL used by local cache-aware tools."""
         return f"redis://:{self.redis_password}@localhost:6379/0"
 
 
 class CommandFailedError(RuntimeError):
-    """Raised when a required Docker command fails."""
+    """Raised when a required Docker command exits with a non-zero code."""
 
 
 class LocalEnvironmentFile:
-    """Read and update the gitignored local .env file."""
+    """Read and update local `.env` values required for infrastructure startup.
+
+    Responsibility:
+        - Preserve existing developer values.
+        - Append only missing keys.
+        - Derive convenience variables (`DATABASE_URL`, `REDIS_URL`) from
+          primary values to keep runtime config consistent.
+    """
 
     def __init__(self, env_file_path: Path) -> None:
-        """Store the path to the local environment file."""
+        """Initialize with the `.env` file path to manage."""
         self._env_file_path = env_file_path
 
     def ensure_required_values(self) -> Mapping[str, str]:
-        """Append missing local infrastructure values without replacing secrets."""
+        """Ensure required and derived local environment keys exist.
+
+        Existing values are never overwritten. Missing values are appended.
+
+        Returns:
+            Mapping[str, str]: Complete resolved key-value view after updates.
+        """
         current_values = self.read_values()
         missing_values = self._missing_values(current_values)
         if missing_values:
@@ -115,7 +160,12 @@ class LocalEnvironmentFile:
         return current_values
 
     def read_values(self) -> dict[str, str]:
-        """Read KEY=value pairs from .env using the subset Docker Compose needs."""
+        """Read `KEY=value` pairs from `.env` with lightweight parsing rules.
+
+        Returns:
+            dict[str, str]: Parsed environment values. Empty dict if `.env`
+                does not yet exist.
+        """
         if not self._env_file_path.exists():
             return {}
         return {
@@ -127,6 +177,7 @@ class LocalEnvironmentFile:
         }
 
     def _missing_values(self, current_values: Mapping[str, str]) -> dict[str, str]:
+        """Return required keys not currently present in `.env`."""
         return {
             key: value
             for key, value in REQUIRED_ENVIRONMENT_DEFAULTS.items()
@@ -134,10 +185,18 @@ class LocalEnvironmentFile:
         }
 
     def _missing_derived_values(self, current_values: Mapping[str, str]) -> dict[str, str]:
+        """Return derived convenience keys that are missing."""
         derived_values = self._derived_values(current_values)
         return {key: value for key, value in derived_values.items() if not current_values.get(key)}
 
     def _derived_values(self, current_values: Mapping[str, str]) -> Mapping[str, str]:
+        """Build derived URLs and Vault alias values from primary credentials.
+
+        Rationale:
+            Application code and scripts often consume `DATABASE_URL` and
+            `REDIS_URL` directly. Deriving them here avoids drift between
+            base credentials and composed URLs.
+        """
         postgres_user = current_values["POSTGRES_USER"]
         postgres_password = current_values["POSTGRES_PASSWORD"]
         postgres_database = current_values["POSTGRES_DB"]
@@ -153,6 +212,7 @@ class LocalEnvironmentFile:
         }
 
     def _append_values(self, missing_values: Mapping[str, str]) -> None:
+        """Append missing keys to `.env` with a managed section comment."""
         self._env_file_path.parent.mkdir(parents=True, exist_ok=True)
         prefix = "\n" if self._env_file_path.exists() else ""
         content = [prefix, "# Local infrastructure defaults managed by Codex.\n"]
@@ -161,6 +221,7 @@ class LocalEnvironmentFile:
             env_file.writelines(content)
 
     def _parse_line(self, line: str) -> tuple[str, str]:
+        """Parse one `.env` line and ignore comments/blank/invalid lines."""
         stripped_line = line.strip()
         if not stripped_line or stripped_line.startswith("#") or "=" not in stripped_line:
             return "", ""
@@ -169,17 +230,25 @@ class LocalEnvironmentFile:
 
 
 class SchemaManifest:
-    """Load the approved PostgreSQL schema creation order."""
+    """Load and validate approved PostgreSQL schema file execution order.
+
+    This prevents ad-hoc SQL execution order issues by enforcing one curated
+    manifest (`schema_creation_order.md`) as the source of truth.
+    """
 
     _SCHEMA_ENTRY_PATTERN = re.compile(r"^\s*\d+\.\s+`([^`]+\.sql)`")
 
     def __init__(self, manifest_path: Path, schema_directory: Path) -> None:
-        """Store manifest and schema directory paths."""
+        """Initialize with manifest location and schema directory path."""
         self._manifest_path = manifest_path
         self._schema_directory = schema_directory
 
     def ordered_schema_files(self) -> list[Path]:
-        """Return schema file paths in the exact order documented for creation."""
+        """Return schema file paths in documented creation order.
+
+        Raises:
+            FileNotFoundError: If manifest references a missing SQL file.
+        """
         schema_file_names = self._schema_file_names()
         schema_files = [self._schema_directory / name for name in schema_file_names]
         missing_files = [schema_file.name for schema_file in schema_files if not schema_file.exists()]
@@ -188,6 +257,7 @@ class SchemaManifest:
         return schema_files
 
     def _schema_file_names(self) -> list[str]:
+        """Extract ordered schema file names from manifest markdown."""
         manifest_text = self._manifest_path.read_text(encoding="utf-8")
         file_names = [
             match.group(1)
@@ -200,15 +270,20 @@ class SchemaManifest:
 
 
 class DockerComposeClient:
-    """Small wrapper around Docker Compose commands used by local infra."""
+    """Adapter around Docker Compose commands used by this script.
+
+    Rationale:
+        Encapsulating command construction and error translation keeps shell
+        execution concerns separate from infrastructure orchestration logic.
+    """
 
     def __init__(self, root_directory: Path, compose_file_path: Path) -> None:
-        """Store Compose execution context."""
+        """Initialize compose execution context (cwd and compose file)."""
         self._root_directory = root_directory
         self._compose_file_path = compose_file_path
 
     def run(self, compose_arguments: Sequence[str], input_text: str | None = None) -> None:
-        """Run Docker Compose and raise with context if it fails."""
+        """Execute Compose command and raise `CommandFailedError` on failure."""
         command = self._compose_command(compose_arguments)
         completed_process = subprocess.run(
             command,
@@ -221,7 +296,7 @@ class DockerComposeClient:
             raise CommandFailedError(f"Command failed with exit code {completed_process.returncode}")
 
     def output(self, compose_arguments: Sequence[str]) -> str:
-        """Run Docker Compose and return stdout."""
+        """Execute Compose command and return trimmed stdout text."""
         completed_process = subprocess.run(
             self._compose_command(compose_arguments),
             cwd=self._root_directory,
@@ -234,15 +309,21 @@ class DockerComposeClient:
         return completed_process.stdout.strip()
 
     def call(self, compose_arguments: Sequence[str]) -> int:
-        """Run an interactive Docker Compose command and return its exit code."""
+        """Execute interactive Compose command and return raw exit code."""
         return subprocess.call(self._compose_command(compose_arguments), cwd=self._root_directory)
 
     def _compose_command(self, compose_arguments: Sequence[str]) -> list[str]:
+        """Build full `docker compose` command with configured compose file."""
         return ["docker", "compose", "-f", str(self._compose_file_path), *compose_arguments]
 
 
 class LocalInfrastructureManager:
-    """Coordinate local service lifecycle, health checks, and schema creation."""
+    """Coordinate lifecycle, health checks, and schema operations.
+
+    Design principle:
+        This class orchestrates "what to do" while `DockerComposeClient`
+        handles "how commands are run".
+    """
 
     def __init__(
         self,
@@ -250,13 +331,13 @@ class LocalInfrastructureManager:
         environment_file: LocalEnvironmentFile,
         schema_manifest: SchemaManifest,
     ) -> None:
-        """Initialize the manager with explicit dependencies."""
+        """Initialize manager with explicit injected collaborators."""
         self._compose_client = compose_client
         self._environment_file = environment_file
         self._schema_manifest = schema_manifest
 
     def start(self) -> None:
-        """Start local infrastructure and apply the approved PostgreSQL schema."""
+        """Start services, wait for readiness, bootstrap Vault, and apply schema."""
         environment = self._ensure_environment()
         self._compose_client.run(["up", "-d", *INFRASTRUCTURE_SERVICES])
         self._wait_for_services(environment)
@@ -265,22 +346,27 @@ class LocalInfrastructureManager:
         self.print_connection_details(environment)
 
     def stop(self) -> None:
-        """Stop infrastructure containers without deleting named volumes."""
+        """Stop infrastructure containers while preserving named volumes/data."""
         self._compose_client.run(["stop", *INFRASTRUCTURE_SERVICES, "vault-init"])
 
     def restart(self) -> None:
-        """Restart infrastructure while preserving local data volumes."""
+        """Restart infrastructure by running `stop` followed by `start`."""
         self.stop()
         self.start()
 
     def status(self) -> None:
-        """Show service status and local connection details."""
+        """Print container status plus resolved local connection details."""
         environment = self._ensure_environment()
         print(self._compose_client.output(["ps", "vault", "vault-init", "postgres", "redis"]))
         self.print_connection_details(environment)
 
     def apply_schema(self, environment: LocalInfrastructureEnvironment | None = None) -> None:
-        """Apply manifest-approved DDL files through psql inside the container."""
+        """Apply manifest-approved SQL files inside Postgres container.
+
+        Args:
+            environment: Optional pre-resolved environment values. If omitted,
+                values are resolved from `.env`.
+        """
         resolved_environment = environment or self._ensure_environment()
         self._wait_for_postgres(resolved_environment)
         for schema_file in self._schema_manifest.ordered_schema_files():
@@ -288,7 +374,11 @@ class LocalInfrastructureManager:
             self._apply_schema_file(schema_file, resolved_environment)
 
     def connect_postgres(self) -> int:
-        """Open an interactive psql session inside the Postgres container."""
+        """Open interactive `psql` inside Postgres container.
+
+        Returns:
+            int: Exit code from interactive compose command.
+        """
         environment = self._ensure_environment()
         return self._compose_client.call(
             [
@@ -303,20 +393,35 @@ class LocalInfrastructureManager:
         )
 
     def connect_redis(self) -> int:
-        """Open an interactive redis-cli session inside the Redis container."""
+        """Open interactive `redis-cli` session inside Redis container.
+
+        Returns:
+            int: Exit code from interactive compose command.
+        """
         environment = self._ensure_environment()
         return self._compose_client.call(
             ["exec", "redis", "redis-cli", "-a", environment.redis_password]
         )
 
     def reset(self, confirm_delete_volumes: bool) -> None:
-        """Delete containers and volumes only when the explicit guard flag is present."""
+        """Delete containers and volumes only with explicit confirmation flag.
+
+        Args:
+            confirm_delete_volumes: Must be `True` to allow destructive reset.
+
+        Raises:
+            ValueError: If destructive confirmation flag is absent.
+        """
         if not confirm_delete_volumes:
             raise ValueError("Refusing reset without --confirm-delete-volumes.")
         self._compose_client.run(["down", "--volumes", "--remove-orphans"])
 
     def print_connection_details(self, environment: LocalInfrastructureEnvironment) -> None:
-        """Print local development connection details after lifecycle commands."""
+        """Print local connection coordinates and helper commands.
+
+        Args:
+            environment: Resolved local connection values.
+        """
         print("\nLocal infrastructure connection details")
         print("---------------------------------------")
         print(f"Postgres URL: {environment.postgres_url}")
@@ -336,6 +441,7 @@ class LocalInfrastructureManager:
         print("python infrastructure/manage_local_infrastructure.py connect redis")
 
     def _ensure_environment(self) -> LocalInfrastructureEnvironment:
+        """Resolve and validate required local environment values from `.env`."""
         values = self._environment_file.ensure_required_values()
         postgres_user = self._required_value(values, "POSTGRES_USER")
         postgres_password = self._required_value(values, "POSTGRES_PASSWORD")
@@ -352,11 +458,13 @@ class LocalInfrastructureManager:
         )
 
     def _wait_for_services(self, environment: LocalInfrastructureEnvironment) -> None:
+        """Wait for Postgres, Redis, and Vault readiness in deterministic order."""
         self._wait_for_postgres(environment)
         self._wait_for_redis(environment)
         self._wait_for_vault()
 
     def _wait_for_postgres(self, environment: LocalInfrastructureEnvironment) -> None:
+        """Poll Postgres readiness using `pg_isready` from inside container."""
         self._wait_until(
             "Postgres",
             [
@@ -372,15 +480,26 @@ class LocalInfrastructureManager:
         )
 
     def _wait_for_redis(self, environment: LocalInfrastructureEnvironment) -> None:
+        """Poll Redis readiness by running `redis-cli ping` in container."""
         self._wait_until(
             "Redis",
             ["exec", "-T", "redis", "redis-cli", "-a", environment.redis_password, "ping"],
         )
 
     def _wait_for_vault(self) -> None:
+        """Poll Vault readiness using `vault status` in container."""
         self._wait_until("Vault", ["exec", "-T", "vault", "vault", "status"])
 
     def _wait_until(self, service_name: str, command: Sequence[str]) -> None:
+        """Poll command until success or timeout.
+
+        Args:
+            service_name: Friendly service label used in progress/error output.
+            command: Compose command arguments to test service readiness.
+
+        Raises:
+            TimeoutError: If service is still not ready after 90 seconds.
+        """
         deadline_seconds = time.monotonic() + 90
         while time.monotonic() < deadline_seconds:
             if self._command_succeeds(command):
@@ -390,6 +509,7 @@ class LocalInfrastructureManager:
         raise TimeoutError(f"{service_name} did not become ready within 90 seconds.")
 
     def _command_succeeds(self, command: Sequence[str]) -> bool:
+        """Return whether compose command succeeds without raising error."""
         try:
             self._compose_client.output(command)
         except CommandFailedError:
@@ -397,6 +517,7 @@ class LocalInfrastructureManager:
         return True
 
     def _bootstrap_vault(self) -> None:
+        """Run one-shot Vault bootstrap container to initialize local secrets setup."""
         self._compose_client.run(["up", "--force-recreate", "vault-init"])
 
     def _apply_schema_file(
@@ -404,6 +525,11 @@ class LocalInfrastructureManager:
         schema_file: Path,
         environment: LocalInfrastructureEnvironment,
     ) -> None:
+        """Execute one schema file via `psql` with fail-fast SQL behavior.
+
+        The `ON_ERROR_STOP=1` flag ensures SQL failures abort immediately,
+        preventing partial schema application from being silently accepted.
+        """
         self._compose_client.run(
             [
                 "exec",
@@ -421,6 +547,7 @@ class LocalInfrastructureManager:
         )
 
     def _required_value(self, values: Mapping[str, str], key: str) -> str:
+        """Return required env value or raise explicit error when missing."""
         value = values.get(key)
         if not value:
             raise ValueError(f"Required local infrastructure value is missing: {key}")
@@ -428,7 +555,12 @@ class LocalInfrastructureManager:
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    """Build the command-line interface for local infrastructure management."""
+    """Build CLI parser and subcommands for infrastructure lifecycle tasks.
+
+    Returns:
+        argparse.ArgumentParser: Parser with lifecycle, schema, reset, and
+            connect subcommands.
+    """
     parser = argparse.ArgumentParser(description="Manage local Postgres, Redis, and Vault.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("start", help="Start local infrastructure and apply schema.")
@@ -445,7 +577,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def build_manager() -> LocalInfrastructureManager:
-    """Create the manager with production dependencies."""
+    """Create manager with production collaborators bound to repository paths."""
     return LocalInfrastructureManager(
         compose_client=DockerComposeClient(ROOT_DIRECTORY, COMPOSE_FILE_PATH),
         environment_file=LocalEnvironmentFile(ENV_FILE_PATH),
@@ -454,7 +586,16 @@ def build_manager() -> LocalInfrastructureManager:
 
 
 def run_command(manager: LocalInfrastructureManager, arguments: argparse.Namespace) -> int:
-    """Dispatch parsed CLI arguments to the manager."""
+    """Dispatch parsed CLI arguments to manager methods.
+
+    Args:
+        manager: Infrastructure manager handling orchestration logic.
+        arguments: Parsed CLI namespace.
+
+    Returns:
+        int: Process exit code. `0` for success by default, or command-specific
+            code for interactive connect commands.
+    """
     if arguments.command == "start":
         manager.start()
     elif arguments.command == "stop":
@@ -475,7 +616,14 @@ def run_command(manager: LocalInfrastructureManager, arguments: argparse.Namespa
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the local infrastructure CLI."""
+    """Run CLI entrypoint and normalize operational errors to exit code `1`.
+
+    Args:
+        argv: Optional command arguments. If omitted, uses process argv.
+
+    Returns:
+        int: Process exit code.
+    """
     parser = build_argument_parser()
     arguments = parser.parse_args(argv)
     try:
@@ -487,4 +635,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-
