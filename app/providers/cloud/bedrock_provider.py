@@ -1,19 +1,20 @@
 """
-app/providers/cloud/bedrock_provider.py — AWS Bedrock runtime provider.
+AWS Bedrock Provider Adapter
+============================
 
-Architecture
-------------
-    BaseProvider (ABC)
-        └── BedrockProvider   ← chat, embed via boto3 bedrock-runtime
+Concrete adapter for AWS Bedrock runtime operations.
 
-Auth: AWS SigV4 via boto3 session (no API key in headers).
-Transport: aioboto3 (async AWS SDK) — NOT httpx.
+Why this module exists:
+    - Bedrock uses AWS SDK semantics and IAM credential resolution rather than
+      direct API-key HTTP flows.
+    - Request/response payloads differ from OpenAI-style contracts and must be
+      translated explicitly.
 
-Key design differences from direct/ providers:
-- Uses aioboto3 instead of httpx.AsyncClient.
-- Authentication is handled by boto3's credential chain (env vars, IAM, etc.).
-- Converts domain requests ↔ Bedrock-specific JSON schemas.
-- AWS credentials flow through the AWS SDK, not our SecretStore.
+Rationale:
+    - Bedrock transport is intentionally separated from httpx providers so
+      SDK-specific lifecycle, auth, and error behavior stay encapsulated.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -30,8 +31,7 @@ if TYPE_CHECKING:
     import aiobreaker
     from pydantic import SecretStr
 
-    from app.core.settings.models.provider_config import ProviderStaticConfig
-    from app.core.settings.models.tenant_config import DeploymentConfig
+    from app.inference_routing.models import ResolvedExecutionContext
     from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses_schema import (
         ChatResponse,
@@ -53,13 +53,12 @@ class BedrockProvider(BaseProvider[object]):
 
     def __init__(
         self,
-        static_config: ProviderStaticConfig,
-        deployment_config: DeploymentConfig,
+        context: ResolvedExecutionContext,
         http_client: object,  # aioboto3.Session in practice; typed loosely for ABC compatibility
         circuit_breaker: aiobreaker.CircuitBreaker,
         api_key: SecretStr | None = None,  # Accepted for registry compat; Bedrock uses IAM auth
     ) -> None:
-        super().__init__(static_config, deployment_config, http_client, circuit_breaker, api_key)
+        super().__init__(context, http_client, circuit_breaker, api_key)
         self._bedrock_session = http_client  # stored as the aioboto3 session
 
     # ------------------------------------------------------------------
@@ -120,7 +119,7 @@ class BedrockProvider(BaseProvider[object]):
                 # Bedrock uses InvokeModel for embeddings (pre-Converse API)
                 body = self._build_embed_body(request)
                 response = await client.invoke_model(
-                    modelId=self._deployment.model_name,
+                    modelId=self._context.model_name,
                     body=json.dumps(body),
                     contentType="application/json",
                 )
@@ -129,7 +128,7 @@ class BedrockProvider(BaseProvider[object]):
             self._emit_structured_log("embed", latency_ms)
             return EmbedResponse(
                 embeddings=response_body.get("embedding", []),  # type: ignore[arg-type]
-                model=self._deployment.model_name,
+                model=self._context.model_name,
                 usage=Usage(),
             )
         except Exception as exc:
@@ -184,11 +183,11 @@ class BedrockProvider(BaseProvider[object]):
 
     def _build_converse_payload(self, request: ChatRequest) -> dict[str, object]:
         return {
-            "modelId": self._deployment.model_name,
+            "modelId": self._context.model_name,
             "messages": self._convert_messages_to_bedrock(request),
             "inferenceConfig": {
-                "temperature": request.temperature or self._deployment.default_temperature,
-                "maxTokens": request.max_tokens or self._deployment.default_max_tokens or 512,
+                "temperature": request.temperature or self._context.effective_temperature,
+                "maxTokens": request.max_tokens or self._context.effective_max_tokens,
             },
         }
 
@@ -277,8 +276,11 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     def _resolve_aws_region(self) -> str:
-        """Resolve AWS region from deployment settings or provider defaults."""
-        value = self._deployment.extra_config.get("aws_region")
+        """Resolve AWS region from execution context or default to us-east-1."""
+        if self._context.cloud_region:
+            return self._context.cloud_region
+        value = self._context.extra_config.get("aws_region")
         if isinstance(value, str) and value:
             return value
         return "us-east-1"
+

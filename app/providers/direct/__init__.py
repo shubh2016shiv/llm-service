@@ -1,9 +1,15 @@
 """
-app.providers.direct — REST API providers (API-key auth).
+Direct Providers Package
+========================
 
-These providers communicate with LLM services over standard HTTPS REST APIs
-using httpx.AsyncClient. Authentication is typically Bearer token or custom
-header-based.
+Provider adapters that call external LLM REST APIs directly via httpx.
+
+Why this package exists:
+    - Some providers are reached over standard HTTPS with API-key style auth.
+    - These adapters share common HTTP patterns but still require provider-specific
+      payload and response translation.
+
+Author: Shubham Singh
 """
 
 from app.providers.direct.anthropic_provider import AnthropicProvider
@@ -15,3 +21,4 @@ __all__ = [
     "OpenAIProvider",
     "VLLMProvider",
 ]
+

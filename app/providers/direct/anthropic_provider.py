@@ -1,18 +1,19 @@
 """
-app/providers/direct/anthropic_provider.py — Anthropic Messages API provider.
+Anthropic Provider Adapter
+==========================
 
-Architecture
-------------
-    BaseProvider (ABC)
-        └── AnthropicProvider   ← chat via /v1/messages
+Concrete adapter for Anthropic Messages API operations.
 
-Auth: x-api-key header + anthropic-version header.
-Transport: httpx.AsyncClient (shared, pooled).
+Why this module exists:
+    - Anthropic uses a different endpoint shape and message schema than OpenAI.
+    - Required headers (for example API version) and streaming event formats differ.
+    - Unsupported operations (embed/rerank) must fail clearly and predictably.
 
-Key differences from OpenAI:
-- Uses Anthropic-specific Messages API (different endpoint + payload schema).
-- Requires `anthropic-version` header on every request.
-- Rerank / Embed are not natively supported — delegates gracefully.
+Rationale:
+    - Explicitly raising unsupported-operation errors is safer than silent fallback
+      because it prevents accidental capability assumptions.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         t0 = time.monotonic()
         try:
             response = await self._http_client.post(
-                f"{self._deployment.api_endpoint_url}/messages",
+                f"{self._context.api_endpoint_url}/messages",
                 headers=headers,
                 json=payload,
                 timeout=self._effective_timeout(),
@@ -80,7 +81,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         try:
             async with self._http_client.stream(
                 "POST",
-                f"{self._deployment.api_endpoint_url}/messages",
+                f"{self._context.api_endpoint_url}/messages",
                 headers=headers,
                 json=payload,
                 timeout=self._effective_timeout(),
@@ -129,7 +130,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         t0 = time.monotonic()
         try:
             response = await self._http_client.get(
-                f"{self._deployment.api_endpoint_url}/models",
+                f"{self._context.api_endpoint_url}/models",
                 headers=self._build_request_headers(),
                 timeout=self._effective_timeout(),
             )
@@ -160,7 +161,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        headers.update(self._deployment.extra_headers)
+        headers.update(self._context.extra_headers)
         return headers
 
     def _build_messages_payload(self, request: ChatRequest) -> dict[str, object]:
@@ -169,9 +170,9 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         messages = [m.model_dump(mode="json") for m in request.messages if m.role != "system"]
 
         payload: dict[str, object] = {
-            "model": self._deployment.model_name,
+            "model": self._context.model_name,
             "messages": messages,
-            "max_tokens": request.max_tokens or self._deployment.default_max_tokens or 1024,
+            "max_tokens": request.max_tokens or self._context.effective_max_tokens,
         }
         if system_prompts:
             payload["system"] = "\n".join(m.content for m in system_prompts)
@@ -245,3 +246,4 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
             index=0,
             raw_chunk=data,
         )
+

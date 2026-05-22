@@ -1,38 +1,56 @@
 """
-app/providers/base_provider.py — Abstract contract for all LLM providers.
+Base Provider Contract
+======================
 
-Architecture
-------------
-                    ┌──────────────────────────┐
-                    │      BaseProvider         │
-                    │       (ABC)               │
-                    │  + generate()             │
-                    │  + embed()                │
-                    │  + rerank()               │
-                    │  + stream_generate()      │
-                    │  + health_check()         │
-                    │  # _build_auth_headers()  │
-                    │  # _emit_structured_log() │
-                    │  # _handle_provider_error │
-                    │  # _effective_timeout()   │
-                    └──────┬──────────┬────────┘
-                           │          │
-              ┌────────────┘          └────────────┐
-              │                                    │
-    ┌─────────┴─────────┐              ┌──────────┴──────────┐
-    │  direct/          │              │  cloud/             │
-    │  (REST API)       │              │  (Platform SDKs)    │
-    │  OpenAIProvider   │              │  BedrockProvider    │
-    │  AnthropicProv.   │              │  AzureOpenAIProv.   │
-    │  VLLMProvider     │              │                     │
-    └───────────────────┘              └─────────────────────┘
+This module defines the shared contract for every provider adapter in the
+system.
 
-Design Constraints (per implementation_plan.md §6.1)
-----------------------------------------------------
-- Immutable after construction — all state is settings + shared transport.
-- All methods are pure functions over: request payload + frozen settings + shared transport.
-- NEVER store per-request or per-tenant state on the instance.
-- Thread-safe: per-request variables are local to each call frame.
+Why this module exists
+----------------------
+Each provider speaks a different dialect. One may use a bearer token, another
+may use an API key header, and another may use the cloud SDK credential chain.
+If every service knew those details, the code would be harder to read and much
+harder to change.
+
+The base class keeps the rest of the application simple by giving every
+provider the same public operations: `generate`, `embed`, `rerank`,
+`stream_generate`, and `health_check`. The service layer can call those methods
+without caring which provider is underneath.
+
+Why the design matters
+----------------------
+The circuit breaker lives here so resilience is consistent. That means a
+provider outage is handled in the same way no matter which provider failed.
+This matters because operators should debug one failure pattern, not five.
+
+The class is immutable after construction. That prevents one request from
+accidentally changing state that another request is still using.
+
+Example
+-------
+An inference request arrives from the API layer. The service asks the provider
+for a completion and does not need to know whether the answer comes from
+OpenAI, Anthropic, Azure OpenAI, or Bedrock:
+
+    provider.generate(request)
+
+The base class makes that possible by handling the common rules once and
+leaving only the provider-specific translation to the subclass.
+
+How to read this file
+---------------------
+Think of this class as the shared chapter in a book:
+
+    - public methods are the safe entry points
+    - private methods hold provider-specific implementation details
+    - shared logging happens in one place
+    - shared error translation happens in one place
+
+Enterprise Pattern: Template Method + Resilience Boundary
+    The base class defines the workflow, and subclasses fill in the provider
+    specific pieces.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -53,7 +71,7 @@ if TYPE_CHECKING:
 
     from app.core.exceptions import ProviderError
     from app.core.settings.models.provider_config import ProviderStaticConfig
-    from app.core.settings.models.tenant_config import DeploymentConfig
+    from app.inference_routing.models import ResolvedExecutionContext
     from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses_schema import (
         ChatResponse,
@@ -63,6 +81,45 @@ if TYPE_CHECKING:
         RerankResponse,
     )
 
+
+# --- Internal stream-signalling types ---
+#
+# stream_generate() works by running the provider's async generator inside a
+# background task (the "producer") and passing chunks to the caller through an
+# asyncio.Queue. The queue must be able to carry three completely different
+# things: real data chunks, an error signal, and a "finished" signal. To do
+# that safely we use a discriminated union — three distinct types so that an
+# isinstance() check on every item pulled from the queue can tell them apart
+# with zero ambiguity.
+#
+# Why not use None as the "finished" sentinel?
+#   None is a valid Python value that could appear anywhere, and the type
+#   checker cannot distinguish "this None is a deliberate sentinel" from "this
+#   None is accidental data." Mixing None into a typed queue also forces
+#   Optional everywhere downstream, which is noise. A dedicated class is
+#   unambiguous: nothing can accidentally be a _StreamComplete.
+#
+# Why not use a plain string like "DONE"?
+#   Strings cannot be used with isinstance() to discriminate a union. You would
+#   need equality checks (`if item == "DONE"`), which are fragile and bypass the
+#   type checker entirely. The type checker would not know that after the check
+#   `item` can only be a ChatStreamChunk.
+#
+# _StreamError — carries the exception from the producer task back to the
+#   caller. Implemented as a frozen dataclass because it wraps real data (the
+#   exception object) that must be carried across the queue boundary.
+#
+# _StreamComplete — a pure "end of stream, no error" signal. It carries no
+#   data at all, so a minimal class with `pass` is correct. Using @dataclass
+#   here would be misleading — it implies structured data where there is none.
+#
+# _STREAM_COMPLETE — a single pre-created instance of _StreamComplete that is
+#   reused every time a stream finishes. Creating a new _StreamComplete() on
+#   every request would work but is wasteful. A module-level singleton is the
+#   standard Python pattern for sentinels (the stdlib uses `_MISSING = object()`
+#   for the same reason). The consumer checks `isinstance(item, _StreamComplete)`
+#   rather than identity (`is _STREAM_COMPLETE`) so the code reads as a clean
+#   type-based dispatch, consistent with how _StreamError is handled.
 
 @dataclass(frozen=True)
 class _StreamError:
@@ -83,22 +140,38 @@ class BaseProvider[TransportT](ABC):
       request payload + frozen settings + shared transport.
 
     Never store per-request or per-tenant state on the instance.
+
+    Generic parameter — TransportT:
+        The `[TransportT]` bracket after the class name is Python 3.12 syntax
+        for declaring a generic class. It means: "this class has one type
+        parameter called TransportT that will be filled in concretely by each
+        subclass." Think of it like a placeholder that says what kind of HTTP
+        transport client this provider uses.
+
+        For example:
+            - OpenAIProvider extends BaseProvider[httpx.AsyncClient]
+              → TransportT is resolved to httpx.AsyncClient
+            - BedrockProvider extends BaseProvider[object]
+              → TransportT is resolved to object (aioboto3 session)
+
+        This lets the type checker verify that self._http_client is used
+        correctly in each subclass without forcing every provider to share
+        the same concrete transport type.
     """
 
     def __init__(
         self,
-        static_config: ProviderStaticConfig,
-        deployment_config: DeploymentConfig,
+        context: ResolvedExecutionContext,
         http_client: TransportT,
         circuit_breaker: aiobreaker.CircuitBreaker,
         api_key: SecretStr | None = None,
     ) -> None:
-        self._static = static_config
-        self._deployment = deployment_config
-        self._http_client = http_client
-        self._circuit_breaker = circuit_breaker
-        self._api_key = api_key if api_key is not None else SecretStr("")
-        self._logger = logging.getLogger(self.__class__.__module__)
+        self._context: ResolvedExecutionContext = context
+        self._static: ProviderStaticConfig = context.provider_static_config
+        self._http_client: TransportT = http_client
+        self._circuit_breaker: aiobreaker.CircuitBreaker = circuit_breaker
+        self._api_key: SecretStr = api_key if api_key is not None else SecretStr("")
+        self._logger: logging.Logger = logging.getLogger(self.__class__.__module__)
 
     # ------------------------------------------------------------------
     # Public Execution Methods (Wrapped with Circuit Breaker)
@@ -165,9 +238,50 @@ class BaseProvider[TransportT](ABC):
         func: Callable[..., Coroutine[object, object, ResponseT]],
         *args: object,
     ) -> ResponseT:
-        """Call a coroutine through aiobreaker while preserving its return type."""
-        # cast: aiobreaker.call_async is not generic in its distributed stubs,
-        # but the runtime returns exactly the value produced by `func`.
+        """Call a coroutine through aiobreaker while preserving its return type.
+
+        Generic parameter — ResponseT:
+            The `[ResponseT]` bracket after the method name is Python 3.12 syntax
+            for declaring a generic method. It works like a placeholder that says:
+            "whatever return type the caller passes in as `func`, this method will
+            return that same type." ResponseT is NOT a fixed class defined somewhere
+            — it is created fresh at this method definition and lives only within
+            this method's scope.
+
+            For example, when called as:
+                self._call_with_breaker(self._generate, request)
+
+            `func` is `self._generate`, which returns ChatResponse. The type
+            checker substitutes ResponseT = ChatResponse for that specific call,
+            so the return type of _call_with_breaker is also ChatResponse. The
+            next call with `self._embed` (which returns EmbedResponse) gets
+            ResponseT = EmbedResponse independently. This is how one method can
+            serve all operation types without losing type safety.
+        """
+        # Why cast(ResponseT, ...) is required here — not a bandaid, a deliberate workaround:
+        #
+        # At runtime, aiobreaker.CircuitBreaker.call_async is a transparent pass-through:
+        # it receives a coroutine function, runs it according to the circuit breaker rules
+        # (open / half-open / closed), and returns whatever that function returned — nothing
+        # more. So if `func` produces a ChatResponse, call_async also hands back a ChatResponse.
+        #
+        # The problem is on the type-checking side. Third-party libraries ship "type stubs"
+        # (*.pyi files) that tell Python's type checker (e.g. mypy, pyright) what types a
+        # function accepts and returns. aiobreaker's stubs declare call_async as:
+        #
+        #     async def call_async(self, func: Callable[..., Coroutine], *args, **kwargs)
+        #
+        # There is no return type declared. The type checker therefore has no way to figure
+        # out on its own that "if you pass a function returning ResponseT, call_async also
+        # returns ResponseT." It treats the return as `Any` — a special type that silently
+        # turns off type checking for anything downstream.
+        #
+        # cast(ResponseT, value) is the standard Python tool for exactly this situation.
+        # It tells the type checker: "we know from reading aiobreaker's source that the
+        # return is always whatever `func` returns; treat it as ResponseT." At runtime,
+        # cast() is a complete no-op — it returns its second argument unchanged, with zero
+        # conversion, zero checking, zero overhead. It exists solely so the type checker
+        # keeps the return type correct through this call boundary.
         return cast("ResponseT", await self._circuit_breaker.call_async(func, *args))
 
     # ------------------------------------------------------------------
@@ -232,8 +346,8 @@ class BaseProvider[TransportT](ABC):
         Subclasses may enrich with provider-specific fields before calling super().
         """
         extra: dict[str, object] = {
-            "provider_name": self._static.provider_name,
-            "model_name": self._deployment.model_name,
+            "provider_name": self._context.provider_name,
+            "model_name": self._context.model_name,
             "operation": operation,
             "latency_ms": latency_ms,
             "status_code": status_code,
@@ -246,10 +360,10 @@ class BaseProvider[TransportT](ABC):
 
     def _handle_provider_error(self, exc: Exception) -> ProviderError:
         """Map a provider-specific exception to a canonical ProviderError."""
-        from app.providers.error_classifier import classify_error
+        from app.providers.http_errors import classify_error
 
         return classify_error(exc, provider_name=self._static.provider_name)
 
     def _effective_timeout(self) -> float:
-        """Resolve the effective timeout: deployment override → provider default."""
-        return self._deployment.timeout_seconds or self._static.default_timeout_seconds
+        """Return the pre-resolved timeout from the execution context."""
+        return self._context.effective_timeout_seconds

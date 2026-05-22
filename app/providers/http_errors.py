@@ -1,9 +1,24 @@
 """
-app/providers/error_classifier.py — Maps raw provider errors to LLMServiceError hierarchy.
+Provider Error Classification
+=============================
 
-Since we use direct HTTP requests (via httpx) for most providers and aioboto3 for Bedrock,
-this module categorizes raw HTTP status codes and aioboto3 exceptions into our
-internal ProviderError subclasses.
+Maps raw transport/SDK exceptions into canonical domain-level provider errors.
+
+Why this module exists:
+    - Each provider and SDK emits different exception types and payload shapes.
+    - Upstream layers should not branch on httpx, otocore, or provider-specific
+      error formats.
+    - A normalized error surface keeps retry, alerting, and HTTP translation stable.
+
+Rationale:
+    - Classification is best-effort and conservative: unknown failures become
+      ProviderInternalError with safe diagnostic metadata.
+    - Retry-oriented and quota-oriented errors are mapped explicitly so caller-side
+      behavior (for example Retry-After) can remain deterministic.
+
+Enterprise Pattern: Anti-Corruption Error Boundary
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -34,8 +49,7 @@ except ImportError:
         """Placeholder used when botocore is not installed.
 
         isinstance checks against this class are always False for real AWS errors,
-        so the response attribute is never accessed in practice — but it is declared
-        here so static analysis does not flag attribute access on the class.
+        so the response attribute is never accessed in practice.
         """
 
         response: ClassVar[dict[str, object]] = {}
@@ -48,14 +62,12 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
 
     Args:
         exc: The raw exception caught from httpx or aioboto3.
-        provider_name: The name of the provider.
+        provider_name: The name of the provider (used in exception messages).
 
     Returns:
-        An instantiated subclass of ProviderError.
+        An instantiated subclass of ProviderError — never raises.
     """
     if isinstance(exc, httpx.TimeoutException):
-        # We don't have the exact configured timeout value here, so default to 0.0
-        # or it could be extracted from exc if httpx exposes it.
         return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=0.0)
 
     if isinstance(exc, httpx.HTTPStatusError):
@@ -68,8 +80,6 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
             return InvalidAPIKeyError(provider_name=provider_name, masked_key="****")
 
         if status == 429:
-            # Simple heuristic; specific providers may need custom parsing
-            # to extract exact retry_after_seconds.
             retry_after = int(exc.response.headers.get("Retry-After", 0)) or None
             if "token" in body:
                 return TokensPerMinuteExceededError(
@@ -81,8 +91,6 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
 
         if status == 400:
             if "model" in body and "not found" in body:
-                # Extracting requested model would require access to the request,
-                # so we use a placeholder "unknown" or extract from body.
                 return ModelNotSupportedError(provider_name=provider_name, model_name="unknown")
             return InvalidRequestError(
                 provider_name=provider_name, field="unknown", reason=body[:200]
@@ -100,7 +108,7 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
     if isinstance(exc, httpx.RequestError):
         return ServiceDownError(provider_name=provider_name, status_code=503)
 
-    # AWS Bedrock handling
+    # AWS Bedrock
     if isinstance(exc, (ConnectTimeoutError, ReadTimeoutError)):
         return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=0.0)
 
@@ -125,9 +133,9 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
         if code in ("InternalServerException", "ServiceUnavailableException"):
             return ServiceDownError(provider_name=provider_name, status_code=503)
 
-    # Fallback
     return ProviderInternalError(
         f"Unhandled exception communicating with {provider_name}: {exc.__class__.__name__}",
         provider_name=provider_name,
         details={"raw_error": str(exc)},
     )
+

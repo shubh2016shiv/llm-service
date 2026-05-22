@@ -1,19 +1,18 @@
 """
-app/providers/cloud/azure_openai_provider.py — Azure OpenAI Service provider.
+Azure OpenAI Provider Adapter
+=============================
 
-Architecture
-------------
-    BaseProvider (ABC)
-        └── AzureOpenAIProvider   ← chat, embed via Azure OpenAI REST API
+Concrete adapter for Azure OpenAI deployment-based endpoints.
 
-Auth: api-key header (standard) or Entra ID token (via extra_config).
-Transport: httpx.AsyncClient (shared, pooled).
+Why this module exists:
+    - Azure OpenAI routes through deployment names and Azure-specific URL structure.
+    - Header and versioning conventions differ from direct OpenAI API usage.
 
-Key differences from direct/openai_provider.py:
-- Endpoint URL is Azure-specific: {endpoint}/openai/deployments/{deployment}/...
-- Requires `api-key` header (not `Authorization: Bearer` by default).
-- Optional `api-version` query parameter.
-- Per-deployment model mapping (deployment name ≠ model name).
+Rationale:
+    - Keeping Azure path/query/auth details localized prevents leakage of
+      platform-specific rules into shared inference services.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -183,21 +182,33 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
             "api-key": self._api_key.get_secret_value(),
             "Content-Type": "application/json",
         }
-        headers.update(self._deployment.extra_headers)
+        headers.update(self._context.extra_headers)
         return headers
 
     def _build_url(self, path: str) -> str:
         """Build the Azure OpenAI endpoint URL.
 
-        Format: {endpoint}/openai/deployments/{deployment_key}/{path}?api-version=...
+        Format: {endpoint}/openai/deployments/{azure_deployment_name}/{path}?api-version=...
+
+        Azure deployment name priority:
+          1. extra_config["azure_deployment_name"] — explicit Azure model deployment name
+          2. deployment_config.deployment_key — tenant routing key as fallback
+          3. model_name — last resort when called from user-entitlement path
         """
-        base = self._deployment.api_endpoint_url.rstrip("/")
-        deployment_key = self._deployment.deployment_key
-        url = f"{base}/openai/deployments/{deployment_key}"
+        base = self._context.api_endpoint_url.rstrip("/")
+        azure_deployment_name = (
+            str(self._context.extra_config["azure_deployment_name"])
+            if "azure_deployment_name" in self._context.extra_config
+            else (
+                self._context.deployment_config.deployment_key
+                if self._context.deployment_config is not None
+                else self._context.model_name
+            )
+        )
+        url = f"{base}/openai/deployments/{azure_deployment_name}"
         if path:
             url = f"{url}/{path.lstrip('/')}"
-        # Append api-version query param if configured
-        api_version = self._deployment.extra_config.get("api_version") or "2024-02-15-preview"
+        api_version = self._context.extra_config.get("api_version") or "2024-02-15-preview"
         return f"{url}?api-version={api_version}"
 
     def _build_chat_payload(self, request: ChatRequest) -> dict[str, object]:
@@ -274,3 +285,4 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
             model=data.get("model", ""),  # type: ignore[arg-type]
             usage=usage,
         )
+

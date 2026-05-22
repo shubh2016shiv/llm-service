@@ -1,9 +1,15 @@
 """
-app.providers.cloud — Cloud-platform providers (IAM/SDK auth).
+Cloud Providers Package
+=======================
 
-These providers use cloud-platform-native SDKs (boto3, Azure SDK) instead of
-plain httpx. Authentication is handled by the platform's credential chain
-(IAM roles, managed identities, environment variables) rather than API keys.
+Provider adapters that rely on cloud-platform-native auth and/or SDK patterns.
+
+Why this package exists:
+    - Cloud integrations often use identity chains (IAM/managed identity) rather
+      than static API keys.
+    - SDK and endpoint semantics differ from direct REST providers.
+
+Author: Shubham Singh
 """
 
 from app.providers.cloud.azure_openai_provider import AzureOpenAIProvider
@@ -13,3 +19,4 @@ __all__ = [
     "AzureOpenAIProvider",
     "BedrockProvider",
 ]
+

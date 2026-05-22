@@ -1,19 +1,19 @@
 """
-app/providers/direct/vllm_provider.py — vLLM (OpenAI-compatible) self-hosted provider.
+vLLM Provider Adapter
+=====================
 
-Architecture
-------------
-    BaseProvider (ABC)
-        └── VLLMProvider   ← chat, embed via OpenAI-compatible /v1 endpoints
+Concrete adapter for self-hosted vLLM endpoints that expose OpenAI-compatible APIs.
 
-Auth: Optional API key (Bearer token) — vLLM can run with or without auth.
-Transport: httpx.AsyncClient (shared, pooled).
+Why this module exists:
+    - Teams may run private/self-hosted inference for cost, privacy, or latency goals.
+    - vLLM is mostly OpenAI-compatible but not fully identical; this adapter captures
+      those differences in one place.
 
-Design note:
-    vLLM exposes an OpenAI-compatible REST API, so this provider is a
-    lightweight variant of OpenAIProvider. It strips features not supported
-    by vLLM (e.g. logprobs, function calling, some params) and uses the
-    configured deployment endpoint directly.
+Rationale:
+    - Keep compatibility logic local to this adapter so upstream services do not
+      branch on self-hosted vs managed-provider behavior.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
         t0 = time.monotonic()
         try:
             response = await self._http_client.post(
-                f"{self._deployment.api_endpoint_url}/chat/completions",
+                f"{self._context.api_endpoint_url}/chat/completions",
                 headers=headers,
                 json=payload,
                 timeout=self._effective_timeout(),
@@ -81,7 +81,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
         try:
             async with self._http_client.stream(
                 "POST",
-                f"{self._deployment.api_endpoint_url}/chat/completions",
+                f"{self._context.api_endpoint_url}/chat/completions",
                 headers=headers,
                 json=payload,
                 timeout=self._effective_timeout(),
@@ -105,13 +105,13 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
         headers = self._build_request_headers()
         payload = {
-            "model": self._deployment.model_name,
+            "model": self._context.model_name,
             "input": request.input if isinstance(request.input, list) else [request.input],
         }
         t0 = time.monotonic()
         try:
             response = await self._http_client.post(
-                f"{self._deployment.api_endpoint_url}/embeddings",
+                f"{self._context.api_endpoint_url}/embeddings",
                 headers=headers,
                 json=payload,
                 timeout=self._effective_timeout(),
@@ -151,7 +151,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
         t0 = time.monotonic()
         try:
             response = await self._http_client.get(
-                f"{self._deployment.api_endpoint_url}/health",
+                f"{self._context.api_endpoint_url}/health",
                 timeout=self._effective_timeout(),
             )
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -180,12 +180,12 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
         api_key = self._api_key.get_secret_value()
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        headers.update(self._deployment.extra_headers)
+        headers.update(self._context.extra_headers)
         return headers
 
     def _build_chat_payload(self, request: ChatRequest) -> dict[str, object]:
         payload: dict[str, object] = {
-            "model": self._deployment.model_name,
+            "model": self._context.model_name,
             "messages": [m.model_dump(mode="json") for m in request.messages],
         }
         if request.temperature is not None:
@@ -258,3 +258,4 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
             model=data.get("model", ""),  # type: ignore[arg-type]
             usage=usage,
         )
+

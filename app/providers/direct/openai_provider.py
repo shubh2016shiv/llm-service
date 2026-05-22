@@ -1,13 +1,21 @@
 """
-app/providers/direct/openai_provider.py — OpenAI REST API provider.
+OpenAI Provider Adapter
+=======================
 
-Architecture
-------------
-    BaseProvider (ABC)
-        └── OpenAIProvider   ← chat, embed, stream via /v1/chat/completions
+Concrete adapter for OpenAI-compatible chat and embedding endpoints.
 
-Auth: Bearer token (api_key).
-Transport: httpx.AsyncClient (shared, pooled).
+Why this module exists:
+    - OpenAI payload/response structure is widely used as the baseline contract.
+    - We still isolate implementation details (headers, SSE chunks, usage parsing)
+      behind the shared provider interface so upstream code stays generic.
+
+Rationale:
+    - Streaming and non-streaming paths are explicit so failures and telemetry
+      are observable per mode.
+    - Provider-native payload is kept in responses for diagnostics while API-facing
+      response contracts remain normalized.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -50,7 +58,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
         t0 = time.monotonic()
         try:
             response = await self._http_client.post(
-                f"{self._deployment.api_endpoint_url}/chat/completions",
+                f"{self._context.api_endpoint_url}/chat/completions",
                 headers=headers,
                 json=payload,
                 timeout=self._effective_timeout(),
@@ -76,7 +84,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
         try:
             async with self._http_client.stream(
                 "POST",
-                f"{self._deployment.api_endpoint_url}/chat/completions",
+                f"{self._context.api_endpoint_url}/chat/completions",
                 headers=headers,
                 json=payload,
                 timeout=self._effective_timeout(),
@@ -103,7 +111,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
         t0 = time.monotonic()
         try:
             response = await self._http_client.post(
-                f"{self._deployment.api_endpoint_url}/embeddings",
+                f"{self._context.api_endpoint_url}/embeddings",
                 headers=headers,
                 json=payload,
                 timeout=self._effective_timeout(),
@@ -145,7 +153,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
         t0 = time.monotonic()
         try:
             response = await self._http_client.get(
-                f"{self._deployment.api_endpoint_url}/models",
+                f"{self._context.api_endpoint_url}/models",
                 headers=self._build_request_headers(),
                 timeout=self._effective_timeout(),
             )
@@ -172,12 +180,12 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
     def _build_request_headers(self) -> dict[str, str]:
         headers = self._build_auth_headers()
         headers["Content-Type"] = "application/json"
-        headers.update(self._deployment.extra_headers)
+        headers.update(self._context.extra_headers)
         return headers
 
     def _build_chat_payload(self, request: ChatRequest) -> dict[str, object]:
         payload: dict[str, object] = {
-            "model": self._deployment.model_name,
+            "model": self._context.model_name,
             "messages": [m.model_dump(mode="json") for m in request.messages],
         }
         if request.temperature is not None:
@@ -192,7 +200,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
 
     def _build_embed_payload(self, request: EmbedRequest) -> dict[str, object]:
         return {
-            "model": self._deployment.model_name,
+            "model": self._context.model_name,
             "input": request.input if isinstance(request.input, list) else [request.input],
         }
 
@@ -256,3 +264,4 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
             model=data.get("model", ""),  # type: ignore[arg-type]
             usage=usage,
         )
+
