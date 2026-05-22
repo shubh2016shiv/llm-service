@@ -28,8 +28,6 @@ How the flow works:
 
 Dependencies:
     - app.database: Source-of-truth authorization lookups.
-    - app.schemas.auth_schema: Identity payload and safe auth context.
-    - app.core.exceptions: Stable domain errors returned to API layer.
 
 Author: Shubham Singh
 """
@@ -119,7 +117,9 @@ class TenantAuthorizationService:
 
         membership = await self._memberships.get_membership(tenant_id, current_user.user_id)
         if membership is None or membership.get("status") != _ACTIVE_STATUS:
-            raise TenantAccessDeniedError(str(current_user.user_id), str(tenant_id), "active_member")
+            raise TenantAccessDeniedError(
+                str(current_user.user_id), str(tenant_id), "active_member"
+            )
 
         tenant_role = str(membership.get("tenant_role", ""))
         if tenant_role not in _INFERENCE_ROLES:
@@ -164,4 +164,3 @@ class TenantAuthorizationService:
         if current_snapshot is not None and current_snapshot == final_snapshot:
             await self._cache.set(context, current_snapshot)
         return context
-
