@@ -1,11 +1,33 @@
-"""
-Provider and Model Catalog Routes
-=================================
+﻿"""
+Provider and Model Catalog Router.
 
-This router manages provider records and model records under each provider.
+Architecture:
+-------------
+    +----------------------------------+
+    ¦ admin/developer caller           ¦
+    +----------------------------------+
+                   ?
+    +----------------------------------+
+    ¦ catalog router (`/api/v1/providers`) ¦
+    +----------------------------------+
+                   ?
+    +----------------------------------+
+    ¦ ProviderCatalogService /         ¦
+    ¦ ModelCatalogService              ¦
+    +----------------------------------+
+                   ?
+    +----------------------------------+
+    ¦ catalog persistence              ¦
+    +----------------------------------+
 
-Enterprise Pattern: Thin Router Pattern
-    Routes validate HTTP inputs and delegate business rules to services.
+Purpose:
+    Manage provider definitions and model definitions that tenants can later
+    reference in deployments.
+
+Flow rationale:
+    Provider/model records are platform-level metadata. Keeping this in a
+    dedicated router avoids mixing global catalog management with tenant-scoped
+    deployment operations.
 
 Author: Shubham Singh
 """
@@ -43,7 +65,19 @@ async def create_provider(
     service: Annotated[ProviderCatalogService, Depends(get_provider_catalog_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Register a provider catalog entry."""
+    """Create a new provider catalog entry.
+
+    Args:
+        body: Provider metadata and configuration defaults.
+        service: Provider catalog business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Created provider resource envelope.
+
+    Raises:
+        HTTPException: Raised indirectly when domain validation fails.
+    """
     try:
         return ResourceResponse.model_validate(await service.create_provider(body))
     except LLMServiceError as exc:
@@ -58,7 +92,18 @@ async def list_providers(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> PaginatedResponse:
-    """List provider catalog entries."""
+    """List provider catalog entries with pagination.
+
+    Args:
+        service: Provider catalog business service.
+        current_user: Authenticated developer-or-higher caller.
+        include_inactive: When true, include deprecated/inactive providers.
+        limit: Maximum records to return.
+        offset: Pagination offset.
+
+    Returns:
+        PaginatedResponse: Provider rows plus total/limit/offset metadata.
+    """
     rows = await service.list_providers(include_inactive, limit, offset)
     total = await service.count_providers(include_inactive)
     return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
@@ -70,7 +115,19 @@ async def get_provider(
     service: Annotated[ProviderCatalogService, Depends(get_provider_catalog_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
 ) -> ResourceResponse:
-    """Retrieve one provider catalog entry."""
+    """Fetch one provider catalog entry by id.
+
+    Args:
+        provider_id: Provider identifier.
+        service: Provider catalog business service.
+        current_user: Authenticated developer-or-higher caller.
+
+    Returns:
+        ResourceResponse: Provider resource envelope.
+
+    Raises:
+        HTTPException: Raised indirectly if provider does not exist.
+    """
     try:
         return ResourceResponse.model_validate(await service.get_provider(provider_id))
     except LLMServiceError as exc:
@@ -84,7 +141,17 @@ async def update_provider(
     service: Annotated[ProviderCatalogService, Depends(get_provider_catalog_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Partially update a provider catalog entry."""
+    """Apply partial updates to a provider catalog entry.
+
+    Args:
+        provider_id: Provider identifier to update.
+        body: Partial provider fields to change.
+        service: Provider catalog business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Updated provider envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.update_provider(provider_id, body))
     except LLMServiceError as exc:
@@ -97,7 +164,19 @@ async def delete_provider(
     service: Annotated[ProviderCatalogService, Depends(get_provider_catalog_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_owner)],
 ) -> Response:
-    """Delete a provider catalog entry."""
+    """Delete a provider catalog entry.
+
+    Owner role is required because deleting provider metadata can impact
+    deployment creation and governance behavior platform-wide.
+
+    Args:
+        provider_id: Provider identifier to delete.
+        service: Provider catalog business service.
+        current_user: Authenticated owner caller.
+
+    Returns:
+        Response: Empty HTTP 204 response on success.
+    """
     try:
         await service.delete_provider(provider_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -112,7 +191,17 @@ async def create_model(
     service: Annotated[ModelCatalogService, Depends(get_model_catalog_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Register a model under a provider."""
+    """Register a model under one provider.
+
+    Args:
+        provider_id: Provider owning the model definition.
+        body: Model metadata and capability flags.
+        service: Model catalog business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Created model resource envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.create_model(provider_id, body))
     except LLMServiceError as exc:
@@ -128,7 +217,19 @@ async def list_models(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> PaginatedResponse:
-    """List models registered under a provider."""
+    """List models for one provider with pagination.
+
+    Args:
+        provider_id: Provider identifier.
+        service: Model catalog business service.
+        current_user: Authenticated developer-or-higher caller.
+        active_only: When true, hide inactive/deprecated models.
+        limit: Maximum records to return.
+        offset: Pagination offset.
+
+    Returns:
+        PaginatedResponse: Model rows plus pagination metadata.
+    """
     rows = await service.list_models(provider_id, active_only, limit, offset)
     total = await service.count_models(provider_id, active_only)
     return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
@@ -141,7 +242,17 @@ async def get_model(
     service: Annotated[ModelCatalogService, Depends(get_model_catalog_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
 ) -> ResourceResponse:
-    """Retrieve one provider-owned model."""
+    """Fetch one model owned by a provider.
+
+    Args:
+        provider_id: Provider identifier.
+        model_id: Model identifier.
+        service: Model catalog business service.
+        current_user: Authenticated developer-or-higher caller.
+
+    Returns:
+        ResourceResponse: Requested model envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.get_model(provider_id, model_id))
     except LLMServiceError as exc:
@@ -156,7 +267,18 @@ async def update_model(
     service: Annotated[ModelCatalogService, Depends(get_model_catalog_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Partially update a provider-owned model."""
+    """Apply partial updates to one provider-owned model.
+
+    Args:
+        provider_id: Provider identifier.
+        model_id: Model identifier.
+        body: Partial fields to update.
+        service: Model catalog business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Updated model envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.update_model(provider_id, model_id, body))
     except LLMServiceError as exc:
@@ -170,7 +292,19 @@ async def activate_model(
     service: Annotated[ModelCatalogService, Depends(get_model_catalog_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Activate a provider-owned model."""
+    """Mark one provider-owned model as active.
+
+    Activation allows downstream deployment workflows to select this model.
+
+    Args:
+        provider_id: Provider identifier.
+        model_id: Model identifier.
+        service: Model catalog business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Activated model envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.activate_model(provider_id, model_id))
     except LLMServiceError as exc:
@@ -184,10 +318,21 @@ async def deactivate_model(
     service: Annotated[ModelCatalogService, Depends(get_model_catalog_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Deactivate a provider-owned model by marking it deprecated."""
+    """Mark one provider-owned model as inactive/deprecated.
+
+    Deactivation prevents new deployment use while keeping historical metadata.
+
+    Args:
+        provider_id: Provider identifier.
+        model_id: Model identifier.
+        service: Model catalog business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Deactivated model envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.deactivate_model(provider_id, model_id))
     except LLMServiceError as exc:
         translate_management_error(exc)
-
 

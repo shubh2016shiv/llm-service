@@ -1,12 +1,32 @@
-"""
-User Entitlement Routes
-=======================
+﻿"""
+User Entitlement Router.
 
-This router manages which user can use which tenant deployment routes through
-entitlement records.
+Architecture:
+-------------
+    +------------------------------+
+    ¦ admin/developer caller       ¦
+    +------------------------------+
+                   ?
+    +------------------------------+
+    ¦ entitlement router           ¦
+    ¦ (`/api/v1/users/*`)          ¦
+    +------------------------------+
+                   ?
+    +------------------------------+
+    ¦ UserEntitlementService       ¦
+    ¦ policy + access enforcement  ¦
+    +------------------------------+
+                   ?
+    +------------------------------+
+    ¦ entitlement persistence      ¦
+    +------------------------------+
 
-Enterprise Pattern: Thin Router Pattern
-    Route handlers stay focused on HTTP and call services for all domain rules.
+Purpose:
+    Manage records that grant a user access to tenant deployments.
+
+Rationale:
+    Entitlements are the final permission gate for inference calls, so keeping
+    them in a dedicated router makes review and audit simpler.
 
 Author: Shubham Singh
 """
@@ -41,7 +61,17 @@ async def create_entitlement(
     service: Annotated[UserEntitlementService, Depends(get_user_entitlement_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Create a user entitlement."""
+    """Create a deployment entitlement for one user.
+
+    Args:
+        user_id: User receiving the entitlement.
+        body: Entitlement definition (tenant/deployment scope and limits).
+        service: Entitlement business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Created entitlement envelope.
+    """
     try:
         row = await service.create_entitlement(user_id, body, current_user)
         return ResourceResponse.model_validate(row)
@@ -58,7 +88,19 @@ async def list_entitlements(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> PaginatedResponse:
-    """List user entitlements within a tenant."""
+    """List a user's entitlements inside one tenant.
+
+    Args:
+        user_id: User identifier.
+        service: Entitlement business service.
+        current_user: Authenticated developer-or-higher caller.
+        tenant_id: Tenant scope for lookup.
+        limit: Maximum rows to return.
+        offset: Pagination offset.
+
+    Returns:
+        PaginatedResponse: Entitlement rows and pagination metadata.
+    """
     try:
         rows = await service.list_user_entitlements(tenant_id, user_id, current_user, limit, offset)
         total = await service.count_user_entitlements(tenant_id, user_id, current_user)
@@ -74,7 +116,17 @@ async def get_entitlement(
     service: Annotated[UserEntitlementService, Depends(get_user_entitlement_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
 ) -> ResourceResponse:
-    """Retrieve one user entitlement."""
+    """Fetch one entitlement by id for a user.
+
+    Args:
+        user_id: User identifier.
+        entitlement_id: Entitlement identifier.
+        service: Entitlement business service.
+        current_user: Authenticated developer-or-higher caller.
+
+    Returns:
+        ResourceResponse: Requested entitlement envelope.
+    """
     try:
         row = await service.get_entitlement(user_id, entitlement_id, current_user)
         return ResourceResponse.model_validate(row)
@@ -90,7 +142,18 @@ async def update_entitlement(
     service: Annotated[UserEntitlementService, Depends(get_user_entitlement_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Partially update one user entitlement."""
+    """Apply partial updates to one entitlement.
+
+    Args:
+        user_id: User identifier.
+        entitlement_id: Entitlement identifier.
+        body: Partial fields to update.
+        service: Entitlement business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Updated entitlement envelope.
+    """
     try:
         row = await service.update_entitlement(user_id, entitlement_id, body, current_user)
         return ResourceResponse.model_validate(row)
@@ -105,9 +168,20 @@ async def delete_entitlement(
     service: Annotated[UserEntitlementService, Depends(get_user_entitlement_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> Response:
-    """Delete one user entitlement."""
+    """Delete one entitlement.
+
+    Args:
+        user_id: User identifier.
+        entitlement_id: Entitlement identifier.
+        service: Entitlement business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        Response: Empty HTTP 204 response on success.
+    """
     try:
         await service.delete_entitlement(user_id, entitlement_id, current_user)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except LLMServiceError as exc:
         translate_management_error(exc)
+

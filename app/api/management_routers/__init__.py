@@ -1,17 +1,31 @@
 """
-Management Routers Package
-==========================
+Management Router Aggregation Package.
 
-This package groups all admin and operations endpoints (tenants, users,
-deployments, providers/models, and entitlements).
+Architecture:
+-------------
+    ┌──────────────────────────────┐
+    │ app.main / app.api package   │
+    └──────────────┬───────────────┘
+                   ▼
+    ┌──────────────────────────────┐
+    │ aggregated management router │
+    │ (this package)               │
+    └──────────────┬───────────────┘
+                   ▼
+    ┌──────────────────────────────┐
+    │ resource routers             │
+    │ tenant/user/deploy/catalog   │
+    └──────────────┬───────────────┘
+                   ▼
+    ┌──────────────────────────────┐
+    │ services + persistence        │
+    └──────────────────────────────┘
 
-Enterprise Pattern: Router Aggregation Pattern
-    Each resource has its own router module, and this package-level file
-    combines them into one ``router`` object for easy registration in ``app.api``.
-
-How request flow works:
-    app.main -> app.api.management_router -> specific resource router
-        -> dependency-injected service -> persistence layer
+Rationale:
+    Keeping one resource per router module improves discoverability and reduces
+    merge conflicts. This file acts as a composition point so the rest of the
+    application can include one management router without knowing internal file
+    layout.
 
 Author: Shubham Singh
 """

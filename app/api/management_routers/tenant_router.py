@@ -1,15 +1,34 @@
-"""
-Tenant and Membership Management Routes
-=======================================
+﻿"""
+Tenant and Membership Management Router.
 
-This router exposes tenant lifecycle endpoints and tenant membership endpoints.
-In short:
-    - Tenant endpoints create/read/update/suspend/activate/delete tenants.
-    - Membership endpoints add/list/update/remove tenant members.
+Architecture:
+-------------
+    +------------------------------+
+    ¦ operator/admin/developer     ¦
+    +------------------------------+
+                   ?
+    +------------------------------+
+    ¦ tenant router                ¦
+    ¦ (`/api/v1/tenants`)          ¦
+    +------------------------------+
+           +------------------------+
+           ?                        ?
+    +-------------------+    +------------------------+
+    ¦ TenantService     ¦    ¦ TenantMembershipService¦
+    +-------------------+    +------------------------+
+              ?                           ?
+    +-------------------+        +---------------------+
+    ¦ tenant persistence ¦        ¦ membership storage  ¦
+    +-------------------+        +---------------------+
 
-Enterprise Pattern: Thin Router Pattern
-    Route handlers should stay small: parse HTTP input, call service, translate
-    domain errors. Business rules live in services.
+Purpose:
+    Expose tenant lifecycle operations and tenant membership operations in one
+    cohesive router because both share tenant-scoped access patterns.
+
+Rationale:
+    Tenants and memberships evolve together in practice. Grouping them keeps
+    operational workflows discoverable while still separating business rules in
+    dedicated services.
 
 Author: Shubham Singh
 """
@@ -54,7 +73,16 @@ async def create_tenant(
     service: Annotated[TenantService, Depends(get_tenant_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Create a tenant."""
+    """Create a tenant record.
+
+    Args:
+        body: Tenant creation payload.
+        service: Tenant business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Created tenant envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.create_tenant(body))
     except LLMServiceError as exc:
@@ -70,7 +98,19 @@ async def list_tenants(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> PaginatedResponse:
-    """List tenants for platform operators."""
+    """List tenants for platform operators with optional filters.
+
+    Args:
+        service: Tenant business service.
+        current_user: Authenticated operator-or-higher caller.
+        status_filter: Optional lifecycle status filter.
+        tier_filter: Optional tenant tier filter.
+        limit: Maximum rows to return.
+        offset: Pagination offset.
+
+    Returns:
+        PaginatedResponse: Tenant rows and pagination metadata.
+    """
     filters = TenantListFilters(status_filter=status_filter, tier_filter=tier_filter)
     rows = await service.list_tenants(filters, limit, offset)
     total = await service.count_tenants(filters)
@@ -83,7 +123,16 @@ async def get_tenant(
     service: Annotated[TenantService, Depends(get_tenant_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
 ) -> ResourceResponse:
-    """Retrieve one tenant after tenant access checks."""
+    """Fetch one tenant with tenant-scoped access enforcement.
+
+    Args:
+        tenant_id: Tenant identifier.
+        service: Tenant business service.
+        current_user: Authenticated developer-or-higher caller.
+
+    Returns:
+        ResourceResponse: Requested tenant envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.get_tenant(tenant_id, current_user))
     except LLMServiceError as exc:
@@ -97,7 +146,17 @@ async def update_tenant(
     service: Annotated[TenantService, Depends(get_tenant_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Partially update one tenant."""
+    """Apply partial updates to one tenant.
+
+    Args:
+        tenant_id: Tenant identifier.
+        body: Partial tenant updates.
+        service: Tenant business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Updated tenant envelope.
+    """
     try:
         return ResourceResponse.model_validate(
             await service.update_tenant(tenant_id, body, current_user)
@@ -112,7 +171,16 @@ async def suspend_tenant(
     service: Annotated[TenantService, Depends(get_tenant_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Suspend a tenant."""
+    """Suspend a tenant to block operational access.
+
+    Args:
+        tenant_id: Tenant identifier.
+        service: Tenant business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Suspended tenant envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.suspend_tenant(tenant_id, current_user))
     except LLMServiceError as exc:
@@ -125,7 +193,16 @@ async def activate_tenant(
     service: Annotated[TenantService, Depends(get_tenant_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Activate a tenant."""
+    """Activate a previously inactive or suspended tenant.
+
+    Args:
+        tenant_id: Tenant identifier.
+        service: Tenant business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Activated tenant envelope.
+    """
     try:
         return ResourceResponse.model_validate(await service.activate_tenant(tenant_id, current_user))
     except LLMServiceError as exc:
@@ -138,7 +215,18 @@ async def delete_tenant(
     service: Annotated[TenantService, Depends(get_tenant_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_owner)],
 ) -> Response:
-    """Delete a tenant."""
+    """Delete a tenant record.
+
+    Owner role is required due potential broad data and access impact.
+
+    Args:
+        tenant_id: Tenant identifier.
+        service: Tenant business service.
+        current_user: Authenticated owner caller.
+
+    Returns:
+        Response: Empty HTTP 204 response on success.
+    """
     try:
         await service.delete_tenant(tenant_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -153,7 +241,17 @@ async def create_member(
     service: Annotated[TenantMembershipService, Depends(get_tenant_membership_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Add a member to a tenant."""
+    """Add a user membership to a tenant.
+
+    Args:
+        tenant_id: Tenant identifier.
+        body: Membership payload including user and tenant role.
+        service: Membership business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Created membership envelope.
+    """
     try:
         return ResourceResponse.model_validate(
             await service.create_membership(tenant_id, body, current_user)
@@ -172,7 +270,20 @@ async def list_members(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> PaginatedResponse:
-    """List tenant members."""
+    """List memberships for one tenant.
+
+    Args:
+        tenant_id: Tenant identifier.
+        service: Membership business service.
+        current_user: Authenticated developer-or-higher caller.
+        tenant_role_filter: Optional role filter.
+        active_only: Include only active memberships when true.
+        limit: Maximum rows to return.
+        offset: Pagination offset.
+
+    Returns:
+        PaginatedResponse: Membership rows and pagination metadata.
+    """
     try:
         filters = TenantMembershipListFilters(
             tenant_role_filter=tenant_role_filter,
@@ -192,7 +303,17 @@ async def get_member(
     service: Annotated[TenantMembershipService, Depends(get_tenant_membership_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
 ) -> ResourceResponse:
-    """Retrieve one tenant membership."""
+    """Fetch one membership by id inside tenant scope.
+
+    Args:
+        tenant_id: Tenant identifier.
+        membership_id: Membership identifier.
+        service: Membership business service.
+        current_user: Authenticated developer-or-higher caller.
+
+    Returns:
+        ResourceResponse: Requested membership envelope.
+    """
     try:
         row = await service.get_tenant_membership(tenant_id, membership_id, current_user)
         return ResourceResponse.model_validate(row)
@@ -208,7 +329,18 @@ async def update_member(
     service: Annotated[TenantMembershipService, Depends(get_tenant_membership_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Partially update one tenant membership."""
+    """Apply partial updates to one tenant membership.
+
+    Args:
+        tenant_id: Tenant identifier.
+        membership_id: Membership identifier.
+        body: Partial membership updates.
+        service: Membership business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Updated membership envelope.
+    """
     try:
         row = await service.update_membership(tenant_id, membership_id, body, current_user)
         return ResourceResponse.model_validate(row)
@@ -223,9 +355,20 @@ async def delete_member(
     service: Annotated[TenantMembershipService, Depends(get_tenant_membership_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> Response:
-    """Delete one tenant membership."""
+    """Delete one tenant membership.
+
+    Args:
+        tenant_id: Tenant identifier.
+        membership_id: Membership identifier.
+        service: Membership business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        Response: Empty HTTP 204 response on success.
+    """
     try:
         await service.delete_membership(tenant_id, membership_id, current_user)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except LLMServiceError as exc:
         translate_management_error(exc)
+

@@ -1,44 +1,50 @@
-"""
-app/api/dependencies.py — FastAPI dependency injection factories.
+﻿"""
+Dependency Factories for API Routers.
 
-This module provides factory functions that FastAPI calls once per HTTP request
-to create the service objects (dependency instances) needed by route handlers.
+Architecture:
+-------------
+    +-----------------------------+
+    ¦ API route handler           ¦
+    ¦ (Depends declared)          ¦
+    +-----------------------------+
+                   ?
+    +-----------------------------+
+    ¦ dependency factory (this)   ¦
+    ¦ builds service and helpers  ¦
+    +-----------------------------+
+                   ?
+    +-----------------------------+
+    ¦ service layer               ¦
+    ¦ business decisions          ¦
+    +-----------------------------+
+                   ?
+    +-----------------------------+
+    ¦ persistence/adapters        ¦
+    ¦ db and cache integration    ¦
+    +-----------------------------+
 
-How dependency injection works here:
-    Every function in this module returns a freshly-built object. FastAPI's
-    ``Depends()`` mechanism calls the appropriate factory on each incoming
-    request and passes the result into the route handler as a parameter. Because
-    each request gets its own objects, no two requests can accidentally share
-    or interfere with each other's state.
+Purpose:
+    Keep route handlers small and declarative. A route says "I need
+    TenantService" and this module decides how to assemble it.
 
-What each factory does:
-    Each factory combines persistence objects (database access) and other
-    dependencies to build a complete service ready for use. For example,
-    ``get_tenant_service()`` wires together a ``TenantPersistence`` (database),
-    a ``TenantAccessService`` (authorization checks), and an
-    ``InferenceAuthorizationCache`` (Redis caching) into a single
-    ``TenantService`` object that the route handler can call.
+Key jargon explained:
+    - Dependency injection: FastAPI creates required objects before entering a
+      route function and passes them as arguments.
+    - Factory: a function that constructs and returns another object.
+    - Process-scoped object: created once during app startup and reused across
+      requests, usually stored on `app.state`.
 
-Enterprise Pattern: Dependency Injection Factory Pattern
-    Instead of route handlers creating their own service objects (which would
-    tightly couple them to specific implementations), FastAPI's ``Depends()``
-    calls these factories and injects the result. This makes the route handler
-    code simpler — it only declares what it needs, not how to build it — and
-    makes testing easier because mock services can be swapped in.
-
-Exception translation:
-    When a factory or service raises a domain exception (an error meaningful
-    to the business logic, like "tenant not found"), the route handler catches
-    it and calls a translate function in ``app.api.exception_handlers`` to
-    convert it into the correct HTTP status code. This module does not decide
-    status codes itself — that responsibility lives in the exception handlers
-    module.
+Rationale:
+    Centralizing construction logic avoids duplication, makes tests easier
+    (replace one factory), and keeps lifecycle-sensitive objects (cache,
+    orchestration pipeline) in one predictable place.
 
 Author: Shubham Singh
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 from uuid import UUID
 
@@ -62,7 +68,10 @@ from app.database import (
     UserEntitlementPersistence,
     UserPersistence,
 )
+from app.inference_routing.models import ResolutionRequest, ResolvedExecutionContext
+from app.inference_routing.pipeline import OrchestrationPipeline
 from app.schemas.auth_schema import AuthTokenPayload, InferenceAccessContext
+from app.schemas.enums import OperationType
 from app.services import (
     ManagementReferenceValidationService,
     ModelCatalogService,
@@ -75,15 +84,31 @@ from app.services import (
 )
 
 _DEPLOYMENT_KEY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
+ExecutionContextDependency = Callable[..., Awaitable[ResolvedExecutionContext]]
 
 
 def get_tenant_access_service() -> TenantAccessService:
-    """Build a tenant access service with membership persistence."""
+    """Create a tenant access service used by management and auth checks.
+
+    Returns:
+        TenantAccessService: Service that validates tenant-level access from
+            membership data.
+    """
     return TenantAccessService(TenantMembershipPersistence())
 
 
 def get_inference_authorization_cache(request: Request) -> InferenceAuthorizationCache:
-    """Build the Redis-backed inference authorization cache wrapper."""
+    """Create the inference authorization cache wrapper for one request.
+
+    The wrapper is lightweight. It points to the process-level Redis backend
+    from `app.state` and carries cache time-to-live from settings.
+
+    Args:
+        request: FastAPI request used to access `request.app.state`.
+
+    Returns:
+        InferenceAuthorizationCache: Cache facade for auth decisions.
+    """
     settings = get_application_settings()
     return InferenceAuthorizationCache(
         backend=getattr(request.app.state, "redis_cache", None),
@@ -96,7 +121,17 @@ def get_tenant_authorization_service(
         InferenceAuthorizationCache, Depends(get_inference_authorization_cache)
     ],
 ) -> TenantAuthorizationService:
-    """Build an inference authorization service with Redis-backed cache."""
+    """Create the tenant authorization service used by inference routes.
+
+    This service performs multi-step checks: tenant state, membership,
+    deployment visibility, and entitlement validation.
+
+    Args:
+        authorization_cache: Cache for repeated authorization lookups.
+
+    Returns:
+        TenantAuthorizationService: Fully wired authorization service.
+    """
     return TenantAuthorizationService(
         tenant_persistence=TenantPersistence(),
         membership_persistence=TenantMembershipPersistence(),
@@ -122,7 +157,26 @@ async def require_inference_access(
         TenantAuthorizationService, Depends(get_tenant_authorization_service)
     ],
 ) -> InferenceAccessContext:
-    """Authorize a caller to invoke one tenant deployment."""
+    """Authorize one inference call against tenant and deployment scope.
+
+    Step-by-step:
+    1. Parse required tenant and deployment headers.
+    2. Read authenticated caller claims.
+    3. Validate caller rights for the exact deployment.
+    4. Return a compact `InferenceAccessContext` for downstream use.
+
+    Args:
+        x_tenant_id: Tenant identifier provided by the caller.
+        x_deployment_key: Deployment key selected by the caller.
+        current_user: Authenticated user claims.
+        authorization_service: Service enforcing inference access policy.
+
+    Returns:
+        InferenceAccessContext: Authorized scope for this request.
+
+    Raises:
+        HTTPException: Raised indirectly after domain errors are translated.
+    """
     try:
         return await authorization_service.authorize_inference(
             tenant_id=x_tenant_id,
@@ -134,17 +188,22 @@ async def require_inference_access(
 
 
 def get_provider_catalog_service() -> ProviderCatalogService:
-    """Build provider catalog service."""
+    """Create provider catalog service for provider management routes."""
     return ProviderCatalogService(ProviderCatalogPersistence())
 
 
 def get_model_catalog_service() -> ModelCatalogService:
-    """Build model catalog service."""
+    """Create model catalog service for provider model routes."""
     return ModelCatalogService(ModelCatalogPersistence())
 
 
 def get_management_reference_validation_service() -> ManagementReferenceValidationService:
-    """Build the shared reference validator for management create flows."""
+    """Create shared reference validator for management write operations.
+
+    Management writes frequently reference other resources such as users,
+    tenants, providers, and models. Centralizing those checks keeps error
+    behavior consistent across all management services.
+    """
     return ManagementReferenceValidationService(
         tenant_persistence=TenantPersistence(),
         user_persistence=UserPersistence(),
@@ -159,20 +218,25 @@ def get_tenant_service(
         InferenceAuthorizationCache, Depends(get_inference_authorization_cache)
     ],
 ) -> TenantService:
-    """Build tenant service."""
+    """Create tenant service with access checks and cache coordination."""
     return TenantService(TenantPersistence(), access_service, authorization_cache)
 
 
 def get_tenant_membership_service(
     access_service: Annotated[TenantAccessService, Depends(get_tenant_access_service)],
     reference_validation_service: Annotated[
-        ManagementReferenceValidationService, Depends(get_management_reference_validation_service)
+        ManagementReferenceValidationService,
+        Depends(get_management_reference_validation_service),
     ],
     authorization_cache: Annotated[
         InferenceAuthorizationCache, Depends(get_inference_authorization_cache)
     ],
 ) -> TenantMembershipService:
-    """Build tenant membership service."""
+    """Create tenant membership service with validation and cache invalidation.
+
+    Membership updates change who can access deployments. This service is wired
+    with authorization cache support so stale access entries can be invalidated.
+    """
     return TenantMembershipService(
         TenantMembershipPersistence(),
         access_service,
@@ -185,13 +249,24 @@ def get_tenant_deployment_service(
     request: Request,
     access_service: Annotated[TenantAccessService, Depends(get_tenant_access_service)],
     reference_validation_service: Annotated[
-        ManagementReferenceValidationService, Depends(get_management_reference_validation_service)
+        ManagementReferenceValidationService,
+        Depends(get_management_reference_validation_service),
     ],
     authorization_cache: Annotated[
         InferenceAuthorizationCache, Depends(get_inference_authorization_cache)
     ],
 ) -> TenantDeploymentService:
-    """Build tenant deployment service with optional app cache."""
+    """Create tenant deployment service with optional Redis acceleration.
+
+    Args:
+        request: FastAPI request to read shared app cache backend.
+        access_service: Enforces tenant-scoped access before write operations.
+        reference_validation_service: Validates provider/model references.
+        authorization_cache: Coordinates cache invalidation for auth decisions.
+
+    Returns:
+        TenantDeploymentService: Service for deployment lifecycle operations.
+    """
     cache = getattr(request.app.state, "redis_cache", None)
     return TenantDeploymentService(
         TenantDeploymentPersistence(),
@@ -203,7 +278,7 @@ def get_tenant_deployment_service(
 
 
 def get_user_service() -> UserService:
-    """Build user service."""
+    """Create platform user service for user CRUD endpoints."""
     return UserService(UserPersistence())
 
 
@@ -213,5 +288,84 @@ def get_user_entitlement_service(
         InferenceAuthorizationCache, Depends(get_inference_authorization_cache)
     ],
 ) -> UserEntitlementService:
-    """Build user entitlement service."""
+    """Create user entitlement service with access checks and cache support.
+
+    Entitlements define deployment access for a user. Wiring cache here ensures
+    authorization cache invalidation can happen when entitlements change.
+    """
     return UserEntitlementService(UserEntitlementPersistence(), access_service, authorization_cache)
+
+
+# ---------------------------------------------------------------------------
+# Inference routing pipeline
+# ---------------------------------------------------------------------------
+
+
+def get_orchestration_pipeline(request: Request) -> OrchestrationPipeline:
+    """Return the process-scoped orchestration pipeline from `app.state`.
+
+    A process-scoped object is created once during startup and reused across
+    requests. This avoids rebuilding expensive routing components per request.
+
+    Raises:
+        RuntimeError: If `app.state.orchestration_pipeline` is missing.
+    """
+    pipeline: OrchestrationPipeline | None = getattr(
+        request.app.state, "orchestration_pipeline", None
+    )
+    if pipeline is None:
+        raise RuntimeError(
+            "app.state.orchestration_pipeline is not initialised. "
+            "Ensure the lifespan handler in main.py creates and stores "
+            "an OrchestrationPipeline instance before the application accepts traffic."
+        )
+    return pipeline
+
+
+def _make_require_execution_context(
+    operation: OperationType,
+) -> ExecutionContextDependency:
+    """Create a dependency that resolves context for one operation type.
+
+    Chat, embed, and rerank follow the same resolution flow, but each requires
+    capability checks for a different operation. This factory avoids copy-paste
+    while preserving operation-specific validation.
+    """
+
+    async def require_execution_context(
+        inference_context: Annotated[InferenceAccessContext, Depends(require_inference_access)],
+        pipeline: Annotated[OrchestrationPipeline, Depends(get_orchestration_pipeline)],
+    ) -> ResolvedExecutionContext:
+        """Resolve provider/model execution context from authorized access scope.
+
+        Args:
+            inference_context: Pre-authorized tenant, user, and deployment scope.
+            pipeline: Orchestration pipeline that resolves model and provider.
+
+        Returns:
+            ResolvedExecutionContext: Full runtime context consumed by
+                `InferenceService` execution methods.
+
+        Raises:
+            HTTPException: Raised indirectly after domain errors are translated.
+        """
+        try:
+            return await pipeline.resolve(
+                ResolutionRequest(
+                    tenant_id=inference_context.tenant_id,
+                    user_id=inference_context.user_id,
+                    deployment_key=inference_context.deployment_key,
+                    operation=operation,
+                    pre_authorized_entitlement_id=inference_context.entitlement_id,
+                )
+            )
+        except LLMServiceError as exc:
+            translate_inference_error(exc)
+
+    return require_execution_context
+
+
+require_chat_execution_context = _make_require_execution_context(OperationType.CHAT)
+require_embed_execution_context = _make_require_execution_context(OperationType.EMBED)
+require_rerank_execution_context = _make_require_execution_context(OperationType.RERANK)
+

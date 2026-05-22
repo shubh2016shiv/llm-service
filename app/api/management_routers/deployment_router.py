@@ -1,12 +1,34 @@
-"""
-Tenant Deployment Routes
-========================
+﻿"""
+Tenant Deployment Router.
 
-This router manages deployment records for a tenant, including lifecycle changes
-like activate and maintenance.
+Architecture:
+-------------
+    +------------------------------+
+    ¦ tenant admin/developer caller¦
+    +------------------------------+
+                   ?
+    +------------------------------+
+    ¦ deployment router            ¦
+    ¦ (`/api/v1/tenants/*`)        ¦
+    +------------------------------+
+                   ?
+    +------------------------------+
+    ¦ TenantDeploymentService      ¦
+    ¦ access + validation + state  ¦
+    +------------------------------+
+                   ?
+    +------------------------------+
+    ¦ deployment persistence       ¦
+    +------------------------------+
 
-Enterprise Pattern: Thin Router Pattern
-    Routes orchestrate request/response flow and keep business logic in services.
+Purpose:
+    Manage deployment definitions for each tenant, including lifecycle
+    transitions like activate and maintenance.
+
+Rationale:
+    Deployment lifecycle is security and traffic critical. Keeping explicit
+    endpoints for state transitions makes audit and policy enforcement clearer
+    than generic status mutation fields.
 
 Author: Shubham Singh
 """
@@ -42,7 +64,17 @@ async def create_deployment(
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Create a tenant deployment."""
+    """Create a deployment under one tenant.
+
+    Args:
+        tenant_id: Tenant that will own the deployment.
+        body: Deployment config including provider/model bindings.
+        service: Deployment business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Created deployment envelope.
+    """
     try:
         row = await service.create_deployment(tenant_id, body, current_user)
         return ResourceResponse.model_validate(row)
@@ -60,7 +92,20 @@ async def list_deployments(
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> PaginatedResponse:
-    """List tenant deployments."""
+    """List deployments for one tenant with filtering and pagination.
+
+    Args:
+        tenant_id: Tenant identifier.
+        service: Deployment business service.
+        current_user: Authenticated developer-or-higher caller.
+        provider_id: Optional provider filter.
+        active_only: Include only active deployments when true.
+        limit: Maximum rows to return.
+        offset: Pagination offset.
+
+    Returns:
+        PaginatedResponse: Deployment rows and pagination metadata.
+    """
     try:
         filters = TenantDeploymentListFilters(provider_id=provider_id, active_only=active_only)
         rows = await service.list_deployments(tenant_id, current_user, filters, limit, offset)
@@ -77,7 +122,17 @@ async def get_deployment(
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
 ) -> ResourceResponse:
-    """Retrieve one tenant deployment."""
+    """Fetch one deployment by id within tenant scope.
+
+    Args:
+        tenant_id: Tenant identifier.
+        deployment_id: Deployment identifier.
+        service: Deployment business service.
+        current_user: Authenticated developer-or-higher caller.
+
+    Returns:
+        ResourceResponse: Requested deployment envelope.
+    """
     try:
         row = await service.get_deployment(tenant_id, deployment_id, current_user)
         return ResourceResponse.model_validate(row)
@@ -93,7 +148,18 @@ async def update_deployment(
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Partially update one tenant deployment."""
+    """Apply partial updates to one deployment.
+
+    Args:
+        tenant_id: Tenant identifier.
+        deployment_id: Deployment identifier.
+        body: Partial deployment updates.
+        service: Deployment business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Updated deployment envelope.
+    """
     try:
         row = await service.update_deployment(tenant_id, deployment_id, body, current_user)
         return ResourceResponse.model_validate(row)
@@ -108,7 +174,17 @@ async def activate_deployment(
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Activate one tenant deployment."""
+    """Move one deployment into active serving state.
+
+    Args:
+        tenant_id: Tenant identifier.
+        deployment_id: Deployment identifier.
+        service: Deployment business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Activated deployment envelope.
+    """
     try:
         row = await service.activate_deployment(tenant_id, deployment_id, current_user)
         return ResourceResponse.model_validate(row)
@@ -125,7 +201,20 @@ async def maintain_deployment(
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> ResourceResponse:
-    """Move one tenant deployment to maintenance."""
+    """Move one deployment to maintenance state.
+
+    Maintenance mode is useful when provider credentials, model routing, or
+    backend quotas are being adjusted and traffic should be temporarily paused.
+
+    Args:
+        tenant_id: Tenant identifier.
+        deployment_id: Deployment identifier.
+        service: Deployment business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        ResourceResponse: Deployment envelope in maintenance state.
+    """
     try:
         row = await service.set_maintenance(tenant_id, deployment_id, current_user)
         return ResourceResponse.model_validate(row)
@@ -140,9 +229,20 @@ async def delete_deployment(
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
 ) -> Response:
-    """Delete one tenant deployment."""
+    """Delete one deployment owned by a tenant.
+
+    Args:
+        tenant_id: Tenant identifier.
+        deployment_id: Deployment identifier.
+        service: Deployment business service.
+        current_user: Authenticated admin caller.
+
+    Returns:
+        Response: Empty HTTP 204 response on success.
+    """
     try:
         await service.delete_deployment(tenant_id, deployment_id, current_user)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except LLMServiceError as exc:
         translate_management_error(exc)
+
