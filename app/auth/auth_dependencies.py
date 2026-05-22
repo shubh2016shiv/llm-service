@@ -2,14 +2,21 @@
 Authentication Dependencies
 ===========================
 
-This module defines FastAPI dependencies that protect routes using JWT tokens.
-It does two things:
-    1) validates the bearer token,
-    2) checks whether the role is allowed for that endpoint.
+FastAPI dependency utilities for route protection.
+
+This module provides the two guard layers that most authenticated routes need:
+    1. Token validation - verify signature, expiry, and token type.
+    2. Role gating - enforce endpoint-specific role requirements.
 
 Enterprise Pattern: Dependency Guard Pattern
     Route handlers declare access requirements with ``Depends(...)`` and receive
     a validated user payload only when checks pass.
+
+Step-by-step relation in request flow:
+    1. ``OAuth2PasswordBearer`` extracts the ``Authorization: Bearer ...`` token.
+    2. ``get_current_user`` decodes JWT and validates ``type="access"``.
+    3. A ``RoleGuard`` instance checks allowed roles for the endpoint.
+    4. Route logic runs only if both checks pass.
 
 Role hierarchy (ascending privilege):
     developer < operator < admin < owner
@@ -45,8 +52,11 @@ async def get_current_user(
 ) -> AuthTokenPayload:
     """Extract and validate the JWT from the Authorization header.
 
-    This is the base dependency for all authenticated endpoints. It performs
-    only cryptographic validation — no database query.
+    This is the base dependency for authenticated endpoints. It performs
+    stateless cryptographic checks only; no database lookup is required.
+
+    "Stateless" here means validation relies entirely on token contents and
+    signing secret, not on server-side session storage.
 
     Args:
         raw_token: Bearer token extracted by OAuth2PasswordBearer.
@@ -91,8 +101,8 @@ async def get_current_user(
 class RoleGuard:
     """FastAPI callable dependency that enforces a minimum role level.
 
-    Higher roles inherit access from lower ones, so a route that requires
-    ``operator`` will also admit ``admin`` and ``owner``.
+    Higher roles inherit access from lower roles. A route requiring
+    ``operator`` therefore accepts ``operator``, ``admin``, and ``owner``.
 
     Example:
         require_admin = RoleGuard(["admin", "owner"])
@@ -134,7 +144,7 @@ class RoleGuard:
             The same ``AuthTokenPayload`` if the role check passes.
 
         Raises:
-            HTTPException 403: If the user's role is not in the permitted set.
+            HTTPException 403: If role requirements are not satisfied.
         """
         if current_user.role not in self._permitted_roles:
             logger.warning(
@@ -165,13 +175,13 @@ class RoleGuard:
 # ---------------------------------------------------------------------------
 
 require_developer = RoleGuard(["developer", "operator", "admin", "owner"])
-"""Grant access to any authenticated user regardless of role."""
+"""Grant access to any authenticated caller with a valid access token."""
 
 require_operator = RoleGuard(["operator", "admin", "owner"])
-"""Grant access to operators, admins, and owners."""
+"""Grant access to operational and higher-privilege roles."""
 
 require_admin = RoleGuard(["admin", "owner"])
-"""Grant access to admins and owners only."""
+"""Grant access to administrative platform roles only."""
 
 require_owner = RoleGuard(["owner"])
-"""Grant access to owners only. Use for system-level operations."""
+"""Grant access exclusively to the highest-privilege owner role."""

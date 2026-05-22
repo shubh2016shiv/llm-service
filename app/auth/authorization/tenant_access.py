@@ -2,8 +2,12 @@
 Tenant Access Service
 =====================
 
-This module contains easy-to-follow permission checks used by management APIs.
-It decides whether a user can read or update tenant-related resources.
+Tenant-scoped permission checks for management API workflows.
+
+This module answers questions like:
+    - Can this caller read tenant resources?
+    - Can this caller perform tenant-admin actions?
+    - Can this caller act on another user's data?
 
 Enterprise Pattern: Service + Repository Pattern
     - Service: ``TenantAccessService`` contains access rules.
@@ -18,6 +22,13 @@ How the flow works:
         |
         v
     TenantMembershipPersistence
+
+Step-by-step relation for tenant checks:
+    1. Route-level JWT/role guards authenticate the caller.
+    2. Service-layer code calls ``ensure_tenant_read`` or ``ensure_tenant_admin``.
+    3. Access service inspects platform role first, then tenant membership data.
+    4. On failure, a typed ``TenantAccessDeniedError`` is raised for consistent
+       API error mapping.
 
 Dependencies:
     - app.database.tenant_memberships: Reads tenant membership records.
@@ -43,22 +54,27 @@ _ACTIVE_STATUS = "active"
 
 
 class TenantAccessService:
-    """Check if a user has enough permissions for management operations."""
+    """Evaluate tenant-related management permissions for authenticated users."""
 
     def __init__(self, membership_persistence: TenantMembershipPersistence) -> None:
-        """Store the membership data source used by permission checks."""
+        """Initialize with membership persistence used for tenant role lookups."""
         self._memberships = membership_persistence
 
     def is_platform_admin(self, current_user: AuthTokenPayload) -> bool:
-        """Return True when the user has platform admin-level privileges."""
+        """Return ``True`` when caller has platform-wide admin-equivalent role."""
         return current_user.role in _ADMIN_ROLES
 
     def is_platform_operator(self, current_user: AuthTokenPayload) -> bool:
-        """Return True when the user can read platform-wide tenant data."""
+        """Return ``True`` when caller has platform-wide tenant read privileges."""
         return current_user.role in _OPERATOR_ROLES
 
     async def ensure_tenant_read(self, tenant_id: UUID, current_user: AuthTokenPayload) -> None:
-        """Allow reads only for platform operators or active members of that tenant."""
+        """Enforce tenant-read access policy.
+
+        Access is allowed when either condition is true:
+            - caller has platform operator-or-higher role, or
+            - caller is an active member of the target tenant.
+        """
         if self.is_platform_operator(current_user):
             return
         membership = await self._memberships.get_membership(tenant_id, current_user.user_id)
@@ -67,7 +83,11 @@ class TenantAccessService:
         raise TenantAccessDeniedError(str(current_user.user_id), str(tenant_id), "member")
 
     async def ensure_tenant_admin(self, tenant_id: UUID, current_user: AuthTokenPayload) -> None:
-        """Allow updates only for platform admins or active tenant admins/owners."""
+        """Enforce tenant-admin access policy for mutating operations.
+
+        Access is allowed when caller is platform admin-equivalent, or when
+        tenant membership exists, is active, and has tenant role admin/owner.
+        """
         if self.is_platform_admin(current_user):
             return
         membership = await self._memberships.get_membership(tenant_id, current_user.user_id)
@@ -79,7 +99,11 @@ class TenantAccessService:
             raise TenantAccessDeniedError(str(current_user.user_id), str(tenant_id), "admin")
 
     def ensure_self_or_admin(self, user_id: UUID, current_user: AuthTokenPayload) -> None:
-        """Allow access only if the target user is self, or caller is platform admin."""
+        """Allow access only to self-owned resources or platform admins.
+
+        Used for user-centric endpoints where callers must not inspect or
+        mutate other users' data unless they hold elevated platform privileges.
+        """
         if user_id == current_user.user_id or self.is_platform_admin(current_user):
             return
         raise TenantAccessDeniedError(str(current_user.user_id), str(user_id), "self_or_admin")

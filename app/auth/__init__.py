@@ -2,20 +2,31 @@
 Authentication Package
 ======================
 
-This package provides everything API routes need to verify who the caller is
-and what that caller is allowed to do.
+This package exposes the authentication and authorization entry points used by
+API routes to answer two questions:
+    1. Who is the caller? (identity verification via JWT)
+    2. What may the caller do? (role and tenant-scope authorization)
 
 Enterprise Pattern: Facade Pattern
     Other modules import from ``app.auth`` instead of many internal files.
     This keeps imports simple and hides internal layout details.
 
-How this package is used in routes:
-    1) Route depends on ``get_current_user`` to validate JWT.
-    2) Route adds a role guard such as ``require_admin``.
-    3) Route receives ``AuthTokenPayload`` only after checks pass.
+Step-by-step route relationship:
+    1. A route uses ``get_current_user`` to decode and validate a bearer token.
+    2. The same route can apply a role guard (for example, ``require_admin``)
+       to enforce platform-level permissions.
+    3. Service-layer authorization (tenant membership, deployment entitlement)
+       runs only after these upstream checks pass.
+    4. Route handlers receive a typed ``AuthTokenPayload`` that downstream
+       services can trust as authenticated identity input.
 
 Role hierarchy (ascending privilege):
     developer < operator < admin < owner
+
+Why hierarchy matters:
+    The code treats higher-privilege roles as supersets of lower-privilege
+    access. For example, a route requiring ``operator`` also allows ``admin``
+    and ``owner``.
 
 Author: Shubham Singh
 """

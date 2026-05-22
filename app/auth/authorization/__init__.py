@@ -10,9 +10,14 @@ Enterprise Pattern: Facade Pattern
     modules can import from ``app.auth.authorization`` without knowing file-level
     details.
 
-Typical flow:
-    JWT validated -> authorization service checks tenant/deployment access
-    -> inference route proceeds only when access is allowed.
+Step-by-step relationship flow:
+    1. JWT authentication resolves caller identity and platform role.
+    2. ``TenantAccessService`` enforces tenant membership/admin checks for
+       management APIs.
+    3. ``TenantAuthorizationService`` evaluates inference route access using
+       tenant, membership, deployment, and entitlement state.
+    4. ``InferenceAuthorizationCache`` stores and invalidates successful grants
+       to reduce repeated database reads on hot routes.
 
 Author: Shubham Singh
 """

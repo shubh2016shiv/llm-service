@@ -2,8 +2,10 @@
 JWT Token Service
 =================
 
-This module creates, decodes, and validates JWT tokens for login sessions.
-It performs cryptographic operations only and does not access the database.
+Creates, decodes, and validates JWTs used for authenticated API sessions.
+
+This module is intentionally stateless: it performs cryptographic token
+operations and claim validation without querying database state.
 
 Enterprise Pattern: Stateless Authentication Pattern
     Token validation is self-contained and deterministic, which helps services
@@ -12,6 +14,12 @@ Enterprise Pattern: Stateless Authentication Pattern
 Security note:
     Every token includes a ``type`` claim so refresh tokens cannot be used where
     access tokens are required.
+
+Step-by-step relation in auth flow:
+    1. Login flow calls ``create_access_token`` (and optionally refresh token).
+    2. Client sends access token on API requests.
+    3. Route dependency calls ``decode_token`` to verify signature and claims.
+    4. ``verify_token_type`` enforces context correctness (access vs refresh).
 
 Author: Shubham Singh
 """
@@ -41,7 +49,11 @@ def _build_token_claims(
     token_type: str,
     expires_at: datetime,
 ) -> dict[str, object]:
-    """Assemble the standard JWT claim set for this service."""
+    """Assemble standard claims required by this service's token contract.
+
+    Centralizing claim construction keeps access and refresh token payloads
+    consistent, reducing drift between token types.
+    """
     now = datetime.now(UTC)
     return {
         "user_id": str(user_id),
@@ -53,6 +65,7 @@ def _build_token_claims(
 
 
 def _assert_valid_role(role: str) -> None:
+    """Validate role against the canonical role set before token issuance."""
     if role not in _VALID_ROLES:
         raise ValueError(f"Role {role!r} is not valid. Must be one of: {sorted(_VALID_ROLES)}")
 
@@ -65,7 +78,7 @@ def create_access_token(user_id: UUID, role: str) -> str:
         role: User's role — developer, operator, admin, or owner.
 
     Returns:
-        Signed JWT string ready to be returned to the client.
+        Signed JWT string intended for API request authorization.
 
     Raises:
         ValueError: If the role is not in the allowed set.
@@ -88,8 +101,8 @@ def create_access_token(user_id: UUID, role: str) -> str:
 def create_refresh_token(user_id: UUID, role: str) -> str:
     """Create a signed JWT refresh token.
 
-    Refresh tokens have a longer lifetime than access tokens and may only
-    be exchanged for a new access token — they cannot authorise API calls.
+    Refresh tokens have a longer lifetime than access tokens and are meant
+    only for token rotation flows, not direct API authorization.
 
     Args:
         user_id: UUID of the authenticated user.
@@ -122,8 +135,9 @@ def create_refresh_token(user_id: UUID, role: str) -> str:
 def decode_token(token: str) -> AuthTokenPayload:
     """Decode and cryptographically validate a JWT token.
 
-    jose validates the signature and expiry automatically. This function
-    additionally maps the raw claim dict to a typed ``AuthTokenPayload``.
+    ``python-jose`` validates signature and expiry. This function then
+    validates required custom claims and maps raw values into the strongly
+    typed ``AuthTokenPayload`` used across the application.
 
     Args:
         token: Raw JWT string from the Authorization header.
@@ -163,8 +177,8 @@ def decode_token(token: str) -> AuthTokenPayload:
 def verify_token_type(payload: AuthTokenPayload, expected_token_type: str) -> None:
     """Assert that a decoded token is of the expected type.
 
-    Prevents refresh tokens from being accepted where access tokens are required,
-    guarding against token confusion attacks.
+    Prevents token confusion, where a token valid in one context (refresh)
+    is mistakenly accepted in another context (access).
 
     Args:
         payload: Decoded token payload from ``decode_token``.
