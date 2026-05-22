@@ -1,45 +1,35 @@
 """
-Resolution Models
-=================
+Inference Routing Models
+========================
 
-Defines the internal request and result contracts used by the resolution
-services package.
+Typed request and response models for the routing pipeline.
 
-Architecture:
--------------
-    callers
-        │
-        ├── ResolutionRequest
-        └── RequestResolutionService
-                │
-                └── ResolvedExecutionContext
+Key objects:
+    - ResolutionRequest: routing intent from API layer.
+    - ResolvedExecutionContext: immutable result consumed by inference service.
 
-Dependencies:
-    - app.schemas.enums — operation enum
-    - app.core.settings.models.* — frozen tenant, deployment, provider, and model models
+Enterprise Pattern: Immutable Contract Pattern
+    A frozen context prevents accidental mutation across service boundaries.
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TYPE_CHECKING  # noqa: F401
-from uuid import UUID  # noqa: TC003 — needed at runtime for Pydantic field resolution
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# The following imports are used in Pydantic field annotations and MUST be
-# available at runtime for Pydantic model building / validation.
-from app.core.settings.models.model_config import LLMModelSpec  # noqa: TC001
-from app.core.settings.models.provider_config import ProviderStaticConfig  # noqa: TC001
-from app.core.settings.models.tenant_config import (  # noqa: TC001
+# Pydantic field annotations — must be available at runtime for model building.
+from app.core.settings.models.model_config import LLMModelSpec
+from app.core.settings.models.provider_config import ProviderStaticConfig
+from app.core.settings.models.tenant_config import (
     DeploymentConfig,
     TenantConfig,
     UserEntitlementConfig,
 )
-from app.schemas.enums import OperationType  # noqa: TC001
+from app.schemas.enums import OperationType
 
 
 class ResolutionSource(StrEnum):
@@ -57,7 +47,7 @@ class CredentialScope(StrEnum):
 
 
 class ResolutionRequest(BaseModel):
-    """Execution intent passed into the resolution layer."""
+    """Execution intent passed into the resolution pipeline."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -85,7 +75,7 @@ class ResolutionRequest(BaseModel):
 
 
 class ResolvedExecutionContext(BaseModel):
-    """Immutable execution-ready result returned by the resolution orchestrator."""
+    """Immutable services-ready result returned by the resolution orchestrator."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -111,3 +101,4 @@ class ResolvedExecutionContext(BaseModel):
     route_fingerprint: str = Field(
         description="Stable digest of the resolved route and credential reference.",
     )
+

@@ -1,26 +1,14 @@
 """
-Provider Route Validation Service
-=================================
+Provider Route Validator
+========================
 
-Validates the resolved provider and model against the static YAML catalog.
+Validates provider and model against static configuration and ensures the
+requested operation is supported by the resolved model.
 
-Architecture:
--------------
-    request_resolution_service.py
-        │
-        └── provider_route_validation_service.py
-                │
-                ├── app.core.settings.loader.ConfigLoader
-                └── config/providers/*.yaml
+Enterprise Pattern: Contract Validation Pattern
+    Resolution is accepted only when catalog contracts are satisfied.
 
-Dependencies:
-    - app.core.settings.loader — ConfigLoader
-    - app.core.settings.models.model_config — model specs and capabilities
-    - app.core.settings.models.provider_config — provider static config
-    - app.routing.exceptions — operation validation errors
-
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -29,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from app.core.exceptions import ConfigurationError, ModelNotSupportedError
 from app.core.settings.models.model_config import LLMModelSpec, ModelCapability
-from app.routing.exceptions import OperationNotSupportedError
+from app.inference_routing.exceptions import OperationNotSupportedError
 from app.schemas.enums import OperationType
 
 if TYPE_CHECKING:
@@ -37,8 +25,8 @@ if TYPE_CHECKING:
     from app.core.settings.models.provider_config import ProviderStaticConfig
 
 
-class ProviderRouteValidationService:
-    """Validates provider metadata and model capability using YAML config."""
+class ProviderRouteValidator:
+    """Validates provider metadata and model capability using the static YAML config."""
 
     def __init__(self, config_loader: ConfigLoader) -> None:
         self._config_loader = config_loader
@@ -49,7 +37,7 @@ class ProviderRouteValidationService:
         model_name: str,
         operation: OperationType,
     ) -> tuple[ProviderStaticConfig, LLMModelSpec]:
-        """Load provider static config and validate the selected model."""
+        """Load provider static config and validate the selected model and operation."""
         try:
             provider_config = self._config_loader.load_provider_config(provider_name)
         except FileNotFoundError as exc:
@@ -87,3 +75,4 @@ class ProviderRouteValidationService:
                 operation=operation.value,
             )
         return capability
+

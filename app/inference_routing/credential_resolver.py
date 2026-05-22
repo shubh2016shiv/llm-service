@@ -1,32 +1,29 @@
 """
-Credential Resolution Service
-=============================
+Credential Resolver
+===================
 
-Selects the credential reference and endpoint details for a resolved route.
+Chooses which credential reference and API endpoint to use for a resolved
+route, without ever touching actual passwords or API keys.
 
-Architecture:
--------------
-    request_resolution_service.py
-        │
-        ├── user_entitlement_resolution_service.py
-        ├── deployment_resolution_service.py
-        └── credential_resolution_service.py
-                │
-                └── resolved_execution_context_factory.py
+Why never fetch the actual secret here?
+    This resolver returns a *reference* (like a key name or path), not the
+    secret value itself. The actual secret retrieval happens in the provider
+    layer, right before the outbound call. This separation means routing logic
+    never has access to plaintext credentials — a security boundary that
+    limits blast radius if routing code is compromised.
 
-Dependencies:
-    - app.core.settings.models.tenant_config — deployment and entitlement models
-    - app.routing.resolution_models — credential scope enum
+Enterprise Pattern: Credential Reference Pattern
+    Routing returns a pointer to a secret; secret materialization stays in
+    the secrets-management layer. Routing and secrets never mix in memory.
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
 
-from app.routing.resolution_models import CredentialScope
+from app.inference_routing.models import CredentialScope
 
 if TYPE_CHECKING:
     from app.core.settings.models.tenant_config import DeploymentConfig, UserEntitlementConfig
@@ -41,7 +38,7 @@ class CredentialSelection(NamedTuple):
     cloud_region: str | None
 
 
-class CredentialResolutionService:
+class CredentialResolver:
     """Chooses credential references without fetching plaintext secrets."""
 
     @staticmethod

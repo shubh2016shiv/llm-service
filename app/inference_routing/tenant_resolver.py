@@ -1,24 +1,18 @@
 """
-Tenant Resolution Service
-=========================
+Tenant Resolver
+===============
 
-Loads tenant metadata and enforces tenant-level routing policy.
+Loads tenant runtime configuration and enforces tenant-level policy.
 
-Architecture:
--------------
-    request_resolution_service.py
-        │
-        └── tenant_resolution_service.py
-                │
-                └── TenantConfigReader
+What it guarantees:
+    - tenant exists
+    - tenant is active
+    - selected provider is allowed for this tenant
 
-Dependencies:
-    - app.routing.contracts — TenantConfigReader
-    - app.core.settings.models.tenant_config — TenantConfig
-    - app.core.exceptions — tenant error types
+Enterprise Pattern: Policy Gate Pattern
+    Tenant policy checks happen early so invalid routes fail fast.
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -26,16 +20,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.core.exceptions import TenantNotFoundError, TenantSuspendedError
-from app.routing.exceptions import ProviderNotAllowedError
+from app.inference_routing.exceptions import ProviderNotAllowedError
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from app.core.settings.models.tenant_config import TenantConfig
-    from app.routing.contracts import TenantConfigReader
+    from app.inference_routing.contracts import TenantConfigReader
 
 
-class TenantResolutionService:
+class TenantResolver:
     """Loads tenant metadata and enforces tenant-level routing policy."""
 
     def __init__(self, tenant_reader: TenantConfigReader) -> None:
@@ -58,3 +52,4 @@ class TenantResolutionService:
         """Reject providers that are outside the tenant allow-list."""
         if not tenant_config.allows_provider(provider_name):
             raise ProviderNotAllowedError(str(tenant_config.tenant_id), provider_name)
+

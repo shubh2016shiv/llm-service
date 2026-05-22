@@ -2,24 +2,22 @@
 Resolved Execution Context Factory
 ==================================
 
-Builds the final immutable execution context returned by request resolution.
+Builds the final immutable execution context used by inference services.
 
-Architecture:
--------------
-    request_resolution_service.py
-        │
-        ├── credential_resolution_service.py
-        ├── provider_route_validation_service.py
-        └── resolved_execution_context_factory.py
-                │
-                └── ResolvedExecutionContext
+Why a factory instead of just constructing the object directly?
+    Creating a ``ResolvedExecutionContext`` requires data from multiple
+    sources — tenant config, deployment config, provider config, model spec,
+    and credential selection. A factory centralizes this assembly so that
+    every consumer gets a consistent, fully-built, read-only context. It also
+    computes the route fingerprint (a hash used for authorization caching)
+    in one place, guaranteeing the same inputs always produce the same
+    fingerprint.
 
-Dependencies:
-    - app.core.settings.models.* — tenant, deployment, entitlement, provider, and model models
-    - app.routing.resolution_models — final context contract
+Enterprise Pattern: Factory Pattern
+    Assembly logic is centralized so downstream services receive one complete,
+    typed, read-only context object.
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -28,10 +26,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING
 
-from app.routing.resolution_models import (
-    ResolutionSource,
-    ResolvedExecutionContext,
-)
+from app.inference_routing.models import ResolutionSource, ResolvedExecutionContext
 
 if TYPE_CHECKING:
     from app.core.settings.models.model_config import LLMModelSpec
@@ -41,11 +36,11 @@ if TYPE_CHECKING:
         TenantConfig,
         UserEntitlementConfig,
     )
-    from app.routing.credential_resolution_service import CredentialSelection
+    from app.inference_routing.credential_resolver import CredentialSelection
 
 
 class ResolvedExecutionContextFactory:
-    """Builds the final immutable context used by downstream execution layers."""
+    """Builds the final immutable context used by downstream service layers."""
 
     def build_for_deployment(
         self,
@@ -57,9 +52,7 @@ class ResolvedExecutionContextFactory:
         credential_selection: CredentialSelection,
     ) -> ResolvedExecutionContext:
         """Build a resolved context from a tenant deployment route."""
-        effective_max_tokens = (
-            deployment_config.default_max_tokens or model_spec.max_output_tokens
-        )
+        effective_max_tokens = deployment_config.default_max_tokens or model_spec.max_output_tokens
         route_fingerprint = self._compute_route_fingerprint(
             resolution_source=ResolutionSource.TENANT_DEPLOYMENT,
             tenant_id=str(tenant_config.tenant_id),
@@ -86,8 +79,7 @@ class ResolvedExecutionContextFactory:
             secret_reference=credential_selection.secret_reference,
             credential_scope=credential_selection.credential_scope,
             effective_timeout_seconds=(
-                deployment_config.timeout_seconds
-                or provider_static_config.default_timeout_seconds
+                deployment_config.timeout_seconds or provider_static_config.default_timeout_seconds
             ),
             effective_max_retries=(
                 deployment_config.max_retries

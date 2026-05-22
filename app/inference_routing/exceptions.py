@@ -1,25 +1,14 @@
 """
-Resolution Exceptions
-=====================
+Inference Routing Exceptions
+============================
 
-Custom domain exceptions raised while translating tenant and user intent into
-an execution-ready route.
+Domain exceptions raised by routing components when policy, entitlement, or
+capability checks fail.
 
-Architecture:
--------------
-    request_resolution_service.py
-        │
-        ├── tenant_resolution_service.py
-        ├── user_entitlement_resolution_service.py
-        └── provider_route_validation_service.py
-                │
-                └── raises resolution-specific errors defined here
+Enterprise Pattern: Canonical Exception Surface
+    Routing raises stable domain errors so API translation remains consistent.
 
-Dependencies:
-    - app.core.exceptions — base LLMServiceError type
-
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -28,7 +17,7 @@ from app.core.exceptions import LLMServiceError
 
 
 class ResolutionError(LLMServiceError):
-    """Base error for the resolution services layer."""
+    """Base error for the inference route resolution pipeline."""
 
     error_code: str = "RESOLUTION_ERROR"
 
@@ -74,3 +63,4 @@ class AmbiguousUserEntitlementError(ResolutionError):
         self.tenant_id = tenant_id
         self.user_id = user_id
         self.deployment_key = deployment_key
+
