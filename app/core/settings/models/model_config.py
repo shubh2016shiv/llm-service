@@ -15,11 +15,16 @@ Architecture:
           ├──► Request Validator  (context window check)
           └──► Cost Estimator    (price_per_1k_tokens)
 
+Step-by-step relation:
+    1. Provider YAML declares model entries and capabilities.
+    2. Loader validates each entry into ``LLMModelSpec``.
+    3. Routing/validation checks capability and token limits.
+    4. Cost estimation reads pricing fields when present.
+
 Dependencies:
     - pydantic >= 2.0 — frozen BaseModel
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations

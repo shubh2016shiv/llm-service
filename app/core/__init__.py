@@ -1,32 +1,27 @@
 """
-Core Infrastructure Package
-============================
+Core Package
+============
 
-Domain-agnostic infrastructure for the LLM Provider Service.
-This package contains zero business logic — only shared foundations.
+Shared foundational building blocks used across the service.
 
-Architecture:
--------------
-    ┌─────────────────────────────────────────────────────────────────┐
-    │                        app.core                                  │
-    ├──────────────┬──────────────┬──────────────┬────────────────────┤
-    │  settings/     │ exceptions   │   logging    │   secret_store     │
-    │              │              │              │                    │
-    │  settings    │  Error       │  JSON        │  SecretStore       │
-    │  loader      │  hierarchy   │  formatter   │  (abstract +       │
-    │  models      │              │  Structured  │   env impl)        │
-    │  (frozen     │              │  Logger      │                    │
-    │   Pydantic)  │              │              │                    │
-    └──────────────┴──────────────┴──────────────┴────────────────────┘
+Scope boundary:
+    ``app.core`` should contain cross-cutting primitives, not business
+    workflows. If logic answers domain questions (tenant rules, deployment
+    policy, inference orchestration), it belongs outside this package.
 
-Dependencies:
-    - pydantic >= 2.0          — Config model validation
-    - pydantic-settings >= 2.0 — Environment variable loading
-    - cryptography             — AES-GCM encryption for secrets
-    - pyyaml                   — YAML settings file parsing
+Step-by-step relationship flow:
+    1. ``settings`` loads environment and YAML-backed configuration.
+    2. ``logging`` configures structured log output using those settings.
+    3. ``request_context`` propagates request correlation identifiers.
+    4. ``exceptions`` provides typed error contracts used by all layers.
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Package structure:
+    - ``exceptions.py``: typed domain/service exception hierarchy.
+    - ``logging.py``: JSON/text logging formatters and startup configuration.
+    - ``request_context.py``: async-safe request ID storage via ``ContextVar``.
+    - ``settings/``: configuration loading and immutable settings models.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations

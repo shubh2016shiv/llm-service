@@ -1,17 +1,21 @@
 """
-Config Models Package — Public API for all configuration model classes.
+Settings Models Package
+=======================
 
-Architecture:
--------------
-    app.core.settings.models
-    ├── global_config    → GlobalConfig, HTTPPoolConfig, RetryConfig, LoggingConfig
-    ├── model_config     → LLMModelSpec, ModelCapability
-    ├── provider_config  → ProviderStaticConfig, ProviderAuthConfig, AuthMode
-    ├── cloud_config     → AWSCloudConfig, AzureCloudConfig, GCPCloudConfig
-    └── tenant_config    → TenantConfig, DeploymentConfig, UserEntitlementConfig
+Immutable Pydantic models representing all typed configuration contracts.
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Why frozen models:
+    These objects are shared across requests and components. Immutability
+    prevents accidental runtime mutation and makes behavior deterministic.
+
+Model grouping by concern:
+    - ``global_config``: service-level defaults (logging, retry, HTTP pool).
+    - ``provider_config``: static provider metadata from YAML.
+    - ``model_config``: per-model capability, limits, and pricing metadata.
+    - ``cloud_config``: cloud-vendor transport defaults.
+    - ``tenant_config``: runtime tenant/deployment settings from persistence.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -49,21 +53,16 @@ from app.core.settings.models.tenant_config import (
 )
 
 __all__: list[str] = [
-    # cloud_config
     "AWSCloudConfig",
     "AnyCloudConfig",
-    # provider_config
     "AuthMode",
     "AzureCloudConfig",
     "CloudVendor",
-    # tenant_config
     "DeploymentConfig",
     "DeploymentStatus",
     "GCPCloudConfig",
-    # global_config
     "GlobalConfig",
     "HTTPPoolConfig",
-    # model_config
     "LLMModelSpec",
     "LoggingConfig",
     "ModelCapability",

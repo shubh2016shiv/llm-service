@@ -38,10 +38,15 @@ Architecture:
     Services (services/) raise TenantError, QuotaError, DeploymentError.
     Interfaces (api/) translate these to HTTP responses.
 
+Step-by-step error propagation flow:
+    1. Lower layers raise the most specific typed exception possible.
+    2. Service/orchestration layers may enrich context and re-raise typed errors.
+    3. API exception handlers map ``error_code`` values to stable HTTP responses.
+    4. Clients rely on machine-readable codes instead of brittle string parsing.
+
 Dependencies: None — stdlib only.
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -63,7 +68,7 @@ class LLMServiceError(Exception):
         'INVALID_API_KEY'
     """
 
-    # Subclasses override this to give callers a stable machine-readable code.
+    # Subclasses override this to provide a stable machine-readable code.
     error_code: str = "LLM_SERVICE_ERROR"
 
     def __init__(self, message: str, *, details: dict | None = None) -> None:

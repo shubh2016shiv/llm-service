@@ -28,6 +28,13 @@ Anywhere downstream in the same request (read-only)::
 The sentinel value ``"unset"`` is returned when this is called outside a
 request context — for example from a background task spawned before the
 middleware has run, or from a unit test that does not configure the context.
+
+Step-by-step request flow:
+    1. Middleware generates or receives a request ID.
+    2. Middleware calls ``set_request_id(...)`` at request entry.
+    3. Downstream code (services/adapters/logging) calls ``get_request_id()``.
+    4. Context is automatically isolated per async task and cleaned up when
+       request handling completes.
 """
 
 from __future__ import annotations
@@ -40,7 +47,7 @@ _REQUEST_ID_CONTEXT_VAR: ContextVar[str] = ContextVar("request_id", default="uns
 def set_request_id(request_id: str) -> None:
     """Bind ``request_id`` to the current async task context.
 
-    Called exactly once per request by the ``RequestIdMiddleware``.
+    Called at request entry by the ``RequestIdMiddleware``.
     Subsequent reads via ``get_request_id()`` return this value for the
     lifetime of the current async task.
 
@@ -54,7 +61,7 @@ def get_request_id() -> str:
     """Return the request ID bound to the current async task context.
 
     Returns:
-        The UUID string set by the middleware, or ``"unset"`` when called
+        The request identifier set by middleware, or ``"unset"`` when called
         outside a request context (background tasks, CLI scripts, tests).
     """
     return _REQUEST_ID_CONTEXT_VAR.get()

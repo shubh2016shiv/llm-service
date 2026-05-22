@@ -7,6 +7,13 @@ Responsibilities:
     - Validate merged dicts against frozen Pydantic models
     - Provide synchronous accessors (settings is read at startup, not per-request)
 
+Step-by-step loading flow:
+    1. Read ``base.yaml`` as the baseline configuration.
+    2. Read optional ``environments/<env>.yaml`` overlay.
+    3. Deep-merge overlay values on top of baseline values.
+    4. Validate merged dictionaries into frozen Pydantic models.
+    5. Expose typed config objects to provider registry and infrastructure code.
+
 Architecture:
 -------------
     config/
@@ -33,8 +40,7 @@ Dependencies:
     - pydantic >= 2.0 — model validation
     - app.core.exceptions — ConfigurationError
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -151,8 +157,8 @@ def _build_model_spec(raw: dict[str, Any]) -> LLMModelSpec:
 class ConfigLoader:
     """Loads and validates all YAML configuration into frozen Pydantic models.
 
-    This class is instantiated once at startup. It is synchronous because
-    settings loading happens before the async event loop starts.
+    This class is instantiated once at startup. It is synchronous by design
+    because configuration loading happens before request handling begins.
 
     Example:
         >>> loader = ConfigLoader(config_dir=Path("config"), environment="production")
@@ -242,8 +248,8 @@ class ConfigLoader:
         """Load all provider YAML files from config/providers/.
 
         Returns:
-            Mapping of provider_name → ProviderStaticConfig for every
-            .yaml file found in the providers directory.
+            Mapping of provider name to validated static provider config for
+            every ``.yaml`` file discovered in ``config/providers``.
 
         Example:
             >>> all_configs = loader.load_all_provider_configs()

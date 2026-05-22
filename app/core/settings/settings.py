@@ -8,6 +8,13 @@ Why separate from YAML?
     YAML is version-controlled and safe to commit.
     Secrets and DB URLs are never committed — they come from the environment.
 
+Step-by-step startup relationship:
+    1. Process environment and optional ``.env`` are read once.
+    2. ``ApplicationSettings`` validates and normalizes raw values.
+    3. ``get_application_settings()`` memoizes the typed object.
+    4. Other modules consume this singleton rather than reading env vars
+       directly, which prevents drift and duplicate parsing logic.
+
 Architecture:
 -------------
     .env / environment variables
@@ -23,8 +30,7 @@ Architecture:
 Dependencies:
     - pydantic-settings >= 2.0
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ class ApplicationSettings(BaseSettings):
     """Centralised loader for environment-sourced settings.
 
     All values come from environment variables or a .env file. Never scatter
-    os.environ.get() calls throughout the codebase — import this class instead.
+    ``os.environ`` reads across the codebase; use this typed settings contract.
 
     Sensitive fields use SecretStr so pydantic masks their value in repr/logs.
 
@@ -267,7 +273,7 @@ class ApplicationSettings(BaseSettings):
 def get_application_settings() -> ApplicationSettings:
     """Return the singleton ApplicationSettings instance.
 
-    Cached via lru_cache — the environment is read exactly once per process.
+    Cached via ``lru_cache`` so environment parsing happens only once per process.
     Call this function wherever settings are needed instead of instantiating
     ApplicationSettings directly.
 

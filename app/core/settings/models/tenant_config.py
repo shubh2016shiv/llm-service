@@ -15,20 +15,25 @@ Architecture:
           ├──► UserEntitlementConfig (per user personal API key)
           └──► TenantConfig       (org-level rate limits, allowed providers)
 
+Step-by-step relation:
+    1. Management services write tenant/deployment rows to PostgreSQL.
+    2. Routing layer reads these rows and validates into frozen models.
+    3. Redis caches serialized config for fast request-path access.
+    4. Cache invalidation on management updates keeps runtime decisions fresh.
+
 Thread-safety: All models are frozen. Dynamic request params (temperature,
 trace_id) are NEVER stored here — they are local to the request call frame.
 
 Dependencies:
     - pydantic >= 2.0
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from uuid import UUID  # noqa: TC003 — needed at runtime for Pydantic field resolution
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 

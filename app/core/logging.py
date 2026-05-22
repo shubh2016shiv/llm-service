@@ -6,6 +6,13 @@ This module:
     2. Defines StructuredLogger — thin wrapper enforcing structured `extra` fields
     3. Provides configure_logging() — call once at startup to wire everything up
 
+Step-by-step runtime relationship:
+    1. Startup calls ``configure_logging(...)`` with level/format/environment.
+    2. Root logger is wired with either ``JSONFormatter`` or ``TextFormatter``.
+    3. Module loggers emit messages with structured ``extra`` fields.
+    4. Formatter serializes records into machine-parseable output.
+    5. Observability pipeline ingests logs with consistent keys.
+
 Design rules enforced here:
     - Never use print() — always use structured logger
     - Log fields are extra= kwargs, never string concatenation
@@ -32,8 +39,7 @@ Architecture:
 Dependencies:
     - stdlib logging, json, datetime
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -50,7 +56,7 @@ from typing import Any, ClassVar
 class ProviderLogContext:
     """Structured context fields emitted alongside every provider operation log.
 
-    Passed as the `extra` argument to logger calls. Fields map directly to the
+    Passed as the ``extra`` argument to logger calls. Fields map directly to the
     log schema documented in the HLD.
 
     Example:
@@ -170,7 +176,7 @@ class JSONFormatter(_logging.Formatter):
     """Formats stdlib LogRecord instances as single-line JSON strings.
 
     Extracts standard fields (level, message, logger name, exception) and
-    merges any `extra` dict fields into the JSON output. Fields that are
+    merges any ``extra`` dict fields into the JSON output. Fields that are
     objects are converted to strings to ensure JSON-serialisability.
 
     Example record produced:
@@ -186,7 +192,7 @@ class JSONFormatter(_logging.Formatter):
         }
     """
 
-    # Fields present on every LogRecord — exclude from `extra` extraction.
+    # Fields present on every LogRecord - exclude from ``extra`` extraction.
     _STDLIB_FIELDS: frozenset[str] = frozenset({
         "name", "msg", "args", "levelname", "levelno", "pathname",
         "filename", "module", "exc_info", "exc_text", "stack_info",
@@ -309,7 +315,7 @@ def configure_logging(
 ) -> None:
     """Configure the root logger for the entire application.
 
-    Call this exactly once at application startup (e.g., in FastAPI lifespan).
+    Call this exactly once at application startup (for example, in FastAPI lifespan).
     All subsequent loggers obtained via logging.getLogger(__name__) will
     inherit this configuration automatically.
 

@@ -13,11 +13,17 @@ Architecture:
                                ▼             ▼              ▼
                         HTTPPoolConfig  RetryConfig   LoggingConfig
 
+Step-by-step relation:
+    1. Base and environment YAML files are merged by ``ConfigLoader``.
+    2. Result is validated into ``GlobalConfig``.
+    3. Infrastructure factories (HTTP clients, retries, logging) consume
+       nested sections from this typed model.
+    4. Values remain immutable for process lifetime to avoid config drift.
+
 Dependencies:
     - pydantic >= 2.0 — frozen BaseModel for thread-safe immutability
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations

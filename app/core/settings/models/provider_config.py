@@ -18,12 +18,17 @@ Architecture:
     ├── ProviderEndpointConfig    base URL + operation paths
     └── Tuple[LLMModelSpec, ...]  per-model specs
 
+Step-by-step relation:
+    1. ``ConfigLoader`` reads ``config/providers/<name>.yaml``.
+    2. Auth, endpoint, and model blocks are validated into typed sub-models.
+    3. ``ProviderRegistry`` uses ``implementation_class`` to instantiate adapter.
+    4. Runtime deployment config selects which provider/model entry to execute.
+
 Dependencies:
     - pydantic >= 2.0       — frozen BaseModel
     - .model_config         — LLMModelSpec, ModelCapability
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from typing import TYPE_CHECKING  # noqa: F401
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # These are used in Pydantic field annotations and MUST be at runtime.
-from app.core.settings.models.model_config import LLMModelSpec, ModelCapability  # noqa: TC001
+from app.core.settings.models.model_config import LLMModelSpec, ModelCapability
 
 
 class AuthMode(StrEnum):

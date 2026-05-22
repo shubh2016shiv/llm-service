@@ -1,15 +1,21 @@
 """
-Config Package — Public API for the settings subsystem.
+Settings Package
+================
 
-Architecture:
--------------
-    app.core.settings
-    ├── settings  → ApplicationSettings, get_application_settings()
-    ├── loader    → ConfigLoader
-    └── models/   → All frozen Pydantic settings models
+Public API for configuration loading and configuration models.
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Two configuration sources are intentionally separated:
+    - Environment settings (secrets, connection URLs) from
+      ``ApplicationSettings``.
+    - YAML settings (provider/model/static defaults) from ``ConfigLoader``.
+
+Step-by-step relation:
+    1. Startup calls ``get_application_settings()`` to read env/.env values.
+    2. Startup constructs ``ConfigLoader`` with ``config_dir`` + environment.
+    3. Loader validates YAML into frozen model objects from ``models/``.
+    4. Services consume typed config objects, not raw dicts.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -45,14 +51,11 @@ from app.core.settings.settings import ApplicationSettings, get_application_sett
 
 __all__: list[str] = [
     "AWSCloudConfig",
-    # models (re-exported for convenience)
     "AnyCloudConfig",
-    # settings
     "ApplicationSettings",
     "AuthMode",
     "AzureCloudConfig",
     "CloudVendor",
-    # loader
     "ConfigLoader",
     "DeploymentConfig",
     "DeploymentStatus",

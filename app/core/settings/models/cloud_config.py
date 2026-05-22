@@ -9,11 +9,16 @@ Architecture:
                                                ▼
                                     BedrockProvider / AzureOpenAIProvider
 
+Step-by-step relationship:
+    1. ``ConfigLoader`` reads cloud vendor YAML.
+    2. YAML is validated into vendor-specific frozen model instances.
+    3. Provider adapters read timeout/region defaults from these models.
+    4. Deployment-level overrides, when present, take precedence at runtime.
+
 Dependencies:
     - pydantic >= 2.0
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
