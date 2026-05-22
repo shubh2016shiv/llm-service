@@ -116,7 +116,9 @@ async def activate_deployment(
         translate_management_error(exc)
 
 
-@router.patch("/{tenant_id}/deployments/{deployment_id}/maintenance", response_model=ResourceResponse)
+@router.patch(
+    "/{tenant_id}/deployments/{deployment_id}/maintenance", response_model=ResourceResponse
+)
 async def maintain_deployment(
     tenant_id: UUID,
     deployment_id: UUID,
@@ -144,5 +146,3 @@ async def delete_deployment(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except LLMServiceError as exc:
         translate_management_error(exc)
-
-

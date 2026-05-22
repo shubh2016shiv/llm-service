@@ -1,8 +1,20 @@
 """
-app/api/exception_handlers.py — Domain exception → HTTP response translation.
+app/api/exception_handlers.py — Converts business errors into HTTP responses.
 
-This module is the single place where domain exceptions become HTTP responses.
-Nothing outside this file decides status codes for LLMServiceError subtypes.
+TL;DR for new developers:
+    When something goes wrong in the business logic (e.g., a tenant is
+    suspended, a rate limit is hit, a deployment is not found), the service
+    layer raises a domain exception — an error object that describes the
+    problem in business terms. This module is the single place that translates
+    those domain exceptions into the correct HTTP status code (400, 403, 404,
+    429, 500, etc.) and sends it back to the client. No other file decides
+    what HTTP status an error gets.
+
+Enterprise Pattern: Exception Translation Layer Pattern
+    Domain exceptions (business-meaningful errors) and HTTP responses (network-
+    protocol concerns) are kept separate. This module bridges them in one
+    central place. Adding a new error type means adding one mapping entry here
+    — route handlers never need to know or duplicate status-code logic.
 
 Public surface
 --------------
@@ -25,16 +37,21 @@ Design contract
     here. If it fires, that is a gap in the route-level handling — treat the log
     entry as a bug report.
 
-MRO-walk pattern
-----------------
-    All three entry points share the same resolution logic: walk type(exc).__mro__
-    until a mapping entry is found. This guarantees the most specific subclass
-    wins without requiring the caller to order exception checks manually.
+How exception-to-status resolution works
+-----------------------------------------
+    All three entry points share the same resolution logic: walk the
+    exception's class hierarchy (its parent classes, grandparents, etc.)
+    until a matching rule is found. This guarantees the most specific
+    subclass wins without requiring the caller to order exception checks
+    manually.
 
     Example — given the hierarchy:
         RateLimitError → ProviderError → LLMServiceError
-    A RequestsPerMinuteExceededError not in the map still resolves to 429 via
-    RateLimitError before reaching the generic 500 fallback.
+    A RequestsPerMinuteExceededError (a child of RateLimitError) that has
+    no direct mapping entry will still resolve to HTTP 429 via its parent
+    RateLimitError, before falling through to the generic HTTP 500.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -327,9 +344,7 @@ def translate_management_error(exc: LLMServiceError) -> NoReturn:
 # ---------------------------------------------------------------------------
 
 
-async def _on_unhandled_llm_service_error(
-    request: Request, exc: LLMServiceError
-) -> JSONResponse:
+async def _on_unhandled_llm_service_error(request: Request, exc: LLMServiceError) -> JSONResponse:
     """Safety-net: convert any escaped LLMServiceError to a structured JSON response.
 
     This handler fires only when a domain exception was NOT caught by any

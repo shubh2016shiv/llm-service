@@ -111,5 +111,3 @@ async def delete_entitlement(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except LLMServiceError as exc:
         translate_management_error(exc)
-
-

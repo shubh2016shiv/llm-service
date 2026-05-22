@@ -1,27 +1,39 @@
 """
 LLM Inference Endpoints
+========================
 
-Routes:
-    POST /api/v1/llm/chat    — Chat completions (JSON body or SSE stream)
-    POST /api/v1/llm/embed   — Text embeddings
-    POST /api/v1/llm/rerank  — Document re-ranking
+This module defines the public-facing API routes that end users call to
+interact with AI models — chat, embeddings, and re-ranking.
 
-All routes require:
-    - X-Tenant-ID header       (UUID identifying the requesting tenant)
-    - X-Deployment-Key header  (string key selecting the target deployment)
+Endpoints:
+    POST /api/v1/llm/chat    — Chat completions (can return JSON or stream)
+    POST /api/v1/llm/embed   — Convert text into vector embeddings
+    POST /api/v1/llm/rerank  — Re-rank a list of documents by relevance
 
-The deployment key determines which provider, model, and credentials are used.
-Callers never specify those directly — the resolver handles that.
+All three endpoints require two headers that tell the system which tenant
+and which model deployment to use:
+    - X-Tenant-ID        (UUID of the tenant making the request)
+    - X-Deployment-Key    (a short string key that identifies one deployment)
 
-NOTE: All routes require authentication plus tenant-specific inference
-authorization via the require_inference_access dependency. Unauthenticated
-requests receive HTTP 401; unauthorized tenant/deployment access receives HTTP 403.
+The deployment key is how the system resolves the caller's intent to a
+specific AI provider, model, and credentials. The caller never specifies
+the provider or model directly — the deployment configuration handles that
+mapping.
 
-Dependency wiring:
-    main.py must create one InferenceService during startup and store it on
-    app.state.inference_service. The _get_inference_service() dependency below
-    retrieves it from there, ensuring the ProviderRegistry singleton cache
-    persists across requests.
+Authentication and Authorization:
+    Every route requires the caller to be authenticated (HTTP 401 if
+    not) and authorized for the specific tenant and deployment (HTTP 403
+    if the tenant/deployment access check fails). This is enforced by the
+    ``require_inference_access`` FastAPI dependency.
+
+Enterprise Pattern: API Gateway Router Pattern
+    This router acts as the single entry point for all inference requests.
+    It enforces authentication and authorization before any business logic
+    runs, then delegates to the InferenceService to do the actual work.
+    Separating inference from management endpoints keeps each group's
+    security rules and error handling independent.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -121,7 +133,6 @@ def _get_inference_service(request: Request) -> InferenceService:
             "an InferenceService instance before the application accepts traffic."
         )
     return service
-
 
 
 # ---------------------------------------------------------------------------
