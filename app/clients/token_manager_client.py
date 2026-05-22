@@ -2,22 +2,36 @@
 Token Manager Client
 ====================
 
-Outbound client for the token-allocation microservice.
+A client wrapper for communicating with the external Token Manager
+microservice, which controls how many tokens or requests each tenant is
+allowed to consume.
 
-Architecture:
--------------
-    Gateway Service -> TokenManagerClient.check_quota(...) -> (Allows or Denies)
+What problem does this solve?
+    Before the LLM services application sends a request to an AI provider
+    (like OpenAI or Anthropic), it needs to check whether the calling
+    tenant has enough quota remaining. Instead of every part of the app
+    knowing how to call the Token Manager directly, this class provides a
+    single, clean Python interface: call ``check_quota()`` before the
+    request, and ``report_usage()`` after the response comes back.
 
-    Note:
-    The actual implementation will communicate with an external Token Manager
-    microservice (via gRPC or fast HTTP) to acquire tokens before allowing the
-    LLM request to proceed to the provider.
+Current status:
+    This is a placeholder implementation that always allows requests
+    (``check_quota`` returns ``True``). In production, it will be replaced
+    with actual network calls (gRPC or HTTP) to a real Token Manager
+    service, without changing any code outside this file.
+
+Enterprise Pattern: Adapter Pattern
+    This class wraps an external service behind a Python interface. The
+    rest of the application only knows about ``TokenManagerClient``
+    methods — it never sees the underlying protocol, URL, or
+    authentication. When the real Token Manager is deployed, only this
+    file needs to change.
+
 Dependencies:
-    - app.schemas.requests — request payload shapes for quota estimation
-    - app.core.exceptions — base service errors
+    - app.schemas — request payload shapes used to estimate token counts
+    - app.core.exceptions — base error class for quota-exceeded errors
 
-Author: Engineering Team
-Last Updated: 2026-05-16
+Author: Shubham Singh
 """
 
 from __future__ import annotations
