@@ -28,3 +28,4 @@ wheels/
 htmlcov/
 coverage.xml
 .coverage
+Agents.md
