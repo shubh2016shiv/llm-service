@@ -1,15 +1,19 @@
 """
-app/auth/jwt_token_service.py — JWT token creation, decoding, and validation.
+JWT Token Service
+=================
 
-All operations are cryptographic — no database I/O is performed here.
-The secret key and algorithm come from ApplicationSettings so they are
-never hardcoded.
+This module creates, decodes, and validates JWT tokens for login sessions.
+It performs cryptographic operations only and does not access the database.
 
-Security notes:
-- HS256 is the default algorithm; swap for RS256 in multi-service environments
-  where the signing and verification parties differ.
-- Including ``token_type`` in every payload prevents refresh tokens from being
-  used to authorise API calls (token confusion attack).
+Enterprise Pattern: Stateless Authentication Pattern
+    Token validation is self-contained and deterministic, which helps services
+    scale horizontally without a shared session store.
+
+Security note:
+    Every token includes a ``type`` claim so refresh tokens cannot be used where
+    access tokens are required.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations

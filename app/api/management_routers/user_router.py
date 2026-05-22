@@ -1,3 +1,15 @@
+"""
+User Management Routes
+======================
+
+This router handles user CRUD operations and user membership lookups.
+
+Enterprise Pattern: Thin Router Pattern
+    Routes delegate business rules to services and only manage HTTP concerns.
+
+Author: Shubham Singh
+"""
+
 from __future__ import annotations
 
 from typing import Annotated
@@ -12,13 +24,13 @@ from app.api.dependencies import (
 from app.api.exception_handlers import translate_management_error
 from app.auth import AuthTokenPayload, require_admin, require_developer
 from app.core.exceptions import LLMServiceError
-from app.services import TenantMembershipService, UserService
 from app.schemas.management_schema import (
     PaginatedResponse,
     ResourceResponse,
     UserCreateRequest,
     UserUpdateRequest,
 )
+from app.services import TenantMembershipService, UserService
 
 router = APIRouter(prefix="/api/v1/users", tags=["User Management"])
 
@@ -146,3 +158,5 @@ async def list_user_memberships(
         return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
     except LLMServiceError as exc:
         translate_management_error(exc)
+
+

@@ -1,3 +1,16 @@
+"""
+User Entitlement Routes
+=======================
+
+This router manages which user can use which tenant deployment routes through
+entitlement records.
+
+Enterprise Pattern: Thin Router Pattern
+    Route handlers stay focused on HTTP and call services for all domain rules.
+
+Author: Shubham Singh
+"""
+
 from __future__ import annotations
 
 from typing import Annotated
@@ -9,13 +22,13 @@ from app.api.dependencies import get_user_entitlement_service
 from app.api.exception_handlers import translate_management_error
 from app.auth import AuthTokenPayload, require_admin, require_developer
 from app.core.exceptions import LLMServiceError
-from app.services import UserEntitlementService
 from app.schemas.management_schema import (
     EntitlementCreateRequest,
     EntitlementUpdateRequest,
     PaginatedResponse,
     ResourceResponse,
 )
+from app.services import UserEntitlementService
 
 router = APIRouter(prefix="/api/v1/users", tags=["User Entitlements"])
 TenantIdQuery = Annotated[UUID, Query(description="Tenant scope for entitlement lookup.")]
@@ -98,3 +111,5 @@ async def delete_entitlement(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except LLMServiceError as exc:
         translate_management_error(exc)
+
+

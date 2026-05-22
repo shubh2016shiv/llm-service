@@ -1,19 +1,20 @@
 """
-app/auth/auth_dependencies.py — FastAPI dependencies for JWT-based auth.
+Authentication Dependencies
+===========================
 
-All endpoint protection is stateless — the JWT is validated cryptographically
-with no database queries. This keeps authentication O(1) and horizontally
-scalable regardless of load.
+This module defines FastAPI dependencies that protect routes using JWT tokens.
+It does two things:
+    1) validates the bearer token,
+    2) checks whether the role is allowed for that endpoint.
+
+Enterprise Pattern: Dependency Guard Pattern
+    Route handlers declare access requirements with ``Depends(...)`` and receive
+    a validated user payload only when checks pass.
 
 Role hierarchy (ascending privilege):
     developer < operator < admin < owner
 
-Usage:
-    @router.get("/my-endpoint")
-    async def my_endpoint(
-        current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
-    ) -> ...:
-        ...
+Author: Shubham Singh
 """
 
 from __future__ import annotations

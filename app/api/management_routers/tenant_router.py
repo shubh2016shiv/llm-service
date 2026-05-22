@@ -1,3 +1,19 @@
+"""
+Tenant and Membership Management Routes
+=======================================
+
+This router exposes tenant lifecycle endpoints and tenant membership endpoints.
+In short:
+    - Tenant endpoints create/read/update/suspend/activate/delete tenants.
+    - Membership endpoints add/list/update/remove tenant members.
+
+Enterprise Pattern: Thin Router Pattern
+    Route handlers should stay small: parse HTTP input, call service, translate
+    domain errors. Business rules live in services.
+
+Author: Shubham Singh
+"""
+
 from __future__ import annotations
 
 from typing import Annotated
@@ -18,7 +34,6 @@ from app.auth import (
     require_owner,
 )
 from app.core.exceptions import LLMServiceError
-from app.services import TenantMembershipService, TenantService
 from app.schemas.management_filters import TenantListFilters, TenantMembershipListFilters
 from app.schemas.management_schema import (
     MembershipCreateRequest,
@@ -28,6 +43,7 @@ from app.schemas.management_schema import (
     TenantCreateRequest,
     TenantUpdateRequest,
 )
+from app.services import TenantMembershipService, TenantService
 
 router = APIRouter(prefix="/api/v1/tenants", tags=["Tenant Management"])
 

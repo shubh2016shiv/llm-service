@@ -36,7 +36,6 @@ from fastapi.responses import StreamingResponse
 from app.api.dependencies import require_inference_access
 from app.api.exception_handlers import translate_inference_error
 from app.core.exceptions import LLMServiceError
-from app.services.inference_service import InferenceService
 from app.schemas.auth_schema import InferenceAccessContext
 from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
 from app.schemas.responses_schema import (
@@ -45,6 +44,7 @@ from app.schemas.responses_schema import (
     EmbedResponse,
     RerankResponse,
 )
+from app.services.inference_service import InferenceService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

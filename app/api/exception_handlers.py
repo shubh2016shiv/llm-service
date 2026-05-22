@@ -66,7 +66,7 @@ from app.core.exceptions import (
     TenantSuspendedError,
 )
 from app.core.request_context import get_request_id
-from app.routing.exceptions import OperationNotSupportedError, ProviderNotAllowedError
+from app.inference_routing.exceptions import OperationNotSupportedError, ProviderNotAllowedError
 
 logger = logging.getLogger(__name__)
 

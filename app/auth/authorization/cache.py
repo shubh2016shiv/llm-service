@@ -2,34 +2,31 @@
 Inference Authorization Cache
 =============================
 
-Caches successful inference authorization decisions and their invalidation state.
+This module stores successful inference authorization decisions in cache so
+repeat requests can skip the full database authorization path.
 
-Architecture:
--------------
+Enterprise Pattern: Cache-Aside Pattern with Versioned Invalidation
+    - On read: check cache first.
+    - On miss: authorize from source-of-truth, then cache the result.
+    - On data change: bump version keys so older cached entries become invalid.
+
+How the flow works:
     TenantAuthorizationService
-        │
-        ├── read cached authorization grant
-        ├── read authorization version snapshot
-        ├── authorize against persistence on cache miss
-        └── write cached grant with snapshot
-                │
-                ▼
+        |
+        +--> Read cached grant and version snapshot
+        +--> If cache miss/stale, run full authorization from persistence
+        +--> Write fresh grant back to cache
+        |
+        v
     InferenceAuthorizationCache
-        │
-        ├── tenant scope version
-        ├── membership scope version
-        ├── deployment scope version
-        ├── route scope version
-        └── cached authorization grant
-                │
-                ▼
-    RedisCache / Redis-like backend
+        |
+        v
+    Redis-compatible backend
 
 Dependencies:
-    - app.schemas.auth_schema — cached InferenceAccessContext contract
+    - app.schemas.auth_schema: Defines the cached authorization context model.
 
-Author: Engineering Team
-Last Updated: 2026-05-21
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -237,3 +234,4 @@ class InferenceAuthorizationCache:
             return
         version_value = f"v:{uuid4()}"
         await self._backend.set(key, version_value.encode("utf-8"), ttl_seconds=None)
+

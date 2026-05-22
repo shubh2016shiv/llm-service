@@ -1,10 +1,40 @@
 """
-app/api/dependencies.py — FastAPI dependency factories.
+app/api/dependencies.py — FastAPI dependency injection factories.
 
-Wires persistence, auth, and business-logic objects into FastAPI's Depends()
-graph. Every factory here is O(request) — no shared mutable state.
+This module provides factory functions that FastAPI calls once per HTTP request
+to create the service objects (dependency instances) needed by route handlers.
 
-Exception translation lives in app.api.exception_handlers, not here.
+How dependency injection works here:
+    Every function in this module returns a freshly-built object. FastAPI's
+    ``Depends()`` mechanism calls the appropriate factory on each incoming
+    request and passes the result into the route handler as a parameter. Because
+    each request gets its own objects, no two requests can accidentally share
+    or interfere with each other's state.
+
+What each factory does:
+    Each factory combines persistence objects (database access) and other
+    dependencies to build a complete service ready for use. For example,
+    ``get_tenant_service()`` wires together a ``TenantPersistence`` (database),
+    a ``TenantAccessService`` (authorization checks), and an
+    ``InferenceAuthorizationCache`` (Redis caching) into a single
+    ``TenantService`` object that the route handler can call.
+
+Enterprise Pattern: Dependency Injection Factory Pattern
+    Instead of route handlers creating their own service objects (which would
+    tightly couple them to specific implementations), FastAPI's ``Depends()``
+    calls these factories and injects the result. This makes the route handler
+    code simpler — it only declares what it needs, not how to build it — and
+    makes testing easier because mock services can be swapped in.
+
+Exception translation:
+    When a factory or service raises a domain exception (an error meaningful
+    to the business logic, like "tenant not found"), the route handler catches
+    it and calls a translate function in ``app.api.exception_handlers`` to
+    convert it into the correct HTTP status code. This module does not decide
+    status codes itself — that responsibility lives in the exception handlers
+    module.
+
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -16,7 +46,11 @@ from fastapi import Depends, Header, Request
 
 from app.api.exception_handlers import translate_inference_error
 from app.auth import get_current_user
-from app.auth.authorization import InferenceAuthorizationCache, TenantAccessService, TenantAuthorizationService
+from app.auth.authorization import (
+    InferenceAuthorizationCache,
+    TenantAccessService,
+    TenantAuthorizationService,
+)
 from app.core.exceptions import LLMServiceError
 from app.core.settings.settings import get_application_settings
 from app.database import (

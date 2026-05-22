@@ -1,3 +1,15 @@
+"""
+Provider and Model Catalog Routes
+=================================
+
+This router manages provider records and model records under each provider.
+
+Enterprise Pattern: Thin Router Pattern
+    Routes validate HTTP inputs and delegate business rules to services.
+
+Author: Shubham Singh
+"""
+
 from __future__ import annotations
 
 from typing import Annotated
@@ -12,7 +24,6 @@ from app.api.dependencies import (
 from app.api.exception_handlers import translate_management_error
 from app.auth import AuthTokenPayload, require_admin, require_developer, require_owner
 from app.core.exceptions import LLMServiceError
-from app.services import ModelCatalogService, ProviderCatalogService
 from app.schemas.management_schema import (
     ModelCreateRequest,
     ModelUpdateRequest,
@@ -21,6 +32,7 @@ from app.schemas.management_schema import (
     ProviderUpdateRequest,
     ResourceResponse,
 )
+from app.services import ModelCatalogService, ProviderCatalogService
 
 router = APIRouter(prefix="/api/v1/providers", tags=["Provider Catalog"])
 
@@ -177,3 +189,5 @@ async def deactivate_model(
         return ResourceResponse.model_validate(await service.deactivate_model(provider_id, model_id))
     except LLMServiceError as exc:
         translate_management_error(exc)
+
+

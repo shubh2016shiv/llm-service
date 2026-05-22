@@ -1,18 +1,23 @@
 """
-app/auth — JWT authentication and role-based access control.
+Authentication Package
+======================
 
-Public surface for endpoint protection:
+This package provides everything API routes need to verify who the caller is
+and what that caller is allowed to do.
 
-    from app.auth import require_developer, AuthTokenPayload
+Enterprise Pattern: Facade Pattern
+    Other modules import from ``app.auth`` instead of many internal files.
+    This keeps imports simple and hides internal layout details.
 
-    @router.get("/protected")
-    async def my_endpoint(
-        current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
-    ) -> ...:
-        ...
+How this package is used in routes:
+    1) Route depends on ``get_current_user`` to validate JWT.
+    2) Route adds a role guard such as ``require_admin``.
+    3) Route receives ``AuthTokenPayload`` only after checks pass.
 
 Role hierarchy (ascending privilege):
     developer < operator < admin < owner
+
+Author: Shubham Singh
 """
 
 from app.auth.auth_dependencies import (

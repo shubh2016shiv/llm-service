@@ -2,27 +2,36 @@
 Tenant Authorization Service
 ============================
 
-Authorizes tenant-scoped inference without platform-role bypass.
+This module decides whether a caller can run inference on a specific tenant
+and deployment key.
 
-Architecture:
--------------
+Enterprise Pattern: Authorization Service Orchestration Pattern
+    `TenantAuthorizationService` orchestrates focused persistence adapters
+    (tenant, membership, deployment, entitlement) plus cache. Each adapter
+    handles one data concern; this service combines their results into one
+    allow/deny decision.
+
+How the flow works:
     Inference API dependency
-        │
-        ▼
+        |
+        v
     TenantAuthorizationService
-        ├── InferenceAuthorizationCache
-        ├── TenantPersistence
-        ├── TenantMembershipPersistence
-        ├── TenantDeploymentPersistence
-        └── UserEntitlementPersistence
+        +--> Check cache snapshot and cached grant
+        +--> Validate tenant is present and active
+        +--> Validate membership is active with allowed role
+        +--> Validate deployment exists and is active
+        +--> Validate entitlement exists for provider/model route
+        +--> Build InferenceAccessContext
+        |
+        v
+    app.services inference execution
 
 Dependencies:
-    - app.database — PostgreSQL source-of-truth lookups
-    - app.schemas.auth_schema — authenticated identity and authorization context
-    - app.core.exceptions — stable domain exceptions
+    - app.database: Source-of-truth authorization lookups.
+    - app.schemas.auth_schema: Identity payload and safe auth context.
+    - app.core.exceptions: Stable domain errors returned to API layer.
 
-Author: Engineering Team
-Last Updated: 2026-05-21
+Author: Shubham Singh
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ from __future__ import annotations
 from typing import cast
 from uuid import UUID
 
+from app.auth.authorization.cache import InferenceAuthorizationCache
 from app.core.exceptions import (
     DeploymentInactiveError,
     DeploymentNotFoundError,
@@ -43,7 +53,6 @@ from app.database import (
     TenantPersistence,
     UserEntitlementPersistence,
 )
-from app.auth.authorization.cache import InferenceAuthorizationCache
 from app.schemas.auth_schema import AuthTokenPayload, InferenceAccessContext, TenantRole
 
 _ACTIVE_STATUS = "active"
@@ -155,3 +164,4 @@ class TenantAuthorizationService:
         if current_snapshot is not None and current_snapshot == final_snapshot:
             await self._cache.set(context, current_snapshot)
         return context
+

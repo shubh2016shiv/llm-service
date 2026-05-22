@@ -1,3 +1,16 @@
+"""
+Tenant Deployment Routes
+========================
+
+This router manages deployment records for a tenant, including lifecycle changes
+like activate and maintenance.
+
+Enterprise Pattern: Thin Router Pattern
+    Routes orchestrate request/response flow and keep business logic in services.
+
+Author: Shubham Singh
+"""
+
 from __future__ import annotations
 
 from typing import Annotated
@@ -9,7 +22,6 @@ from app.api.dependencies import get_tenant_deployment_service
 from app.api.exception_handlers import translate_management_error
 from app.auth import AuthTokenPayload, require_admin, require_developer
 from app.core.exceptions import LLMServiceError
-from app.services import TenantDeploymentService
 from app.schemas.management_filters import TenantDeploymentListFilters
 from app.schemas.management_schema import (
     DeploymentCreateRequest,
@@ -17,6 +29,7 @@ from app.schemas.management_schema import (
     PaginatedResponse,
     ResourceResponse,
 )
+from app.services import TenantDeploymentService
 
 router = APIRouter(prefix="/api/v1/tenants", tags=["Tenant Deployments"])
 ProviderIdQuery = Annotated[UUID | None, Query()]
@@ -131,3 +144,5 @@ async def delete_deployment(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except LLMServiceError as exc:
         translate_management_error(exc)
+
+
