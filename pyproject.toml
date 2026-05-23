@@ -65,10 +65,6 @@ dev = [
     "respx>=0.22.0",          # httpx mock library for provider tests
     "moto>=5.0.0",            # AWS mock for Bedrock tests
     "fakeredis>=2.26.0",      # in-memory Redis for tests
-
-    # ── API Fuzzing (Schemathesis) ───────────────────────────────────────
-    "schemathesis>=3.38.0",    # OpenAPI property-based fuzzing
-    "hypothesis>=6.100.0",     # Underlying property-testing engine
 ]
 
 # ── Ruff (Linting + Formatting) ───────────────────────────────────────────────
@@ -142,12 +138,9 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "--tb=short -q"
-markers = [
-    "schemathesis: API fuzz tests (property-based, auto-generated test cases)",
-    "stateful: Multi-step workflow fuzz tests",
-    "smoke: Quick smoke-test subset of the fuzz suite",
-]
+markers = []
 
 [tool.coverage.run]
 source = ["app"]
