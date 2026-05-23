@@ -104,6 +104,10 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 "app/auth/*.py" = ["TC001"]
 "app/database/*.py" = ["TC001"]
 "app/execution/*.py" = ["TC001", "TC003"]
+# WHY: pytest injects fixtures dynamically — annotating every fixture parameter
+# with its concrete type adds no type-safety and creates heavy boilerplate.
+# ANN rules apply only to src/ (app/) where annotations drive mypy/pyright.
+"tests/**" = ["ANN"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
