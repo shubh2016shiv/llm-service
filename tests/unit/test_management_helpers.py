@@ -13,7 +13,7 @@ from app.core.exceptions import (
     ResourceConflictError,
     ResourceNotFoundError,
 )
-from app.database.base import MissingReferencedResourceError
+from app.database.base import DuplicateResourceError, MissingReferencedResourceError
 from app.services.management_helpers import (
     _SECRET_FIELDS,
     clean_row,
@@ -66,11 +66,28 @@ class TestCleanRow:
 
     def test_clean_row_all_secret_fields_only_returns_empty(self) -> None:
         """When every key is a secret field, the result is an empty dict."""
-        row = {key: "redacted" for key in _SECRET_FIELDS}
+        row = dict.fromkeys(_SECRET_FIELDS, "redacted")
 
         result = clean_row(row)
 
         assert result == {}
+
+    def test_clean_row_removes_nested_secret_fields_case_insensitively(self) -> None:
+        """JSON metadata cannot bypass redaction with nesting or key casing."""
+        row = {
+            "id": "deployment-1",
+            "extra_config": {
+                "Api_Key": "secret",
+                "safe": [{"CLIENT_SECRET": "secret"}, {"region": "us-east-1"}],
+            },
+        }
+
+        result = clean_row(row)
+
+        assert result == {
+            "id": "deployment-1",
+            "extra_config": {"safe": [{}, {"region": "us-east-1"}]},
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -146,19 +163,17 @@ class TestRequireRow:
         assert "Tenant" in str(error)
         assert "t-missing" in str(error)
 
-    def test_require_row_preserves_resource_id_type_as_passed(self) -> None:
-        """The resource_id is stored as-is (may be UUID, str, etc.)."""
+    def test_require_row_preserves_stringified_uuid(self) -> None:
+        """UUID identifiers cross the error boundary in JSON-safe string form."""
         from uuid import UUID
 
         rid = UUID("10000000-0000-0000-0000-000000000001")
 
         with pytest.raises(ResourceNotFoundError) as exc_info:
-            require_row(None, "User", rid)
+            require_row(None, "User", str(rid))
 
         error = exc_info.value
-        # resource_id is stored exactly as passed — not coerced to string
-        assert error.resource_id == rid
-        assert isinstance(error.resource_id, UUID)
+        assert error.resource_id == str(rid)
 
     def test_require_row_preserves_typed_generic_return(self) -> None:
         """The returned value type must match the input type (generic T)."""
@@ -190,7 +205,7 @@ class TestRaiseCleanValidationError:
 
     def test_conflict_hint_yields_resource_conflict_error(self) -> None:
         """A ValueError containing 'already' must map to ResourceConflictError."""
-        original = ValueError("Email already registered")
+        original = DuplicateResourceError("Email already registered")
 
         with pytest.raises(ResourceConflictError) as exc_info:
             raise_clean_validation_error(original)
@@ -204,7 +219,7 @@ class TestRaiseCleanValidationError:
     def test_conflict_hints_detected_case_insensitively(self, hint: str) -> None:
         """All conflict-like substrings must trigger ResourceConflictError."""
         with pytest.raises(ResourceConflictError):
-            raise_clean_validation_error(ValueError(hint.upper()))
+            raise_clean_validation_error(DuplicateResourceError(hint.upper()))
 
     def test_generic_value_error_becomes_management_validation_error(self) -> None:
         """A ValueError without conflict hints must translate to ManagementValidationError."""
@@ -217,7 +232,7 @@ class TestRaiseCleanValidationError:
 
     def test_chained_exception_preserves_cause(self) -> None:
         """The original exception must be set as __cause__ for traceability."""
-        original = ValueError("Duplicate entry")
+        original = DuplicateResourceError("Duplicate entry")
 
         with pytest.raises(ResourceConflictError) as exc_info:
             raise_clean_validation_error(original)
