@@ -1,41 +1,37 @@
 """
-Inference Routing Contracts
-===========================
+The storage contract — what the resolver needs from the outside world
+========================================================================
 
-Protocol contracts (interfaces) that resolver services depend on.
+What this file is for
+---------------------
+The resolver decides routes, but it does not read databases itself. It
+asks a "reader" for three kinds of facts. This file declares those three
+questions as a Protocol — a shape that any class with these three
+methods satisfies automatically, no inheritance required.
 
-Why protocols instead of direct database/Redis calls?
-    Each resolver needs to read data — tenant config, user entitlements —
-    but it shouldn't care WHERE that data comes from. By defining a protocol
-    (a Python ``Protocol`` class that declares method signatures without
-    implementations), the resolver only knows "I can call ``get_tenant_config()``"
-    and never knows whether that call hits PostgreSQL, Redis, or a test mock.
-    This makes resolvers testable in isolation and keeps storage decisions
-    swappable.
+The real reader is CachedInferenceRoutingConfigReader (in
+app/adapters/inference_routing), which answers from PostgreSQL + Redis.
+Tests supply tiny fakes instead. The resolver cannot tell the difference
+— that is the point.
 
-Enterprise Pattern: Dependency Inversion Pattern
-    High-level resolvers depend on abstract reader interfaces, not on concrete
-    database classes. The actual database adapter implements the protocol.
-    This flips the usual dependency direction — the resolver defines what it
-    needs, and the persistence layer fulfills that contract.
-
-Architecture decision:
-    Keep resolvers unaware of SQL, cache keys, and storage-specific models.
-    Contracts express only the data shape and lookup intent needed for routing.
-
-Step-by-step relation:
-    1. Resolver calls protocol method.
-    2. Concrete adapter fulfills protocol (DB/cache/API as needed).
-    3. Resolver applies routing policy on returned typed config objects.
-    4. Pipeline combines resolver outcomes into execution context.
-
-Author: Shubham Singh
+The three questions
+-------------------
+    read_tenant_config     -> the tenant's rules: active? plan? allowed
+                              providers?
+    find_user_entitlements -> this user's personal API-key records
+                              (bring-your-own-key candidates).
+    read_deployment_config -> the tenant's shared deployment setup.
 """
 
+# This line makes every type hint below a lazy string. (Boilerplate.)
 from __future__ import annotations
 
+# TYPE_CHECKING is only True while a type checker reads the file, never at
+# runtime — imports under it exist purely for type hints.
+# Protocol = describes "any class with these methods" (structural typing).
 from typing import TYPE_CHECKING, Protocol
 
+# Names used only in type hints, so they are imported only for the checker.
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -44,44 +40,31 @@ if TYPE_CHECKING:
         TenantConfig,
         UserEntitlementConfig,
     )
+    from app.inference_routing.models import ResolutionRequest
 
 
-class TenantConfigReader(Protocol):
-    """Read tenant-level runtime config needed for routing policy checks."""
+class InferenceRoutingConfigReader(Protocol):
+    """The three storage questions the route resolver needs answered."""
 
-    async def get_tenant_config(self, tenant_id: UUID | str) -> TenantConfig | None:
-        """Return the tenant config for the given identifier, or None when missing."""
+    async def read_tenant_config(self, tenant_id: UUID) -> TenantConfig | None:
+        """Return the tenant's rules, or None when the tenant does not exist."""
+        ...
 
-
-class DeploymentConfigReader(Protocol):
-    """Read deployment-level routing config for a tenant deployment key.
-
-    Includes endpoint/model/credential-reference metadata required by routing.
-    """
-
-    async def get_deployment_config(
+    async def find_user_entitlements(
         self,
-        tenant_id: UUID | str,
+        request: ResolutionRequest,
+    ) -> list[UserEntitlementConfig]:
+        """Return this user's personal-key records matching the request.
+
+        An empty list simply means "no personal key here" — that is
+        normal, not an error.
+        """
+        ...
+
+    async def read_deployment_config(
+        self,
+        tenant_id: UUID,
         deployment_key: str,
     ) -> DeploymentConfig | None:
-        """Return the DeploymentConfig for the given route, or None when not found."""
-
-
-class UserEntitlementReader(Protocol):
-    """Find user entitlement candidates for user-override precedence rules."""
-
-    async def find_matching_entitlements(
-        self,
-        tenant_id: UUID | str,
-        user_id: UUID | str,
-        deployment_key: str,
-        requested_model_name: str | None = None,
-        entitlement_id: UUID | None = None,
-    ) -> list[UserEntitlementConfig]:
-        """Return candidate entitlements for a deployment-key-driven request.
-
-        When entitlement_id is supplied the result set is constrained to that
-        single record, aligning the pipeline with the pre-authorized route from
-        the auth layer.
-        """
+        """Return the deployment's setup, or None when it does not exist."""
         ...

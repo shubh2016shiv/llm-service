@@ -1,155 +1,87 @@
 """
-Inference Routing Models
-========================
+The request and answer shapes
+==============================
 
-Typed request and response models for the routing pipeline.
+What this file is for
+---------------------
+Two frozen shapes, one for each end of the routing conversation:
 
-Key objects:
-    - ResolutionRequest: routing intent from API layer.
-    - ResolvedExecutionContext: immutable result consumed by inference service.
+    ResolutionRequest  — what goes IN: everything the resolver needs to
+                         decide (tenant, user, deployment key, operation,
+                         plus two optional hints).
+    ResolvedRoute      — what comes OUT: everything downstream execution
+                         needs, with every "which setting wins?" question
+                         already answered (effective timeout, temperature,
+                         token limit, headers...).
 
-Enterprise Pattern: Immutable Contract Pattern
-    A frozen context prevents accidental mutation across service boundaries.
-
-Why these models are central:
-    - ``ResolutionRequest`` is the only input contract for routing decisions.
-    - ``ResolvedExecutionContext`` is the only output contract for execution.
-    This boundary keeps routing deterministic and reduces hidden coupling.
-
-Step-by-step data flow:
-    1. API/auth builds ``ResolutionRequest`` from headers/token context.
-    2. Pipeline resolves tenant/deployment/entitlement/provider/model.
-    3. Factory creates ``ResolvedExecutionContext``.
-    4. Inference service executes provider call using resolved fields.
-
-Author: Shubham Singh
+Both are frozen (immutable): once built they can be shared across
+requests and tasks without anyone accidentally changing them.
 """
 
+# This line makes every type hint below a lazy string. (Boilerplate.)
 from __future__ import annotations
 
-from enum import StrEnum
+# UUID = the globally unique id type used by every record in this project.
 from uuid import UUID
 
+# pydantic BaseModel = validates every field as the object is built.
+# ConfigDict(frozen=True) = the object cannot be changed afterwards.
+# Field = attach rules (lengths, defaults, descriptions) to a field.
 from pydantic import BaseModel, ConfigDict, Field
 
-# Pydantic field annotations — must be available at runtime for model building.
-from app.core.settings.models.model_config import LLMModelSpec
+# The provider's catalog entry (its default timeout etc.) — carried in
+# the route so execution never has to re-read the catalog.
 from app.core.settings.models.provider_config import ProviderStaticConfig
-from app.core.settings.models.tenant_config import (
-    DeploymentConfig,
-    TenantConfig,
-    UserEntitlementConfig,
-)
+
+# The operation vocabulary (chat / embed / rerank / ...).
 from app.schemas.enums import OperationType
 
 
-class ResolutionSource(StrEnum):
-    """Identify which route source won precedence during resolution.
-
-    Useful for debugging and analytics (for example, measuring how often
-    user overrides are used versus tenant default deployments).
-    """
-
-    USER_ENTITLEMENT = "user_entitlement"
-    TENANT_DEPLOYMENT = "tenant_deployment"
-
-
-class CredentialScope(StrEnum):
-    """Indicate ownership of the selected credential reference.
-
-    USER means user-scoped entitlement credential.
-    TENANT means tenant deployment credential.
-    """
-
-    USER = "user"
-    TENANT = "tenant"
-
-
 class ResolutionRequest(BaseModel):
-    """Immutable request intent consumed by the orchestration pipeline.
+    """The question the resolver is asked.
 
-    This model intentionally includes only routing-relevant fields and avoids
-    provider payload data so routing remains lightweight and policy-focused.
+    Built AFTER authentication and authorization: everything in here is
+    already trusted. The resolver only has to pick WHERE the prompt goes.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    tenant_id: UUID
-    user_id: UUID
-    deployment_key: str = Field(
-        min_length=1,
-        description="Tenant-scoped deployment key used as the primary routing hint.",
-    )
-    operation: OperationType = Field(
-        description="Requested LLM capability, such as chat or embed.",
-    )
-    # Set by the auth layer so the entitlement resolver pins to the record that
-    # was already verified, preventing independent re-resolution from picking a
-    # different candidate or raising AmbiguousUserEntitlementError.
+    tenant_id: UUID  # which customer is asking
+    user_id: UUID  # which user is asking
+    deployment_key: str = Field(min_length=1)  # which route they want
+    operation: OperationType  # chat, embed, rerank, ...
     pre_authorized_entitlement_id: UUID | None = Field(
         default=None,
-        description="Entitlement ID already verified by the authorization layer.",
+        description="Entitlement already verified by the authorization layer.",
     )
     requested_model_name: str | None = Field(
         default=None,
-        description="Optional secondary model hint for user-entitlement matching.",
-    )
-    token_request_id: str | None = Field(
-        default=None,
-        description="Optional token-allocation identifier for correlation only.",
-    )
-    trace_id: str | None = Field(
-        default=None,
-        description="Optional distributed-trace identifier.",
+        description="Optional model hint used to match a user entitlement.",
     )
 
 
-class ResolvedExecutionContext(BaseModel):
-    """Immutable routing result passed into inference execution services.
+class ResolvedRoute(BaseModel):
+    """The complete answer: every fact execution needs, nothing more.
 
-    What this contains:
-        - Route source and resolved config objects.
-        - Concrete provider/model/endpoint/credential reference fields.
-        - Effective runtime parameters (timeouts/retries/tokens).
-        - Stable identifiers for quota and cache correlation.
+    The "effective" fields mean the winner of the settings cascade has
+    already been chosen (deployment override vs. provider/model default),
+    so execution code never has to re-derive them.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    resolution_source: ResolutionSource
-    tenant_config: TenantConfig
-    deployment_config: DeploymentConfig | None = None
-    user_entitlement_config: UserEntitlementConfig | None = None
-    provider_static_config: ProviderStaticConfig
-    model_spec: LLMModelSpec
-
-    provider_name: str
-    model_name: str
-    api_endpoint_url: str
-    cloud_region: str | None = None
-    secret_reference: str
-    credential_scope: CredentialScope
-
-    effective_timeout_seconds: float
-    effective_max_retries: int
-    effective_temperature: float
-    effective_max_tokens: int
-
-    extra_headers: dict[str, str] = Field(
-        default_factory=dict,
-        description="Deployment-level HTTP headers to merge into every outbound request.",
-    )
-    extra_config: dict[str, object] = Field(
-        default_factory=dict,
-        description="Provider-specific options (e.g. azure_deployment_name, aws_region).",
-    )
-    quota_key: str = Field(
-        description=(
-            "Stable identifier used for token-quota tracking. "
-            "deployment_key for Path B, entitlement_id (str) for Path A."
-        ),
-    )
-    route_fingerprint: str = Field(
-        description="Stable digest of the resolved route and credential reference.",
-    )
-
+    tenant_id: UUID  # who this route belongs to
+    deployment_key: str  # which route key it answers
+    provider_static_config: ProviderStaticConfig  # the provider's catalog entry
+    provider_name: str  # e.g. "openai"
+    model_name: str  # e.g. "gpt-4o"
+    api_endpoint_url: str  # where the HTTP call goes
+    cloud_region: str | None = None  # region-specific endpoints (e.g. Bedrock)
+    secret_reference: str  # WHERE the API key lives (never the key itself)
+    effective_timeout_seconds: float  # the chosen timeout
+    effective_temperature: float  # the chosen creativity knob
+    effective_max_tokens: int  # the chosen answer-length limit
+    extra_headers: dict[str, str] = Field(default_factory=dict)  # extra HTTP headers
+    extra_config: dict[str, object] = Field(default_factory=dict)  # provider-specific options
+    quota_key: str  # what the usage meter counts against
+    route_fingerprint: str  # a fixed identity of this exact route
