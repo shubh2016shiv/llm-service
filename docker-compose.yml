@@ -8,16 +8,20 @@ services:
   # in-memory only and silently discarded them, leaving deployment rows
   # pointing at Vault paths that no longer existed.
   #
-  # Still local-only: TLS is disabled and unsealing is scripted with a single
-  # key share (see vault/config/vault.hcl). Staging/production needs TLS plus
-  # cloud-KMS auto-unseal.
+  # Hardened for a single machine you run yourself: least-privilege accounts,
+  # audit log, bounded token lifetimes, no default passwords, and the unseal
+  # key kept on its own volume. Still one key share and no TLS — see
+  # vault/README.md "Production" for what removes those limits.
   # ---------------------------------------------------------------------------
   vault:
     image: hashicorp/vault:1.18
     container_name: llm_vault
     restart: unless-stopped
+    # Bound to loopback: the API is reachable from this machine only. Containers
+    # on llm_net reach it as http://vault:8200 and do not use this mapping.
+    # Widen it deliberately (and add TLS first) if another host must connect.
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     environment:
       VAULT_ADDR: "http://127.0.0.1:8200"
       # The image's entrypoint runs `setcap cap_ipc_lock=+ep` on the vault
@@ -37,6 +41,9 @@ services:
     volumes:
       - ./vault/config/vault.hcl:/vault/config/vault.hcl:ro
       - vault_data:/vault/file
+      # Audit log lives on its own volume so it outlives a wiped data volume and
+      # can be shipped or rotated without touching secrets.
+      - vault_audit:/vault/logs
     # `vault status` exits non-zero while sealed, but a sealed Vault is exactly
     # the state vault-init must be allowed to connect to in order to unseal it.
     # This probe therefore asks the health endpoint to report 200 for the
@@ -68,17 +75,32 @@ services:
         condition: service_healthy
     environment:
       VAULT_ADDR: "http://vault:8200"
-      VAULT_ROOT_TOKEN: ${VAULT_ROOT_TOKEN:-local-vault-root-token}
+      # Optional. Unset means no standing root-policy token is created. There is
+      # deliberately no default: a well-known token value is a backdoor.
+      VAULT_ROOT_TOKEN: ${VAULT_ROOT_TOKEN:-}
       VAULT_SERVICE_USERNAME: ${VAULT_SERVICE_USERNAME:-llm-service}
-      VAULT_SERVICE_PASSWORD: ${VAULT_SERVICE_PASSWORD:-local-vault-service-password}
+      # No default passwords: `:?` stops `docker compose up` with a clear message
+      # instead of starting Vault with a password anyone reading this repo knows.
+      VAULT_SERVICE_PASSWORD: ${VAULT_SERVICE_PASSWORD:?Set VAULT_SERVICE_PASSWORD in .env (see .env.example)}
       VAULT_ADMIN_USERNAME: ${VAULT_ADMIN_USERNAME:-llm-service-admin}
-      VAULT_ADMIN_PASSWORD: ${VAULT_ADMIN_PASSWORD:-local-vault-admin-password}
+      VAULT_ADMIN_PASSWORD: ${VAULT_ADMIN_PASSWORD:?Set VAULT_ADMIN_PASSWORD in .env (see .env.example)}
+      VAULT_TOKEN_TTL: ${VAULT_TOKEN_TTL:-1h}
+      VAULT_TOKEN_MAX_TTL: ${VAULT_TOKEN_MAX_TTL:-24h}
       VAULT_KV_PREFIX: ${VAULT_KV_PREFIX:-llm-provider-service}
+      VAULT_MOUNT_PATH: ${VAULT_MOUNT_PATH:-secret}
+      # Policies are named <basename>-read / <basename>-write. Defaults keep the
+      # existing names, so the running stack's identities are unchanged.
+      VAULT_POLICY_BASENAME: ${VAULT_POLICY_BASENAME:-llm-service}
     volumes:
       - ./vault/scripts/init.sh:/scripts/init.sh:ro
       - ./vault/policies:/policies:ro
-      # Shares the storage volume so init.sh can persist (and on later starts
-      # re-read) the unseal key and root token produced by `operator init`.
+      # The unseal key and root token from `operator init` live HERE, on a
+      # volume the Vault server never mounts, so backing up or sharing the data
+      # volume does not also hand over the key.
+      - vault_bootstrap:/vault/bootstrap
+      # Read-only role now: init.sh only looks here to move a key left by an
+      # older version onto vault_bootstrap. Safe to remove once every
+      # environment has started once on this version.
       - vault_data:/vault/file
     entrypoint: ["sh", "/scripts/init.sh"]
     networks:
@@ -188,9 +210,12 @@ services:
       SECRET_BACKEND: vault
       VAULT_ADDR: http://vault:8200
       VAULT_USERNAME: ${VAULT_SERVICE_USERNAME:-llm-service}
-      VAULT_PASSWORD: ${VAULT_SERVICE_PASSWORD:-local-vault-service-password}
+      # Same variables vault-init creates the accounts from, and equally
+      # without defaults: a fallback here that differs from vault-init's would
+      # fail login with a bare "permission denied".
+      VAULT_PASSWORD: ${VAULT_SERVICE_PASSWORD:?Set VAULT_SERVICE_PASSWORD in .env (see .env.example)}
       VAULT_ADMIN_USERNAME: ${VAULT_ADMIN_USERNAME:-llm-service-admin}
-      VAULT_ADMIN_PASSWORD: ${VAULT_ADMIN_PASSWORD:-local-vault-admin-password}
+      VAULT_ADMIN_PASSWORD: ${VAULT_ADMIN_PASSWORD:?Set VAULT_ADMIN_PASSWORD in .env (see .env.example)}
       VAULT_MOUNT_PATH: ${VAULT_MOUNT_PATH:-secret}
       VAULT_KV_PREFIX: ${VAULT_KV_PREFIX:-llm-provider-service}
       VAULT_TOKEN_REFRESH_AFTER_LEASE_FRACTION: ${VAULT_TOKEN_REFRESH_AFTER_LEASE_FRACTION:-0.9}
@@ -205,6 +230,13 @@ volumes:
     name: llm_services_redis_data
   vault_data:
     name: llm_services_vault_data
+  # Unseal key + init root token. Kept apart from vault_data on purpose; back the
+  # two up to different places. Losing this volume while keeping vault_data
+  # makes the data permanently unreadable.
+  vault_bootstrap:
+    name: llm_services_vault_bootstrap
+  vault_audit:
+    name: llm_services_vault_audit
 
 networks:
   llm_net:
