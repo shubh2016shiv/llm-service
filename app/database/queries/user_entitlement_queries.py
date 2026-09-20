@@ -287,7 +287,7 @@ COUNT_TENANT_ENTITLEMENTS_SQL = """
 # UUIDs. secret_reference is included because the routing layer needs it to
 # fetch credentials at call time.
 
-LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_SQL = """
+GET_ROUTING_ENTITLEMENT_FOR_ROUTE_SQL = """
     SELECT
         ue.entitlement_id,
         ue.tenant_id,
@@ -307,18 +307,9 @@ LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_SQL = """
     WHERE ue.tenant_id = :tenant_id
       AND ue.user_id   = :user_id
       AND ue.deployment_key = :deployment_key
+      AND ue.entitlement_id = :entitlement_id
       AND ue.status = 'active'
 """
-
-LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_WITH_MODEL_SQL = (
-    LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_SQL + "\n      AND m.model_name = :model_name"
-)
-
-# Narrows to the single entitlement already verified by the auth layer so the
-# pipeline cannot independently re-resolve to a different candidate.
-LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_WITH_ENTITLEMENT_ID_SQL = (
-    LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_SQL + "\n      AND ue.entitlement_id = :entitlement_id"
-)
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 

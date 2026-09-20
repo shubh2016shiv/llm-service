@@ -50,9 +50,7 @@ from app.database.queries.user_entitlement_queries import (
     GET_ACTIVE_ENTITLEMENT_FOR_ROUTE_SQL,
     GET_ENTITLEMENT_BY_ID_SQL,
     GET_ENTITLEMENT_SECRET_REFERENCE_SQL,
-    LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_SQL,
-    LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_WITH_ENTITLEMENT_ID_SQL,
-    LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_WITH_MODEL_SQL,
+    GET_ROUTING_ENTITLEMENT_FOR_ROUTE_SQL,
     LIST_TENANT_ENTITLEMENTS_SQL,
     LIST_USER_ENTITLEMENTS_SQL,
     REVOKE_USER_ENTITLEMENTS_SQL,
@@ -390,14 +388,13 @@ class UserEntitlementPersistence(BasePersistence):
             )
             raise
 
-    async def list_routing_entitlements_for_route(
+    async def get_routing_entitlement_for_route(
         self,
         tenant_id: UUID,
         user_id: UUID,
         deployment_key: str,
-        requested_model_name: str | None = None,
-        entitlement_id: UUID | None = None,
-    ) -> list[dict[str, Any]]:
+        entitlement_id: UUID,
+    ) -> dict[str, Any] | None:
         """Return active entitlements for routing, with provider/model names resolved via JOIN.
 
         Unlike get_active_entitlement_for_route (which matches by UUID foreign keys),
@@ -409,39 +406,22 @@ class UserEntitlementPersistence(BasePersistence):
         """
         self.validate_uuid(tenant_id, "tenant_id")
         self.validate_uuid(user_id, "user_id")
+        self.validate_uuid(entitlement_id, "entitlement_id")
         self.validate_string_not_empty(deployment_key, "deployment_key")
-
-        if entitlement_id is not None:
-            self.validate_uuid(entitlement_id, "entitlement_id")
-            sql = LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_WITH_ENTITLEMENT_ID_SQL
-            params: dict[str, Any] = {
-                "tenant_id": str(tenant_id),
-                "user_id": str(user_id),
-                "deployment_key": deployment_key,
-                "entitlement_id": str(entitlement_id),
-            }
-        elif requested_model_name is not None:
-            sql = LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_WITH_MODEL_SQL
-            params = {
-                "tenant_id": str(tenant_id),
-                "user_id": str(user_id),
-                "deployment_key": deployment_key,
-                "model_name": requested_model_name,
-            }
-        else:
-            sql = LIST_ROUTING_ENTITLEMENTS_FOR_ROUTE_SQL
-            params = {
-                "tenant_id": str(tenant_id),
-                "user_id": str(user_id),
-                "deployment_key": deployment_key,
-            }
+        params: dict[str, Any] = {
+            "tenant_id": str(tenant_id),
+            "user_id": str(user_id),
+            "deployment_key": deployment_key,
+            "entitlement_id": str(entitlement_id),
+        }
         try:
             async with self.get_session() as session:
-                result = await session.execute(text(sql), params)
-                return [dict(row) for row in result.mappings().all()]
+                result = await session.execute(text(GET_ROUTING_ENTITLEMENT_FOR_ROUTE_SQL), params)
+                row = result.mappings().one_or_none()
+                return dict(row) if row else None
         except Exception:
             logger.error(
-                "UserEntitlementPersistence: list_routing_entitlements_for_route failed "
+                "UserEntitlementPersistence: get_routing_entitlement_for_route failed "
                 "— tenant_id=%s user_id=%s deployment_key=%s",
                 tenant_id,
                 user_id,
