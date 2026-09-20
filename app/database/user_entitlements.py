@@ -33,7 +33,11 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
-from app.database.base import BasePersistence
+from app.database.base import (
+    BasePersistence,
+    DuplicateResourceError,
+    MissingReferencedResourceError,
+)
 from app.database.queries.user_entitlement_queries import (
     CHECK_ENTITLEMENT_EXISTS_SQL,
     CHECK_ENTITLEMENT_NAME_EXISTS_SQL,
@@ -216,36 +220,31 @@ class UserEntitlementPersistence(BasePersistence):
 
         # ── Pre-flight database checks ──────────────────────────────────────
         if not await self._tenant_exists(tenant_id):
-            raise ValueError(f"Tenant '{tenant_id}' does not exist")
+            raise MissingReferencedResourceError("Tenant", str(tenant_id))
 
         if not await self._user_exists(user_id):
-            raise ValueError(f"User '{user_id}' does not exist")
+            raise MissingReferencedResourceError("User", str(user_id))
 
         if not await self._provider_exists(provider_id):
-            raise ValueError(f"Provider '{provider_id}' does not exist or is not active")
+            raise MissingReferencedResourceError("Active provider", str(provider_id))
 
         if not await self._model_exists(provider_id, model_id):
-            raise ValueError(
-                f"Model '{model_id}' for provider '{provider_id}' does not exist or is not active"
-            )
+            raise MissingReferencedResourceError("Active model for provider", str(model_id))
 
         if not await self._tenant_deployment_exists(tenant_id, deployment_key):
-            raise ValueError(
-                f"Deployment key '{deployment_key}' does not exist for tenant '{tenant_id}'. "
-                "The entitlement must reference an existing tenant deployment."
-            )
+            raise MissingReferencedResourceError("TenantDeployment", deployment_key)
 
         if await self._active_entitlement_exists(
             tenant_id, user_id, deployment_key, provider_id, model_id
         ):
-            raise ValueError(
+            raise DuplicateResourceError(
                 f"An active entitlement already exists for user '{user_id}' "
                 f"on deployment '{deployment_key}' with provider/model "
                 f"'{provider_id}/{model_id}'"
             )
 
         if await self._entitlement_name_taken(tenant_id, user_id, entitlement_name):
-            raise ValueError(
+            raise DuplicateResourceError(
                 f"Entitlement name '{entitlement_name}' is already used by user '{user_id}' "
                 f"in tenant '{tenant_id}'"
             )

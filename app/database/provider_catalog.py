@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
-from app.database.base import BasePersistence
+from app.database.base import BasePersistence, DuplicateResourceError
 from app.database.queries.provider_catalog_queries import (
     CHECK_PROVIDER_EXISTS_BY_ID_SQL,
     CHECK_PROVIDER_EXISTS_BY_NAME_SQL,
@@ -109,7 +109,7 @@ class ProviderCatalogPersistence(BasePersistence):
         metadata_json = self.serialize_json(provider_metadata, "provider_metadata")
 
         if await self.provider_name_exists(provider_name):
-            raise ValueError(f"Provider '{provider_name}' is already registered")
+            raise DuplicateResourceError(f"Provider '{provider_name}' is already registered")
 
         params = {
             "provider_name": provider_name,

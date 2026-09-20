@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
-from app.database.base import BasePersistence
+from app.database.base import BasePersistence, DuplicateResourceError
 from app.database.queries.tenant_queries import (
     CHECK_TENANT_EXISTS_BY_ID_SQL,
     CHECK_TENANT_EXISTS_BY_SLUG_SQL,
@@ -110,7 +110,7 @@ class TenantPersistence(BasePersistence):
         )
 
         if await self.slug_exists(tenant_slug):
-            raise ValueError(f"'{tenant_name}' tenant already exists")
+            raise DuplicateResourceError(f"'{tenant_name}' tenant already exists")
 
         params = {
             "tenant_name": tenant_name,

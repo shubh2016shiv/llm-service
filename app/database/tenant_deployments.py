@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
-from app.database.base import BasePersistence
+from app.database.base import BasePersistence, DuplicateResourceError
 from app.database.queries.tenant_deployment_queries import (
     CHECK_DEFAULT_DEPLOYMENT_EXISTS_SQL,
     CHECK_DEPLOYMENT_KEY_EXISTS_SQL,
@@ -38,8 +38,8 @@ from app.database.queries.tenant_deployment_queries import (
     GET_DEFAULT_DEPLOYMENT_SQL,
     GET_DEPLOYMENT_BY_ID_SQL,
     GET_DEPLOYMENT_BY_KEY_SQL,
-    GET_DEPLOYMENT_FOR_ROUTING_BY_KEY_SQL,
     GET_DEPLOYMENT_SECRET_REFERENCE_SQL,
+    GET_ENTITLEMENT_SOURCE_BY_KEY_SQL,
     LIST_ACTIVE_DEPLOYMENTS_BY_PROVIDER_AND_MODEL_SQL,
     build_tenant_deployment_count_query,
     build_tenant_deployment_list_query,
@@ -170,12 +170,12 @@ class TenantDeploymentPersistence(BasePersistence):
 
         # ── Uniqueness pre-checks ───────────────────────────────────────────
         if await self.deployment_key_exists(tenant_id, deployment_key):
-            raise ValueError(
+            raise DuplicateResourceError(
                 f"Deployment key '{deployment_key}' already exists for tenant '{tenant_id}'"
             )
 
         if is_default and await self.default_deployment_exists(tenant_id, provider_id):
-            raise ValueError(
+            raise DuplicateResourceError(
                 f"Tenant '{tenant_id}' already has a default deployment for provider '{provider_id}'. "
                 "Clear is_default on the existing deployment before marking a new one as default."
             )
@@ -287,28 +287,27 @@ class TenantDeploymentPersistence(BasePersistence):
             )
             raise
 
-    async def get_deployment_config_for_routing(
+    async def get_entitlement_source_by_key(
         self, tenant_id: UUID | str, deployment_key: str
     ) -> dict[str, Any] | None:
-        """Return the full routing projection for a deployment, or None if not found.
+        """Return credential-bearing deployment facts used by entitlement creation.
 
-        Unlike get_deployment_by_key, this projection:
-          - includes secret_reference (required by the routing layer for credential lookup)
-          - resolves provider_name and model_name via JOIN (routing works with names, not UUIDs)
+        This deliberately narrow method makes the exceptional secret read
+        visible in code review. Normal management reads never expose it.
         """
         self.validate_uuid(tenant_id, "tenant_id")
         self.validate_string_not_empty(deployment_key, "deployment_key")
         try:
             async with self.get_session() as session:
                 result = await session.execute(
-                    text(GET_DEPLOYMENT_FOR_ROUTING_BY_KEY_SQL),
+                    text(GET_ENTITLEMENT_SOURCE_BY_KEY_SQL),
                     {"tenant_id": str(tenant_id), "deployment_key": deployment_key},
                 )
                 row = result.mappings().one_or_none()
                 return dict(row) if row else None
         except Exception:
             logger.error(
-                "TenantDeploymentPersistence: get_deployment_config_for_routing failed "
+                "TenantDeploymentPersistence: get_entitlement_source_by_key failed "
                 "— tenant_id=%s deployment_key=%s",
                 tenant_id,
                 deployment_key,

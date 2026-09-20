@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
-from app.database.base import BasePersistence
+from app.database.base import BasePersistence, DuplicateResourceError
 from app.database.queries.tenant_membership_queries import (
     CHECK_MEMBERSHIP_EXISTS_SQL,
     COUNT_TENANTS_FOR_USER_SQL,
@@ -89,7 +89,7 @@ class TenantMembershipPersistence(BasePersistence):
         self.validate_enum_member(TenantMembershipStatus, status, "status")
 
         if await self.membership_exists(tenant_id, user_id):
-            raise ValueError(
+            raise DuplicateResourceError(
                 f"User '{user_id}' already has a membership in tenant '{tenant_id}'. "
                 "Use update_membership() to change the role or status."
             )

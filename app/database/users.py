@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from email_validator import EmailNotValidError, validate_email
 from sqlalchemy import text
 
-from app.database.base import BasePersistence
+from app.database.base import BasePersistence, DuplicateResourceError
 from app.database.queries.user_queries import (
     CHECK_USER_EMAIL_EXISTS_SQL,
     CHECK_USER_EXISTS_BY_ID_SQL,
@@ -156,9 +156,9 @@ class UserPersistence(BasePersistence):
         self.validate_enum_member(UserAccountStatus, status, "status")
 
         if await self.check_email_exists(normalized_email):
-            raise ValueError(f"Email '{normalized_email}' is already registered")
+            raise DuplicateResourceError(f"Email '{normalized_email}' is already registered")
         if await self.check_username_exists(username):
-            raise ValueError(f"Username '{username}' is already taken")
+            raise DuplicateResourceError(f"Username '{username}' is already taken")
 
         now = datetime.now(UTC)
         params = {

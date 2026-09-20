@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
-from app.database.base import BasePersistence
+from app.database.base import BasePersistence, DuplicateResourceError
 from app.database.queries.model_catalog_queries import (
     CHECK_MODEL_EXISTS_BY_ID_SQL,
     CHECK_MODEL_EXISTS_BY_NAME_SQL,
@@ -142,7 +142,7 @@ class ModelCatalogPersistence(BasePersistence):
 
         if await self.model_exists_by_name(provider_id, model_name, model_version):
             version_label = f"version '{model_version}'" if model_version else "no version"
-            raise ValueError(
+            raise DuplicateResourceError(
                 f"Model '{model_name}' ({version_label}) already exists for provider '{provider_id}'"
             )
 

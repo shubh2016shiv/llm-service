@@ -193,16 +193,19 @@ GET_DEPLOYMENT_SECRET_REFERENCE_SQL = """
     WHERE deployment_id = :deployment_id
 """
 
-# Full routing projection: includes secret_reference and resolves provider/model names via JOIN.
-# Only used by the routing layer, never by the management API.
-GET_DEPLOYMENT_FOR_ROUTING_BY_KEY_SQL = """
+# Credential-bearing source used only while creating an entitlement. Standard
+# management reads intentionally use the safe projection above.
+GET_ENTITLEMENT_SOURCE_BY_KEY_SQL = """
     SELECT
         td.deployment_id,
         td.tenant_id,
+        td.provider_id,
+        td.model_id,
         td.deployment_key,
         td.deployment_name,
         td.status,
         p.provider_name,
+        p.auth_mode,
         m.model_name,
         td.api_endpoint_url,
         td.secret_reference,

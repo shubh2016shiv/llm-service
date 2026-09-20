@@ -59,6 +59,14 @@ class MissingReferencedResourceError(ValueError):
         super().__init__(f"{resource_name} not found: {resource_id!r}.")
 
 
+class DuplicateResourceError(ValueError):
+    """Raised when a create operation violates a known uniqueness rule.
+
+    A dedicated type lets services map conflicts to HTTP 409 without parsing
+    database-layer prose. The message remains human-readable context only.
+    """
+
+
 class BasePersistence:
     """Base class for all persistence layer classes.
 
