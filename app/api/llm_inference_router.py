@@ -1,30 +1,30 @@
-﻿"""
+"""
 LLM Inference Router - public inference endpoints for chat, embedding, and reranking.
 
 Architecture:
 -------------
-    +------------------------------+
-    ¦ Client (JWT + tenant headers)¦
-    +------------------------------+
-                    ?
-    +------------------------------+
-    ¦ this router (`/api/v1/llm/*`)|
-    ¦ parse body + dependency chain¦
-    +------------------------------+
-                    ?
-    +------------------------------+
-    ¦ dependency layer             ¦
-    ¦ auth + context resolution    ¦
-    +------------------------------+
-                    ?
-    +------------------------------+
-    ¦ InferenceService             ¦
-    ¦ provider execution           ¦
-    +------------------------------+
-                    ?
-    +------------------------------+
-    ¦ provider adapter + response  ¦
-    +------------------------------+
+    ┌───────────────────────────────┐
+    │ Client (JWT + tenant headers) │
+    └───────────────┬───────────────┘
+                     ▼
+    ┌───────────────────────────────┐
+    │ this router (`/api/v1/llm/*`) │
+    │ parse body + dependency chain │
+    └───────────────┬───────────────┘
+                    ▼
+    ┌───────────────────────────────┐
+    │ dependency layer              │
+    │ auth + context resolution     │
+    └───────────────┬───────────────┘
+                    ▼
+    ┌───────────────────────────────┐
+    │ InferenceService              │
+    │ provider execution            │
+    └───────────────┬───────────────┘
+                    ▼
+    ┌───────────────────────────────┐
+    │ provider adapter + response   │
+    └───────────────────────────────┘
 
 Flow rationale:
     Clients do not choose provider/model directly. They send `X-Tenant-ID` and
@@ -43,21 +43,23 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import StreamingResponse
 
-from app.api.dependencies import (
-    require_chat_execution_context,
-    require_embed_execution_context,
-    require_rerank_execution_context,
-)
 from app.api.exception_handlers import translate_inference_error
+from app.api.inference_dependencies import (
+    require_chat_route,
+    require_embed_route,
+    require_inference_access,
+    require_rerank_route,
+)
+from app.api.shared_dependencies import require_app_state
 from app.core.exceptions import LLMServiceError
-from app.inference_routing.models import ResolvedExecutionContext
+from app.inference_routing.models import ResolvedRoute
+from app.schemas.auth_schema import InferenceAccessContext
 from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
 from app.schemas.responses_schema import (
     ChatResponse,
@@ -66,9 +68,7 @@ from app.schemas.responses_schema import (
     RerankResponse,
 )
 from app.services import InferenceService
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+from app.streaming import encode_sse_stream
 
 logger = logging.getLogger(__name__)
 
@@ -94,19 +94,18 @@ _CHAT_SSE_RESPONSE_CONTENT: dict[str, object] = {
         "type": "string",
         "description": (
             "Server-sent event stream. "
-            "Each event is a `data:` line containing a JSON-encoded "
-            "`ChatStreamChunk` (except `raw_chunk`), followed by a blank line. "
-            "The stream always terminates with `data: [DONE]`. "
-            "If provider execution fails mid-stream, one error event is sent "
-            "before `[DONE]`: "
-            '`data: {"error": {"code": "<ERROR_CODE>", "message": "<detail>"}}`.'
+            "Named `chunk` events contain JSON-encoded `ChatStreamChunk` data; "
+            "comment heartbeats keep quiet connections alive. A `complete` "
+            "event and `data: [DONE]` terminate successful streams. Provider "
+            "failures after headers are represented by a named `error` event."
         ),
     },
     "example": (
-        'data: {"content": "The", "finish_reason": null, "index": 0}\n\n'
-        'data: {"content": " answer", "finish_reason": null, "index": 0}\n\n'
-        'data: {"content": " is 42.", "finish_reason": null, "index": 0}\n\n'
-        'data: {"content": "", "finish_reason": "stop", "index": 0}\n\n'
+        "id: req-1:1\n"
+        "event: chunk\n"
+        'data: {"content":"The","index":0}\n\n'
+        "event: complete\n"
+        'data: {"status":"completed"}\n\n'
         "data: [DONE]\n\n"
     ),
 }
@@ -132,45 +131,18 @@ def _get_inference_service(request: Request) -> InferenceService:
     Raises:
         RuntimeError: If startup lifecycle did not initialize the service.
     """
-    service: InferenceService | None = getattr(request.app.state, "inference_service", None)
-    if service is None:
-        raise RuntimeError(
-            "app.state.inference_service is not initialised. "
+    return require_app_state(
+        request,
+        "inference_service",
+        InferenceService,
+        hint=(
             "Ensure the lifespan handler in main.py creates and stores "
             "an InferenceService instance before the application accepts traffic."
-        )
-    return service
+        ),
+    )
 
 
-# ---------------------------------------------------------------------------
-# Streaming helper
-#
-# In streaming mode, failures can happen after HTTP headers are sent. This
-# helper converts runtime errors into one final SSE error event, then emits
-# [DONE] so clients always receive a deterministic stream terminator.
-# ---------------------------------------------------------------------------
-
-
-async def _sse_stream(chunks: AsyncIterator[ChatStreamChunk]) -> AsyncIterator[str]:
-    """Serialize streamed chat chunks into SSE `data:` events.
-
-    Args:
-        chunks: Async iterator of provider-generated chat chunks.
-
-    Yields:
-        str: SSE-formatted event payload lines.
-    """
-    try:
-        async for chunk in chunks:
-            payload = chunk.model_dump(exclude={"raw_chunk"})
-            yield f"data: {json.dumps(payload)}\n\n"
-    except LLMServiceError as exc:
-        error_event: dict[str, Any] = {"error": {"code": exc.error_code, "message": str(exc)}}
-        yield f"data: {json.dumps(error_event)}\n\n"
-    finally:
-        yield "data: [DONE]\n\n"
-
-
+# Stage 1:1 - Check the caller's route access, select the provider, and return or stream chat text.
 @router.post(
     "/chat",
     response_model=ChatResponse,
@@ -197,15 +169,18 @@ async def _sse_stream(chunks: AsyncIterator[ChatStreamChunk]) -> AsyncIterator[s
 )
 async def chat_completion(
     body: ChatRequest,
+    http_request: Request,
     inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
-    execution_context: Annotated[ResolvedExecutionContext, Depends(require_chat_execution_context)],
+    inference_context: Annotated[InferenceAccessContext, Depends(require_inference_access)],
+    resolved_route: Annotated[ResolvedRoute, Depends(require_chat_route)],
 ) -> ChatResponse | StreamingResponse:
     """Execute chat completion in JSON or streaming mode.
 
     Args:
         body: Chat prompt/messages and generation options.
+        http_request: Request state carrying correlation and application settings.
         inference_service: Shared inference execution service.
-        execution_context: Pre-resolved tenant/deployment/runtime context.
+        resolved_route: Pre-resolved provider route.
 
     Returns:
         ChatResponse | StreamingResponse: Standard JSON response when
@@ -216,25 +191,49 @@ async def chat_completion(
     """
     try:
         if body.stream:
-            chunks = inference_service.execute_stream_chat(context=execution_context, request=body)
+            request_id = getattr(http_request.state, "request_id", None)
+            chunks = await inference_service.prepare_stream_chat(
+                context=resolved_route,
+                request=body,
+                user_id=inference_context.user_id,
+                request_id=request_id,
+            )
+            heartbeat_interval = require_app_state(
+                http_request,
+                "stream_heartbeat_interval_seconds",
+                float,
+                hint="Initialize streaming settings during application startup.",
+            )
             return StreamingResponse(
-                _sse_stream(chunks),
+                encode_sse_stream(
+                    chunks,
+                    heartbeat_interval_seconds=heartbeat_interval,
+                    request_id=request_id,
+                ),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                headers={
+                    "Cache-Control": "no-cache, no-transform",
+                    "X-Accel-Buffering": "no",
+                },
             )
 
-        return await inference_service.execute_chat(context=execution_context, request=body)
+        return await inference_service.execute_chat(
+            context=resolved_route,
+            request=body,
+            user_id=inference_context.user_id,
+        )
 
     except LLMServiceError as exc:
         logger.warning(
             "Chat request failed | tenant=%s quota_key=%s error_code=%s",
-            execution_context.tenant_config.tenant_id,
-            execution_context.quota_key,
+            resolved_route.tenant_id,
+            resolved_route.quota_key,
             exc.error_code,
         )
         translate_inference_error(exc)
 
 
+# Stage 1:2 - Check route access and model support, then return vectors for the supplied text.
 @router.post(
     "/embed",
     response_model=EmbedResponse,
@@ -245,14 +244,15 @@ async def chat_completion(
 async def embed(
     body: EmbedRequest,
     inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
-    execution_context: Annotated[ResolvedExecutionContext, Depends(require_embed_execution_context)],
+    inference_context: Annotated[InferenceAccessContext, Depends(require_inference_access)],
+    resolved_route: Annotated[ResolvedRoute, Depends(require_embed_route)],
 ) -> EmbedResponse:
     """Execute embedding generation for one authorized deployment.
 
     Args:
         body: Texts and embedding options.
         inference_service: Shared inference execution service.
-        execution_context: Resolved tenant/deployment/runtime context.
+        resolved_route: Pre-resolved provider route.
 
     Returns:
         EmbedResponse: Embedding vectors and metadata.
@@ -261,17 +261,22 @@ async def embed(
         HTTPException: Raised indirectly after domain exceptions are translated.
     """
     try:
-        return await inference_service.execute_embed(context=execution_context, request=body)
+        return await inference_service.execute_embed(
+            context=resolved_route,
+            request=body,
+            user_id=inference_context.user_id,
+        )
     except LLMServiceError as exc:
         logger.warning(
             "Embed request failed | tenant=%s quota_key=%s error_code=%s",
-            execution_context.tenant_config.tenant_id,
-            execution_context.quota_key,
+            resolved_route.tenant_id,
+            resolved_route.quota_key,
             exc.error_code,
         )
         translate_inference_error(exc)
 
 
+# Stage 1:3 - Check route access and model support, then return documents ordered by relevance.
 @router.post(
     "/rerank",
     response_model=RerankResponse,
@@ -285,16 +290,15 @@ async def embed(
 async def rerank(
     body: RerankRequest,
     inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
-    execution_context: Annotated[
-        ResolvedExecutionContext, Depends(require_rerank_execution_context)
-    ],
+    inference_context: Annotated[InferenceAccessContext, Depends(require_inference_access)],
+    resolved_route: Annotated[ResolvedRoute, Depends(require_rerank_route)],
 ) -> RerankResponse:
     """Execute reranking for a deployment configured with rerank capability.
 
     Args:
         body: Query and candidate documents for ranking.
         inference_service: Shared inference execution service.
-        execution_context: Resolved tenant/deployment/runtime context.
+        resolved_route: Pre-resolved provider route.
 
     Returns:
         RerankResponse: Ranked candidates with scores.
@@ -303,13 +307,16 @@ async def rerank(
         HTTPException: Raised indirectly after domain exceptions are translated.
     """
     try:
-        return await inference_service.execute_rerank(context=execution_context, request=body)
+        return await inference_service.execute_rerank(
+            context=resolved_route,
+            request=body,
+            user_id=inference_context.user_id,
+        )
     except LLMServiceError as exc:
         logger.warning(
             "Rerank request failed | tenant=%s quota_key=%s error_code=%s",
-            execution_context.tenant_config.tenant_id,
-            execution_context.quota_key,
+            resolved_route.tenant_id,
+            resolved_route.quota_key,
             exc.error_code,
         )
         translate_inference_error(exc)
-

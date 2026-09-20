@@ -120,12 +120,12 @@ HTTP Client
     │       │       Calls verify_token_type() — guards against refresh token misuse.
     │       │       → AuthTokenPayload (user_id, role, expires_at)
     │       │
-    │       └── [Depends] get_tenant_authorization_service
-    │               └── TenantAuthorizationService.authorize_inference()
+    │       └── [Depends] get_inference_authorization_service
+    │               └── InferenceAuthorizationService.authorize_inference()
     │                       │
-    │                       ├── InferenceAuthorizationCache.get_entry()
+    │                       ├── AuthorizationGrantCache.find_grant()
     │                       │     Redis read. On cache HIT with matching version
-    │                       │     snapshot → short-circuit, return cached context.
+    │                       │     markers → short-circuit, return cached context.
     │                       │
     │                       ├── TenantPersistence.get_tenant_by_id()
     │                       │     Verifies tenant exists and is active/trial.
@@ -143,8 +143,8 @@ HTTP Client
     │                       │     Requires an active entitlement linking
     │                       │     (user, tenant, deployment_key, provider, model).
     │                       │
-    │                       └── InferenceAuthorizationCache.set()
-    │                             On cache MISS: write context + version snapshot.
+    │                       └── AuthorizationGrantCache.store_grant_if_unchanged()
+    │                             On cache MISS: write context + version markers.
     │                             Skipped if versions changed mid-query (stale guard).
     │                             → InferenceAccessContext
     │
@@ -217,7 +217,7 @@ HTTP Client
                     │     Executes parameterised SQL via asyncpg.
                     │     Returns plain dict row(s).
                     │
-                    └── InferenceAuthorizationCache.invalidate_{scope}()
+                    └── AuthorizationGrantCache.invalidate_{scope}()
                           On any mutation that affects the inference path
                           (deployment create/update/delete, membership change,
                           entitlement change): advance the relevant version key
@@ -235,7 +235,7 @@ HTTP Response  (ResourceResponse | PaginatedResponse | 204 No Content)
 
 ### 3.3 Cache Invalidation Flow
 
-When a management mutation touches an entity that sits in the inference authorization cache, the service layer advances a version key in Redis. The next inference request for that route will find its cached version snapshot does not match the current snapshot and will re-execute the full DB authorization query.
+When a management mutation touches an entity that sits in the inference authorization cache, the service layer advances a version key in Redis. The next inference request for that route will find its cached version markers do not match the current markers and will re-execute the full DB authorization query.
 
 ```
 Mutation endpoint (deployment/membership/entitlement change)
@@ -244,7 +244,7 @@ Mutation endpoint (deployment/membership/entitlement change)
             │
             ├── {Entity}Persistence.{insert|update|delete}()
             │
-            └── InferenceAuthorizationCache.invalidate_{scope}()
+            └── AuthorizationGrantCache.invalidate_{scope}()
                     Scope is the smallest unit that covers the affected grants:
 
                     invalidate_tenant(tenant_id)
@@ -452,7 +452,7 @@ Deployments are the core routing records. Each row answers: *for this tenant, ma
 | List/Get → tenant member | Any member needs to know available `deployment_key` values to make inference requests. |
 | Update → tenant `admin`/`owner` | Changing endpoint URLs, credentials, or capacity affects live inference traffic. Mistakes cause outages. |
 | `maintenance` status | Signals "do not route new requests here" without destroying the deployment record. Allows drain-and-replace operations without downtime. |
-| Delete → tenant `admin`/`owner` | Destroying a deployment immediately stops all routing through it. Any cached authorization grants for that deployment key are invalidated via `InferenceAuthorizationCache.invalidate_deployment()`. |
+| Delete → tenant `admin`/`owner` | Destroying a deployment immediately stops all routing through it. Any cached authorization grants for that deployment key are invalidated via `AuthorizationGrantCache.invalidate_deployment()`. |
 
 ---
 
@@ -500,7 +500,7 @@ Entitlements are user-specific routing overrides. They exist for cases where a u
 |----------|-----------|
 | Create → `admin`/`owner` | Granting a user a personal credential override is a privileged action. The entitlement carries a `secret_reference` and must be approved by an administrator. |
 | List/Get → `developer`+ | A user must be able to see their own entitlements. The service layer restricts non-admin callers to their own `user_id`. |
-| Update/Delete → `admin`/`owner` | Modifying or revoking an entitlement affects that user's LLM access path. On delete, `InferenceAuthorizationCache.invalidate_route()` is called for the affected (user, tenant, deployment_key) triple. |
+| Update/Delete → `admin`/`owner` | Modifying or revoking an entitlement affects that user's LLM access path. On delete, `AuthorizationGrantCache.invalidate_route()` is called for the affected (user, tenant, deployment_key) triple. |
 
 ---
 
@@ -641,12 +641,12 @@ Patterns applied consistently across the codebase. These are not aspirational �
 | **Startup-time guard validation** | `RoleGuard.__init__` validates permitted roles against `_VALID_ROLES` at construction. All guards are module-level singletons — constructed at import time. | Misconfigured guards (`require_admin(["adimn"])`) fail the process on startup, not on the first request from a real user. |
 | **Stateless JWT authentication** | `get_current_user` in `auth/auth_dependencies.py` — signature + expiry validated cryptographically, no DB query | Authentication is O(1) regardless of load. Horizontally scalable without a shared session store. |
 | **ContextVar request ID propagation** | `set_request_id()` / `get_request_id()` in `core/request_context.py`, set by `attach_request_id` middleware | Request correlation ID is available anywhere in the async call stack without threading it through every function signature. All structured log entries include it automatically. |
-| **Protocol-based cache backend** | `AuthorizationCacheBackend` Protocol in `auth/authorization/cache.py` | `InferenceAuthorizationCache` is not coupled to Redis. Any object implementing `get / set / delete` is a valid backend. Enables in-process dict cache for tests without mocking. |
-| **Scoped cache invalidation** | `InferenceAuthorizationCache` exposes four invalidation scopes: tenant, membership, deployment, route | Smallest possible invalidation on each mutation. A deployment config change does not evict grants for unrelated deployments in the same tenant. |
-| **Version-snapshot compare-and-swap** | `TenantAuthorizationService.authorize_inference()` reads version snapshot before DB query, re-reads after, only caches if snapshots match | Guards against caching a result that became stale during the DB query execution itself. A concurrent mutation between the pre-query and post-query snapshot reads prevents a stale write. |
+| **Protocol-based cache backend** | `AuthorizationGrantCacheBackend` Protocol in `auth/authorization/authorization_grant_cache.py` | `AuthorizationGrantCache` is not coupled to Redis. Any object implementing `get_many / set / delete` is a valid backend. Enables in-process dict cache for tests without mocking. |
+| **Scoped cache invalidation** | `AuthorizationGrantCache` exposes four invalidation scopes: tenant, membership, deployment, route | Smallest possible invalidation on each mutation. A deployment config change does not evict grants for unrelated deployments in the same tenant. |
+| **Version-markers compare-and-swap** | `InferenceAuthorizationService.authorize_inference()` reads version markers before DB query, re-reads after, only caches if markers match | Guards against caching a result that became stale during the DB query execution itself. A concurrent mutation between the pre-query and post-query reads prevents a stale write. |
 | **Process-scoped service singleton** | `InferenceService` stored on `app.state` in `main.py` lifespan handler. Retrieved per-request via `_get_inference_service()` in the router | `ProviderRegistry` maintains an in-process HTTP connection pool and provider instance cache. Re-creating it per request would destroy those caches and leak connections. |
-| **Dependency injection via `Depends()`** | All service construction in `api/dependencies.py` — persistence objects, auth services, and caches are injected, never constructed inside service methods | Services are independently testable. The dependency graph is explicit and visible. FastAPI's `Depends()` de-duplicates shared sub-dependencies within a request (e.g., `InferenceAuthorizationCache` is constructed once even if multiple services depend on it). |
-| **Frozen Pydantic models for cache entries** | `ConfigDict(frozen=True)` on `InferenceAccessContext`, `AuthorizationVersionSnapshot`, `CachedInferenceAuthorization` | Immutable cache payloads cannot be accidentally mutated after retrieval. Frozen models are also hashable, enabling set/dict membership tests. |
+| **Dependency injection via `Depends()`** | All service construction in `api/dependencies.py` — persistence objects, auth services, and caches are injected, never constructed inside service methods | Services are independently testable. The dependency graph is explicit and visible. FastAPI's `Depends()` de-duplicates shared sub-dependencies within a request (e.g., `AuthorizationGrantCache` is constructed once even if multiple services depend on it). |
+| **Frozen Pydantic models for cache entries** | `ConfigDict(frozen=True)` on `InferenceAccessContext`, `AuthorizationGrantVersions`, `CachedAuthorizationGrant` | Immutable cache payloads cannot be accidentally mutated after retrieval. Frozen models are also hashable, enabling set/dict membership tests. |
 | **Layer-enforced import boundaries** | `api/` never imports `database/`. `services/` never imports `api/`. `core/` imports nothing application-internal. | Violations are caught at import time, not at runtime. The dependency graph is a DAG with no cycles. |
 | **Aggregated router `__init__.py`** | `api/management_routers/__init__.py` includes all five sub-routers into one `management_router` | `main.py` registers one router, not five. Adding a new management router is a single-line change in `__init__.py`. The sub-router files are independently readable and testable. |
 | **RFC 6585 §4 `Retry-After` propagation** | `_retry_after_headers()` in `exception_handlers.py` — sets `Retry-After` header when `retry_after_seconds` is present on a `RateLimitError` | Callers (and upstream gateways) receive the provider-supplied retry delay. Prevents unnecessary retry storms and allows intelligent backoff without client-side hardcoding. |

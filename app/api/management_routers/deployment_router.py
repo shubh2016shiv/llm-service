@@ -1,25 +1,25 @@
-﻿"""
+"""
 Tenant Deployment Router.
 
 Architecture:
 -------------
-    +------------------------------+
-    ¦ tenant admin/developer caller¦
-    +------------------------------+
-                   ?
-    +------------------------------+
-    ¦ deployment router            ¦
-    ¦ (`/api/v1/tenants/*`)        ¦
-    +------------------------------+
-                   ?
-    +------------------------------+
-    ¦ TenantDeploymentService      ¦
-    ¦ access + validation + state  ¦
-    +------------------------------+
-                   ?
-    +------------------------------+
-    ¦ deployment persistence       ¦
-    +------------------------------+
+    ┌───────────────────────────────┐
+    │ tenant admin/developer caller │
+    └───────────────┬───────────────┘
+                    ▼
+    ┌───────────────────────────────┐
+    │ deployment router             │
+    │ (`/api/v1/tenants/*`)         │
+    └───────────────┬───────────────┘
+                    ▼
+    ┌───────────────────────────────┐
+    │ TenantDeploymentService       │
+    │ access + validation + state   │
+    └───────────────┬───────────────┘
+                    ▼
+    ┌───────────────────────────────┐
+    │ deployment persistence        │
+    └───────────────────────────────┘
 
 Purpose:
     Manage deployment definitions for each tenant, including lifecycle
@@ -40,8 +40,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from app.api.dependencies import get_tenant_deployment_service
 from app.api.exception_handlers import translate_management_error
+from app.api.management_dependencies import get_tenant_deployment_service
 from app.auth import AuthTokenPayload, require_admin, require_developer
 from app.core.exceptions import LLMServiceError
 from app.schemas.management_filters import TenantDeploymentListFilters
@@ -57,7 +57,12 @@ router = APIRouter(prefix="/api/v1/tenants", tags=["Tenant Deployments"])
 ProviderIdQuery = Annotated[UUID | None, Query()]
 
 
-@router.post("/{tenant_id}/deployments", response_model=ResourceResponse, status_code=201)
+# Stage 4:1 - Check tenant administrator access, validate provider and model IDs, and save the route.
+@router.post(
+    "/{tenant_id}/deployments",
+    response_model=ResourceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_deployment(
     tenant_id: UUID,
     body: DeploymentCreateRequest,
@@ -82,6 +87,7 @@ async def create_deployment(
         translate_management_error(exc)
 
 
+# Stage 4:2 - Check tenant access, list matching routes, and return the page and total count.
 @router.get("/{tenant_id}/deployments", response_model=PaginatedResponse)
 async def list_deployments(
     tenant_id: UUID,
@@ -115,6 +121,7 @@ async def list_deployments(
         translate_management_error(exc)
 
 
+# Stage 4:3 - Check tenant access, find one route inside that tenant, and return it or not-found.
 @router.get("/{tenant_id}/deployments/{deployment_id}", response_model=ResourceResponse)
 async def get_deployment(
     tenant_id: UUID,
@@ -140,6 +147,7 @@ async def get_deployment(
         translate_management_error(exc)
 
 
+# Stage 4:4 - Check tenant administrator access, update supplied route fields, and clear stale cache.
 @router.patch("/{tenant_id}/deployments/{deployment_id}", response_model=ResourceResponse)
 async def update_deployment(
     tenant_id: UUID,
@@ -167,6 +175,7 @@ async def update_deployment(
         translate_management_error(exc)
 
 
+# Stage 4:5 - Check tenant administrator access, activate the route, and clear stale access decisions.
 @router.patch("/{tenant_id}/deployments/{deployment_id}/activate", response_model=ResourceResponse)
 async def activate_deployment(
     tenant_id: UUID,
@@ -192,6 +201,7 @@ async def activate_deployment(
         translate_management_error(exc)
 
 
+# Stage 4:6 - Check tenant administrator access, pause the route for maintenance, and clear cache.
 @router.patch(
     "/{tenant_id}/deployments/{deployment_id}/maintenance", response_model=ResourceResponse
 )
@@ -222,7 +232,8 @@ async def maintain_deployment(
         translate_management_error(exc)
 
 
-@router.delete("/{tenant_id}/deployments/{deployment_id}", status_code=204)
+# Stage 4:7 - Check tenant administrator access, delete the route, clear cache, and return no content.
+@router.delete("/{tenant_id}/deployments/{deployment_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_deployment(
     tenant_id: UUID,
     deployment_id: UUID,
@@ -245,4 +256,3 @@ async def delete_deployment(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except LLMServiceError as exc:
         translate_management_error(exc)
-

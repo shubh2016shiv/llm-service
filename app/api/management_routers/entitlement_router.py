@@ -1,25 +1,25 @@
-﻿"""
+"""
 User Entitlement Router.
 
 Architecture:
 -------------
-    +------------------------------+
-    ¦ admin/developer caller       ¦
-    +------------------------------+
-                   ?
-    +------------------------------+
-    ¦ entitlement router           ¦
-    ¦ (`/api/v1/users/*`)          ¦
-    +------------------------------+
-                   ?
-    +------------------------------+
-    ¦ UserEntitlementService       ¦
-    ¦ policy + access enforcement  ¦
-    +------------------------------+
-                   ?
-    +------------------------------+
-    ¦ entitlement persistence      ¦
-    +------------------------------+
+    ┌───────────────────────────────┐
+    │ admin/developer caller        │
+    └───────────────┬───────────────┘
+                    ▼
+    ┌───────────────────────────────┐
+    │ entitlement router            │
+    │ (`/api/v1/users/*`)           │
+    └───────────────┬───────────────┘
+                    ▼
+    ┌───────────────────────────────┐
+    │ UserEntitlementService        │
+    │ policy + access enforcement   │
+    └───────────────┬───────────────┘
+                    ▼
+    ┌───────────────────────────────┐
+    │ entitlement persistence       │
+    └───────────────────────────────┘
 
 Purpose:
     Manage records that grant a user access to tenant deployments.
@@ -38,8 +38,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from app.api.dependencies import get_user_entitlement_service
 from app.api.exception_handlers import translate_management_error
+from app.api.management_dependencies import get_user_entitlement_service
 from app.auth import AuthTokenPayload, require_admin, require_developer
 from app.core.exceptions import LLMServiceError
 from app.schemas.management_schema import (
@@ -54,7 +54,12 @@ router = APIRouter(prefix="/api/v1/users", tags=["User Entitlements"])
 TenantIdQuery = Annotated[UUID, Query(description="Tenant scope for entitlement lookup.")]
 
 
-@router.post("/{user_id}/entitlements", response_model=ResourceResponse, status_code=201)
+# Stage 5:1 - Check administrator access, validate the user and route, and save the user's permission.
+@router.post(
+    "/{user_id}/entitlements",
+    response_model=ResourceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_entitlement(
     user_id: UUID,
     body: EntitlementCreateRequest,
@@ -79,6 +84,7 @@ async def create_entitlement(
         translate_management_error(exc)
 
 
+# Stage 5:2 - Check user-or-administrator access and list that user's permissions in one tenant.
 @router.get("/{user_id}/entitlements", response_model=PaginatedResponse)
 async def list_entitlements(
     user_id: UUID,
@@ -109,6 +115,7 @@ async def list_entitlements(
         translate_management_error(exc)
 
 
+# Stage 5:3 - Check user-or-administrator access and return one permission or a not-found error.
 @router.get("/{user_id}/entitlements/{entitlement_id}", response_model=ResourceResponse)
 async def get_entitlement(
     user_id: UUID,
@@ -134,6 +141,7 @@ async def get_entitlement(
         translate_management_error(exc)
 
 
+# Stage 5:4 - Check administrator access, update the permission, and clear stale access decisions.
 @router.patch("/{user_id}/entitlements/{entitlement_id}", response_model=ResourceResponse)
 async def update_entitlement(
     user_id: UUID,
@@ -161,7 +169,8 @@ async def update_entitlement(
         translate_management_error(exc)
 
 
-@router.delete("/{user_id}/entitlements/{entitlement_id}", status_code=204)
+# Stage 5:5 - Check administrator access, delete the permission, clear cache, and return no content.
+@router.delete("/{user_id}/entitlements/{entitlement_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_entitlement(
     user_id: UUID,
     entitlement_id: UUID,
@@ -184,4 +193,3 @@ async def delete_entitlement(
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except LLMServiceError as exc:
         translate_management_error(exc)
-
