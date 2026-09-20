@@ -33,9 +33,9 @@ How these connect to the Auth Stage numbering in ``app.auth``
     Auth Stage 4   -- tenant_inference_auth.py — the inference door.
     Auth Stage 5   -- authorization_grant_cache.py — remembering Stage 4.
 
-Routes never import these classes directly: ``app/api/dependencies.py``
-wires them together as FastAPI dependencies and hands the results to the
-route handlers.
+Routes receive these services through the focused dependency modules in
+``app/api``. Those modules wire the services together as FastAPI dependencies
+and hand the results to the route handlers.
 
 Suggested reading order (for learning this package from scratch)
 ----------------------------------------------------------------

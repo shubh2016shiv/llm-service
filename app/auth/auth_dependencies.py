@@ -31,7 +31,7 @@ require_admin, require_owner) bake that "this rung and above" rule in.
 
 Who uses this file
 ------------------
-    API routes -> get_current_user / RoleGuard -> jwt_token_service
+    API routes -> get_current_user / RoleGuard -> jwt_token_validator
 
 Author: Shubham Singh
 """
@@ -50,16 +50,16 @@ from typing import Annotated
 # HTTPException/status = the clean 401/403 responses the guards raise.
 from fastapi import Depends, HTTPException, status
 
-# OAuth2PasswordBearer = pulls the "Authorization: Bearer ..." header out
-# of the request (and documents the login endpoint in the OpenAPI page).
-from fastapi.security import OAuth2PasswordBearer
+# HTTPBearer parses the "Authorization: Bearer ..." header without pretending
+# this resource server owns a password-login endpoint.
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 # JWTError = the "this token is not genuine" error family from the JWT
 # library (wrong signature, expired, malformed).
 from jose import JWTError
 
-# The card printer and verifier (see jwt_token_service.py).
-from app.auth.jwt_token_service import decode_token, verify_token_type
+# The access-token verifier (see jwt_token_validator.py).
+from app.auth.jwt_token_validator import validate_access_token
 
 # The typed identity every guard hands downstream.
 from app.schemas.auth_schema import AuthTokenPayload
@@ -75,14 +75,11 @@ logger = logging.getLogger(__name__)
 # The token extractor. auto_error=False means: when the header is missing,
 # do NOT fail here — hand us None so we can raise a friendly, consistent
 # 401 ourselves (including the WWW-Authenticate header clients expect).
-_oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl="/api/v1/auth/login",
-    auto_error=False,
-)
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
-    raw_token: Annotated[str | None, Depends(_oauth2_scheme)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)],
 ) -> AuthTokenPayload:
     """Prove the caller's identity from the bearer token, or raise 401.
 
@@ -91,7 +88,7 @@ async def get_current_user(
     expiry, kind) — no database lookup, no session storage.
 
     Args:
-        raw_token: The bearer token from the Authorization header (None
+        credentials: The bearer credentials from the Authorization header (None
             when the header is absent).
 
     Returns:
@@ -101,18 +98,16 @@ async def get_current_user(
         HTTPException 401: Missing, invalid, expired, or wrong-kind token.
     """
     # Door check 1: is there a token at all?
-    if not raw_token:
+    if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authorization token is required.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Door check 2: is it genuine, and is it an ACCESS token (not a
-    # refresh token, whose only job is obtaining new access tokens)?
+    # Door check 2: validate the complete access-token contract in one place.
     try:
-        payload = decode_token(raw_token)
-        verify_token_type(payload, "access")
+        payload = validate_access_token(credentials.credentials)
     except JWTError as exc:
         # Wrong signature, expired, or tampered.
         raise HTTPException(

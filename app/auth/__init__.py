@@ -27,7 +27,7 @@ numbering schemes never collide):
     calls it automatically for every route that declares it via ``Depends``
     -- there is no other way into this package; nothing calls it manually.
 
-    Auth Stage 1 (jwt_token_service.py)   -- issue/read the JWT itself.
+    Auth Stage 1 (jwt_token_validator.py) -- verify the upstream identity token.
     Auth Stage 2 (auth_dependencies.py)   -- per-request identity + role gate.
     Auth Stage 3 (authorization/tenant_access.py)       -- tenant checks for
         management APIs (users, tenants, deployments, entitlements).
@@ -59,32 +59,20 @@ from app.auth.auth_dependencies import (
     require_operator,
     require_owner,
 )
-from app.auth.jwt_token_service import (
-    create_access_token,
-    create_refresh_token,
-    decode_token,
-    verify_token_type,
-)
 from app.schemas.auth_schema import (
     AuthTokenPayload,
-    AuthTokenResponse,
     InferenceAccessContext,
     UserRole,
 )
 
 __all__ = [
     "AuthTokenPayload",
-    "AuthTokenResponse",
     "InferenceAccessContext",
     "RoleGuard",
     "UserRole",
-    "create_access_token",
-    "create_refresh_token",
-    "decode_token",
     "get_current_user",
     "require_admin",
     "require_developer",
     "require_operator",
     "require_owner",
-    "verify_token_type",
 ]
