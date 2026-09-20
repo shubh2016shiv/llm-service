@@ -95,6 +95,20 @@ class ProviderType(StrEnum):
     GRPC = "grpc"
 
 
+class ProviderImplementation(StrEnum):
+    """Audited adapter classes that static provider configuration may select.
+
+    Treating implementation paths as an enum makes YAML validation fail during
+    startup instead of dynamically importing arbitrary code on a live request.
+    """
+
+    OPENAI = "app.providers.direct.openai_provider.OpenAIProvider"
+    ANTHROPIC = "app.providers.direct.anthropic_provider.AnthropicProvider"
+    VLLM = "app.providers.direct.vllm_provider.VLLMProvider"
+    AZURE_OPENAI = "app.providers.cloud.azure_openai_provider.AzureOpenAIProvider"
+    BEDROCK = "app.providers.cloud.bedrock_provider.BedrockProvider"
+
+
 class ProviderAuthConfig(BaseModel):
     """Authentication strategy for a provider type.
 
@@ -225,7 +239,7 @@ class ProviderStaticConfig(BaseModel):
     provider_type: ProviderType = Field(
         description="Transport layer used by this provider.",
     )
-    implementation_class: str = Field(
+    implementation_class: ProviderImplementation = Field(
         description=(
             "Fully-qualified Python class path for the concrete provider "
             "(e.g., 'app.providers.openai_provider.OpenAIProvider')."

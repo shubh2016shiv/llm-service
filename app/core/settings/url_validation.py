@@ -46,3 +46,23 @@ def validate_browser_origin(value: str) -> str:
     if parsed.query or parsed.fragment:
         raise ValueError(f"CORS origin cannot contain a query or fragment, got {value!r}")
     return value.rstrip("/")
+
+
+def validate_provider_endpoint_url(value: str) -> str:
+    """Require a clean HTTP(S) base URL suitable for outbound provider calls.
+
+    Private network hosts remain allowed because self-hosted vLLM is a supported
+    deployment. Embedded credentials and fragments are never legitimate base
+    endpoint configuration and are rejected to reduce leakage and ambiguity.
+    """
+    validate_service_url(
+        value,
+        field_name="api_endpoint_url",
+        allowed_schemes={"http", "https"},
+    )
+    parsed = urlsplit(value)
+    if parsed.username or parsed.password:
+        raise ValueError("api_endpoint_url cannot contain embedded credentials")
+    if parsed.fragment:
+        raise ValueError("api_endpoint_url cannot contain a URL fragment")
+    return value.rstrip("/")

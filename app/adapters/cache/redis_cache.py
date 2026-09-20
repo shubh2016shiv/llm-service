@@ -10,14 +10,32 @@ metrics, pub/sub, and raw-client access belong to neighboring adapters.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from app.adapters.cache.redis_connection import BACKEND_ERRORS, RedisConnectionManager
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
+
+
+_COMPARE_AND_SET_SCRIPT = """
+local comparison_count = #KEYS - 1
+for index = 1, comparison_count do
+    local current = redis.call('GET', KEYS[index + 1])
+    local presence_flag = ARGV[(index - 1) * 2 + 1]
+    local expected = ARGV[(index - 1) * 2 + 2]
+    if presence_flag == '0' then
+        if current ~= false then return 0 end
+    elseif current == false or current ~= expected then
+        return 0
+    end
+end
+local payload_index = comparison_count * 2 + 1
+redis.call('SET', KEYS[1], ARGV[payload_index], 'EX', ARGV[payload_index + 1])
+return 1
+"""
 
 
 class RedisCache:
@@ -75,6 +93,48 @@ class RedisCache:
             return False
         self._connection.count("set", "ok")
         return True
+
+    async def set_if_values_match(
+        self,
+        key: str,
+        value: bytes,
+        expected_values: Mapping[str, bytes | None],
+        ttl_seconds: int,
+    ) -> bool:
+        """Set a value only while every comparison key still matches.
+
+        Redis executes this as one indivisible operation. An authorization
+        invalidation cannot slip between checking versions and storing a grant.
+        """
+        client = await self._connection.acquire()
+        if client is None:
+            self._connection.count("set_if_values_match", "unavailable")
+            return False
+        comparison_arguments: list[str | bytes] = []
+        for expected_value in expected_values.values():
+            comparison_arguments.extend(
+                ("0", b"") if expected_value is None else ("1", expected_value)
+            )
+        try:
+            result = cast(
+                "int",
+                await client.eval(  # type: ignore[no-untyped-call]
+                    _COMPARE_AND_SET_SCRIPT,
+                    len(expected_values) + 1,
+                    key,
+                    *expected_values.keys(),
+                    *comparison_arguments,
+                    value,
+                    ttl_seconds,
+                ),
+            )
+        except BACKEND_ERRORS as error:
+            self._connection.handle_error("set_if_values_match", error)
+            logger.debug("Redis conditional SET failed", exc_info=True)
+            return False
+        outcome = "stored" if result == 1 else "changed"
+        self._connection.count("set_if_values_match", outcome)
+        return result == 1
 
     async def delete(self, key: str) -> bool:
         """Delete a key; report whether Redis processed the command."""

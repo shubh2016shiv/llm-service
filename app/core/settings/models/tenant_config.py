@@ -37,6 +37,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.settings.models.provider_config import validate_lowercase_provider_name
+from app.core.settings.url_validation import validate_provider_endpoint_url
 from app.schemas.enums import TenantDeploymentStatus, TenantLifecycleStatus, TenantSubscriptionTier
 from app.schemas.model_constraints import MAX_TEMPERATURE, MIN_TEMPERATURE
 
@@ -225,6 +226,12 @@ class DeploymentConfig(BaseModel):
         """Delegate to the shared lowercase check (see provider_config.py)."""
         return validate_lowercase_provider_name(value)
 
+    @field_validator("api_endpoint_url")
+    @classmethod
+    def _validate_api_endpoint_url(cls, value: str) -> str:
+        """Require a clean absolute HTTP(S) provider base URL."""
+        return validate_provider_endpoint_url(value)
+
     @property
     def is_active(self) -> bool:
         """True when this deployment can accept new requests.
@@ -273,3 +280,9 @@ class UserEntitlementConfig(BaseModel):
 
     extra_config: dict[str, object] = Field(default_factory=dict)
     is_active: bool = Field(default=True)
+
+    @field_validator("api_endpoint_url")
+    @classmethod
+    def _validate_api_endpoint_url(cls, value: str) -> str:
+        """Reject malformed or credential-bearing outbound endpoints."""
+        return validate_provider_endpoint_url(value)

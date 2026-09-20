@@ -94,7 +94,7 @@ def _make_require_route(operation: OperationType) -> RouteDependency:
                     user_id=inference_context.user_id,
                     deployment_key=inference_context.deployment_key,
                     operation=operation,
-                    pre_authorized_entitlement_id=inference_context.entitlement_id,
+                    entitlement_id=inference_context.entitlement_id,
                 )
             )
         except LLMServiceError as exc:

@@ -200,3 +200,23 @@ class StreamingConfig(BaseModel):
         le=30.0,
         description="Bound provider iterator cleanup during disconnect handling.",
     )
+
+
+class ProviderRuntimeConfig(BaseModel):
+    """Bound provider-instance caching and credential refresh behavior."""
+
+    provider_cache_ttl_seconds: float = Field(
+        default=300.0,
+        ge=1.0,
+        le=3600.0,
+        description=(
+            "Maximum lifetime of a provider instance and its in-memory credential. "
+            "After this period the secret store is read again."
+        ),
+    )
+    provider_cache_max_entries: int = Field(
+        default=1024,
+        ge=1,
+        le=100_000,
+        description="Maximum route-specific provider instances retained by one worker.",
+    )

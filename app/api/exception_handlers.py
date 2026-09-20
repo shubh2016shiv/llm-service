@@ -51,7 +51,7 @@ from app.core.exceptions import (
     TenantSuspendedError,
 )
 from app.inference_routing.exceptions import (
-    AmbiguousUserEntitlementError,
+    AuthorizedEntitlementUnavailableError,
     OperationNotSupportedError,
     ProviderNotAllowedError,
 )
@@ -71,7 +71,7 @@ _INFERENCE_EXCEPTION_STATUS: dict[type[LLMServiceError], int] = {
     ProviderValidationError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     ProviderNotAllowedError: status.HTTP_403_FORBIDDEN,
     OperationNotSupportedError: status.HTTP_422_UNPROCESSABLE_CONTENT,
-    AmbiguousUserEntitlementError: status.HTTP_409_CONFLICT,
+    AuthorizedEntitlementUnavailableError: status.HTTP_403_FORBIDDEN,
     ProviderUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
     ProviderTimeoutError: status.HTTP_504_GATEWAY_TIMEOUT,
     SecretBackendUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,

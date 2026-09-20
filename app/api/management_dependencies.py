@@ -99,21 +99,18 @@ def get_tenant_membership_service(
 
 
 def get_tenant_deployment_service(
-    request: Request,
     session_provider: PostgresSessionProviderDependency,
     access_service: TenantAccessServiceDependency,
     reference_validation_service: ReferenceValidationDependency,
     authorization_cache: AuthorizationCacheDependency,
     credential_writer: CredentialWriterDependency,
 ) -> TenantDeploymentService:
-    """Build deployment operations with cache/pub-sub and secret writing."""
+    """Build deployment operations with grant invalidation and secret writing."""
     return TenantDeploymentService(
         deployment_persistence=TenantDeploymentPersistence(session_provider),
         access_service=access_service,
         reference_validation_service=reference_validation_service,
         credential_writer=credential_writer,
-        cache=getattr(request.app.state, "redis_cache", None),
-        invalidation_publisher=getattr(request.app.state, "redis_pubsub", None),
         authorization_cache=authorization_cache,
     )
 

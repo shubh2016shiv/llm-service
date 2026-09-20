@@ -15,19 +15,15 @@ from typing import Any
 from uuid import UUID
 
 from app.core.settings.models.tenant_config import (
-    DeploymentConfig,
     TenantConfig,
     TenantRateLimits,
     UserEntitlementConfig,
 )
 from app.schemas.enums import (
-    TenantDeploymentStatus,
     TenantLifecycleStatus,
     TenantSubscriptionTier,
     UserEntitlementStatus,
 )
-
-_DEFAULT_TEMPERATURE: float = DeploymentConfig.model_fields["default_temperature"].default
 
 
 def convert_tenant_row(row: dict[str, Any]) -> TenantConfig:
@@ -46,33 +42,6 @@ def convert_tenant_row(row: dict[str, Any]) -> TenantConfig:
             concurrent_requests=int(row["rate_limit_concurrent_requests"]),
         ),
         allowed_provider_names=allowed_provider_names,
-    )
-
-
-def convert_deployment_row(row: dict[str, Any]) -> DeploymentConfig:
-    """Validate one deployment SQL projection and return the routing model."""
-    raw_temperature = row.get("default_temperature")
-    return DeploymentConfig(
-        deployment_id=UUID(str(row["deployment_id"])),
-        tenant_id=UUID(str(row["tenant_id"])),
-        deployment_key=str(row["deployment_key"]),
-        deployment_name=str(row["deployment_name"]),
-        status=TenantDeploymentStatus(str(row["status"])),
-        provider_name=str(row["provider_name"]),
-        model_name=str(row["model_name"]),
-        api_endpoint_url=str(row["api_endpoint_url"]),
-        secret_reference=str(row["secret_reference"]),
-        cloud_region=row.get("cloud_region"),
-        timeout_seconds=row.get("timeout_seconds"),
-        max_retries=row.get("max_retries"),
-        default_temperature=(
-            float(raw_temperature) if raw_temperature is not None else _DEFAULT_TEMPERATURE
-        ),
-        default_max_tokens=row.get("default_max_output_tokens"),
-        extra_headers=dict(row.get("extra_headers") or {}),
-        extra_config=dict(row.get("extra_config") or {}),
-        is_default=bool(row.get("is_default", False)),
-        priority=int(row.get("routing_priority", 0)),
     )
 
 

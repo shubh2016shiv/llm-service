@@ -25,6 +25,7 @@ from app.core.settings.models.environment_config import EnvironmentConfig
 from app.core.settings.models.infrastructure_config import (
     CacheConfig,
     DatabaseConfig,
+    ProviderRuntimeConfig,
     StreamingConfig,
     TokenManagerConfig,
 )
@@ -42,6 +43,7 @@ class ApplicationSettings(  # pyright: ignore[reportIncompatibleVariableOverride
     CacheConfig,
     TokenManagerConfig,
     StreamingConfig,
+    ProviderRuntimeConfig,
     SecurityConfig,
     VaultConfig,
     ObservabilityConfig,
