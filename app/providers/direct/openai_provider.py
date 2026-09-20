@@ -264,7 +264,15 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
         choice = choices[0] if choices else {}
         delta = choice.get("delta", {})
         usage_raw = data.get("usage") or {}
-        usage = Usage(**usage_raw) if usage_raw else None
+        usage = (
+            Usage(
+                prompt_tokens=usage_raw.get("prompt_tokens", 0),
+                completion_tokens=usage_raw.get("completion_tokens", 0),
+                total_tokens=usage_raw.get("total_tokens", 0),
+            )
+            if usage_raw
+            else None
+        )
         return ChatStreamChunk(
             content=delta.get("content", "") or "",
             finish_reason=choice.get("finish_reason"),
