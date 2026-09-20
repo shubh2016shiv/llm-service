@@ -62,14 +62,16 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from aiobreaker import CircuitBreakerError
 from pydantic import SecretStr
+
+from app.core.exceptions import LLMServiceError, ProviderCircuitOpenError
+from app.providers.circuit_breaker_stream import CircuitBreakerStream
+from app.providers.http_errors import classify_error
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine
@@ -78,7 +80,7 @@ if TYPE_CHECKING:
 
     from app.core.exceptions import ProviderError
     from app.core.settings.models.provider_config import ProviderStaticConfig
-    from app.inference_routing.models import ResolvedExecutionContext
+    from app.inference_routing.models import ResolvedRoute
     from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses_schema import (
         ChatResponse,
@@ -89,96 +91,23 @@ if TYPE_CHECKING:
     )
 
 
-# --- Internal stream-signalling types ---
-#
-# stream_generate() works by running the provider's async generator inside a
-# background task (the "producer") and passing chunks to the caller through an
-# asyncio.Queue. The queue must be able to carry three completely different
-# things: real data chunks, an error signal, and a "finished" signal. To do
-# that safely we use a discriminated union — three distinct types so that an
-# isinstance() check on every item pulled from the queue can tell them apart
-# with zero ambiguity.
-#
-# Why not use None as the "finished" sentinel?
-#   None is a valid Python value that could appear anywhere, and the type
-#   checker cannot distinguish "this None is a deliberate sentinel" from "this
-#   None is accidental data." Mixing None into a typed queue also forces
-#   Optional everywhere downstream, which is noise. A dedicated class is
-#   unambiguous: nothing can accidentally be a _StreamComplete.
-#
-# Why not use a plain string like "DONE"?
-#   Strings cannot be used with isinstance() to discriminate a union. You would
-#   need equality checks (`if item == "DONE"`), which are fragile and bypass the
-#   type checker entirely. The type checker would not know that after the check
-#   `item` can only be a ChatStreamChunk.
-#
-# _StreamError — carries the exception from the producer task back to the
-#   caller. Implemented as a frozen dataclass because it wraps real data (the
-#   exception object) that must be carried across the queue boundary.
-#
-# _StreamComplete — a pure "end of stream, no error" signal. It carries no
-#   data at all, so a minimal class with `pass` is correct. Using @dataclass
-#   here would be misleading — it implies structured data where there is none.
-#
-# _STREAM_COMPLETE — a single pre-created instance of _StreamComplete that is
-#   reused every time a stream finishes. Creating a new _StreamComplete() on
-#   every request would work but is wasteful. A module-level singleton is the
-#   standard Python pattern for sentinels (the stdlib uses `_MISSING = object()`
-#   for the same reason). The consumer checks `isinstance(item, _StreamComplete)`
-#   rather than identity (`is _STREAM_COMPLETE`) so the code reads as a clean
-#   type-based dispatch, consistent with how _StreamError is handled.
-
-@dataclass(frozen=True)
-class _StreamError:
-    exception: Exception
-
-
-class _StreamComplete:
-    pass
-
-
-_STREAM_COMPLETE = _StreamComplete()
-
-
 class BaseProvider[TransportT](ABC):
-    """Abstract contract for all LLM providers.
+    """Apply one execution/resilience contract to every provider adapter.
 
-    Immutable after construction. All methods are pure functions over:
-      request payload + frozen settings + shared transport.
-
-    Never store per-request or per-tenant state on the instance.
-
-    Generic parameter — TransportT:
-        The `[TransportT]` bracket after the class name is Python 3.12 syntax
-        for declaring a generic class. It means: "this class has one type
-        parameter called TransportT that will be filled in concretely by each
-        subclass." Think of it like a placeholder that says what kind of HTTP
-        transport client this provider uses.
-
-        For example:
-            - OpenAIProvider extends BaseProvider[httpx.AsyncClient]
-              → TransportT is resolved to httpx.AsyncClient
-            - BedrockProvider extends BaseProvider[object]
-              → TransportT is resolved to object (aioboto3 session)
-
-        This lets the type checker verify that self._http_client is used
-        correctly in each subclass without forcing every provider to share
-        the same concrete transport type.
-
-    Architecture decision:
-        Keep the orchestration contract (`generate`, `embed`, etc.) in this
-        base class, and keep wire-format specifics in subclasses. That split
-        avoids duplicate resilience and logging logic across providers.
+    ``TransportT`` preserves the concrete borrowed transport type: REST
+    adapters use ``httpx.AsyncClient`` while Bedrock uses an SDK session.
+    Instances contain route configuration and a credential but never mutable
+    per-request data; payload and response variables stay in each call frame.
     """
 
     def __init__(
         self,
-        context: ResolvedExecutionContext,
+        context: ResolvedRoute,
         http_client: TransportT,
         circuit_breaker: aiobreaker.CircuitBreaker,
         api_key: SecretStr | None = None,
     ) -> None:
-        self._context: ResolvedExecutionContext = context
+        self._context: ResolvedRoute = context
         self._static: ProviderStaticConfig = context.provider_static_config
         self._http_client: TransportT = http_client
         self._circuit_breaker: aiobreaker.CircuitBreaker = circuit_breaker
@@ -217,41 +146,14 @@ class BaseProvider[TransportT](ABC):
             This design preserves stream backpressure and error propagation
             while still counting stream failures as breaker-visible failures.
         """
-        queue: asyncio.Queue[ChatStreamChunk | _StreamError | _StreamComplete] = asyncio.Queue(
-            maxsize=1
+        stream = CircuitBreakerStream(
+            source=self._stream_generate(request),
+            circuit_breaker=self._circuit_breaker,
+            translate_circuit_error=self._circuit_open_error,
+            translate_error=self._normalize_provider_error,
         )
-
-        async def _consume_stream() -> None:
-            async for chunk in self._stream_generate(request):
-                await queue.put(chunk)
-
-        async def _run_guarded_stream() -> None:
-            try:
-                await self._circuit_breaker.call_async(_consume_stream)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                await queue.put(_StreamError(exc))
-            else:
-                await queue.put(_STREAM_COMPLETE)
-
-        producer = asyncio.create_task(_run_guarded_stream())
-
-        try:
-            while True:
-                item = await queue.get()
-                if isinstance(item, _StreamComplete):
-                    break
-                if isinstance(item, _StreamError):
-                    raise item.exception
-                yield item
-        finally:
-            if not producer.done():
-                producer.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await producer
-
-        await producer
+        async for chunk in stream.iterate():
+            yield chunk
 
     async def _call_with_breaker[ResponseT](
         self,
@@ -302,7 +204,63 @@ class BaseProvider[TransportT](ABC):
         # cast() is a complete no-op — it returns its second argument unchanged, with zero
         # conversion, zero checking, zero overhead. It exists solely so the type checker
         # keeps the return type correct through this call boundary.
-        return cast("ResponseT", await self._circuit_breaker.call_async(func, *args))
+        try:
+            return cast("ResponseT", await self._circuit_breaker.call_async(func, *args))
+        except CircuitBreakerError as exc:
+            raise self._circuit_open_error(exc) from exc
+        except LLMServiceError:
+            raise
+        except Exception as exc:
+            raise self._handle_provider_error(exc) from exc
+
+    def _circuit_open_error(self, exc: CircuitBreakerError) -> LLMServiceError:
+        """Translate aiobreaker's library error into a domain error.
+
+        ``CircuitBreakerError`` inherits from ``Exception``, not
+        ``LLMServiceError``, so it bypasses this service's domain-error
+        translation entirely and reaches the top-level safety net as an
+        untyped failure — reporting a working circuit breaker as a 500.
+
+        Two distinct situations arrive here, and they deserve different answers:
+
+        1. The call that *trips* the breaker. aiobreaker raises
+           ``CircuitBreakerError`` from the underlying failure, and because
+           provider adapters classify their own transport errors before the
+           breaker ever sees them, ``__cause__`` is already a precise domain
+           error (a timeout, a 502, a rejected credential). That real cause is
+           more informative than "circuit open", so it is preserved — this
+           request genuinely did time out or get rejected.
+        2. A call arriving while the circuit is *already* open. Nothing was
+           dialled and there is no underlying cause, so the honest answer is
+           ``ProviderCircuitOpenError`` (503) with a retry hint.
+        """
+        underlying_cause = exc.__cause__
+        if isinstance(underlying_cause, LLMServiceError):
+            return underlying_cause
+        if isinstance(underlying_cause, Exception):
+            return self._handle_provider_error(underlying_cause)
+        return ProviderCircuitOpenError(
+            provider_name=self._static.provider_name,
+            retry_after_seconds=self._breaker_reset_seconds(),
+        )
+
+    def _breaker_reset_seconds(self) -> int | None:
+        """Return the breaker's configured reset window, in whole seconds.
+
+        Deliberately reads the static ``timeout_duration`` rather than the
+        breaker's ``time_until_open``: that property computes
+        ``opens_at - now()`` and raises ``TypeError`` while ``opens_at`` is
+        unset, which is exactly the moment the circuit has just opened. A
+        crash here would convert the 503 this method exists to produce back
+        into the 500 it exists to prevent, so the static value is used and
+        anything unexpected degrades to "no hint" rather than raising.
+        """
+        timeout_duration = getattr(self._circuit_breaker, "timeout_duration", None)
+        total_seconds = getattr(timeout_duration, "total_seconds", None)
+        if total_seconds is None:
+            return None
+        seconds = int(total_seconds())
+        return seconds if seconds > 0 else None
 
     # ------------------------------------------------------------------
     # Abstract Provider Implementation Methods
@@ -392,9 +350,22 @@ class BaseProvider[TransportT](ABC):
         This is the anti-corruption boundary between transport/SDK exceptions
         and internal service error contracts.
         """
-        from app.providers.http_errors import classify_error
+        return classify_error(
+            exc,
+            provider_name=self._static.provider_name,
+            timeout_seconds=self._effective_timeout(),
+        )
 
-        return classify_error(exc, provider_name=self._static.provider_name)
+    def _normalize_provider_error(self, exc: Exception) -> Exception:
+        """Preserve domain failures and classify raw adapter/transport errors."""
+        if isinstance(exc, LLMServiceError):
+            return exc
+        return self._handle_provider_error(exc)
+
+    @staticmethod
+    def _safe_health_error_detail(exc: Exception) -> str:
+        """Describe a failed health probe without echoing URLs or credentials."""
+        return f"Provider health probe failed ({exc.__class__.__name__})."
 
     def _effective_timeout(self) -> float:
         """Return the pre-resolved timeout from the execution context."""

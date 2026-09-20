@@ -27,23 +27,25 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.core.exceptions import ProviderError
 from app.providers.base_provider import BaseProvider
+from app.schemas.responses_schema import (
+    ChatResponse,
+    ChatStreamChunk,
+    EmbedResponse,
+    HealthStatus,
+    Usage,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
-    from app.schemas.responses_schema import (
-        ChatResponse,
-        ChatStreamChunk,
-        EmbedResponse,
-        HealthStatus,
-        RerankResponse,
-    )
+    from app.schemas.responses_schema import RerankResponse
 
 
 class VLLMProvider(BaseProvider[httpx.AsyncClient]):
@@ -148,8 +150,6 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _rerank(self, request: RerankRequest) -> RerankResponse:
-        from app.core.exceptions import ProviderError
-
         raise ProviderError(
             provider_name=self._static.provider_name,
             message="Rerank is not supported by vLLM.",
@@ -161,8 +161,6 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
 
     async def health_check(self) -> HealthStatus:
         """Check vLLM health endpoint as low-cost availability probe."""
-        from app.schemas.responses_schema import HealthStatus
-
         t0 = time.monotonic()
         try:
             response = await self._http_client.get(
@@ -182,7 +180,7 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
                 provider_name=self._static.provider_name,
                 healthy=False,
                 latency_ms=latency_ms,
-                detail=str(exc),
+                detail=self._safe_health_error_detail(exc),
             )
 
     # ------------------------------------------------------------------
@@ -204,10 +202,16 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
             "model": self._context.model_name,
             "messages": [m.model_dump(mode="json") for m in request.messages],
         }
-        if request.temperature is not None:
-            payload["temperature"] = request.temperature
-        if request.max_tokens is not None:
-            payload["max_tokens"] = request.max_tokens
+        payload["temperature"] = (
+            request.temperature
+            if request.temperature is not None
+            else self._context.effective_temperature
+        )
+        payload["max_tokens"] = (
+            request.max_tokens
+            if request.max_tokens is not None
+            else self._context.effective_max_tokens
+        )
         if request.top_p is not None:
             payload["top_p"] = request.top_p
         if request.stop:
@@ -219,62 +223,62 @@ class VLLMProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_chat_response(data: dict[str, object]) -> ChatResponse:
+    def _parse_chat_response(data: dict[str, Any]) -> ChatResponse:
         """Parse vLLM chat response into normalized ``ChatResponse``."""
-        from app.schemas.responses_schema import ChatResponse, Usage
-
-        choice = data["choices"][0]  # type: ignore[index]
-        message = choice["message"]  # type: ignore[index]
+        # Any here is confined to this JSON-response boundary: every value
+        # is validated when the ChatResponse below is constructed.
+        choice = data["choices"][0]
+        message = choice["message"]
         usage_raw = data.get("usage", {})
         usage = (
             Usage(
-                prompt_tokens=usage_raw.get("prompt_tokens", 0),  # type: ignore[union-attr]
-                completion_tokens=usage_raw.get("completion_tokens", 0),  # type: ignore[union-attr]
-                total_tokens=usage_raw.get("total_tokens", 0),  # type: ignore[union-attr]
+                prompt_tokens=usage_raw.get("prompt_tokens", 0),
+                completion_tokens=usage_raw.get("completion_tokens", 0),
+                total_tokens=usage_raw.get("total_tokens", 0),
             )
             if usage_raw
             else None
         )
         return ChatResponse(
-            content=message["content"],  # type: ignore[index]
-            role=message["role"],  # type: ignore[index]
-            finish_reason=choice.get("finish_reason"),  # type: ignore[index]
+            content=message["content"],
+            role=message["role"],
+            finish_reason=choice.get("finish_reason"),
             usage=usage,
-            model=data.get("model", ""),  # type: ignore[arg-type]
+            model=data.get("model", ""),
             raw_response=data,
         )
 
     @staticmethod
-    def _parse_stream_chunk(data: dict[str, object]) -> ChatStreamChunk:
+    def _parse_stream_chunk(data: dict[str, Any]) -> ChatStreamChunk:
         """Parse one vLLM stream event into normalized stream chunk."""
-        from app.schemas.responses_schema import ChatStreamChunk
-
-        delta = data["choices"][0].get("delta", {})  # type: ignore[index]
+        choices = data.get("choices", [])
+        choice = choices[0] if choices else {}
+        delta = choice.get("delta", {})
+        usage_raw = data.get("usage") or {}
+        usage = Usage(**usage_raw) if usage_raw else None
         return ChatStreamChunk(
             content=delta.get("content", "") or "",
-            finish_reason=data["choices"][0].get("finish_reason"),  # type: ignore[index]
-            index=data["choices"][0].get("index", 0),  # type: ignore[index]
+            finish_reason=choice.get("finish_reason"),
+            index=choice.get("index", 0),
+            usage=usage,
             raw_chunk=data,
         )
 
     @staticmethod
-    def _parse_embed_response(data: dict[str, object]) -> EmbedResponse:
+    def _parse_embed_response(data: dict[str, Any]) -> EmbedResponse:
         """Parse vLLM embeddings response into normalized ``EmbedResponse``."""
-        from app.schemas.responses_schema import EmbedResponse, Usage
-
-        embeddings = [item["embedding"] for item in data["data"]]  # type: ignore[index]
+        embeddings = [item["embedding"] for item in data["data"]]
         usage_raw = data.get("usage", {})
         usage = (
             Usage(
-                prompt_tokens=usage_raw.get("prompt_tokens", 0),  # type: ignore[union-attr]
-                total_tokens=usage_raw.get("total_tokens", 0),  # type: ignore[union-attr]
+                prompt_tokens=usage_raw.get("prompt_tokens", 0),
+                total_tokens=usage_raw.get("total_tokens", 0),
             )
             if usage_raw
             else None
         )
         return EmbedResponse(
             embeddings=embeddings,
-            model=data.get("model", ""),  # type: ignore[arg-type]
+            model=data.get("model", ""),
             usage=usage,
         )
-

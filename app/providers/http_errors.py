@@ -60,10 +60,14 @@ except ImportError:
 
         response: ClassVar[dict[str, object]] = {}
 
-    ClientError = ConnectTimeoutError = ReadTimeoutError = _BotocoreStub  # type: ignore[assignment]
+    ClientError = ConnectTimeoutError = ReadTimeoutError = _BotocoreStub
 
 
-def classify_error(exc: Exception, provider_name: str) -> ProviderError:
+def classify_error(
+    exc: Exception,
+    provider_name: str,
+    timeout_seconds: float = 0.0,
+) -> ProviderError:
     """Classify a raw exception from the provider into the ProviderError hierarchy.
 
     Args:
@@ -78,7 +82,7 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
         apply consistent retry/HTTP-mapping logic without exception-family checks.
     """
     if isinstance(exc, httpx.TimeoutException):
-        return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=0.0)
+        return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=timeout_seconds)
 
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
@@ -90,7 +94,7 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
             return InvalidAPIKeyError(provider_name=provider_name, masked_key="****")
 
         if status == 429:
-            retry_after = int(exc.response.headers.get("Retry-After", 0)) or None
+            retry_after = _parse_retry_after(exc.response.headers.get("Retry-After"))
             if "token" in body:
                 return TokensPerMinuteExceededError(
                     provider_name=provider_name, retry_after_seconds=retry_after
@@ -103,7 +107,9 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
             if "model" in body and "not found" in body:
                 return ModelNotSupportedError(provider_name=provider_name, model_name="unknown")
             return InvalidRequestError(
-                provider_name=provider_name, field="unknown", reason=body[:200]
+                provider_name=provider_name,
+                field="unknown",
+                reason="Provider rejected the request payload.",
             )
 
         if status in (500, 502, 503, 504):
@@ -120,7 +126,7 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
 
     # AWS Bedrock
     if isinstance(exc, (ConnectTimeoutError, ReadTimeoutError)):
-        return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=0.0)
+        return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=timeout_seconds)
 
     if isinstance(exc, ClientError):
         error_block = exc.response.get("Error", {})
@@ -146,6 +152,16 @@ def classify_error(exc: Exception, provider_name: str) -> ProviderError:
     return ProviderInternalError(
         f"Unhandled exception communicating with {provider_name}: {exc.__class__.__name__}",
         provider_name=provider_name,
-        details={"raw_error": str(exc)},
+        details={"exception_type": exc.__class__.__name__},
     )
 
+
+def _parse_retry_after(raw_value: str | None) -> int | None:
+    """Parse a positive delta-seconds Retry-After value without ever raising."""
+    if raw_value is None:
+        return None
+    try:
+        seconds = int(raw_value)
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None

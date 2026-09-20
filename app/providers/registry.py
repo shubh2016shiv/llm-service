@@ -1,163 +1,196 @@
-"""
-Provider Registry
-=================
+"""Build and temporarily cache provider adapters for resolved routes.
 
-Builds and caches provider instances keyed by resolved route fingerprint.
+Architecture:
+    InferenceService -> ProviderRegistry -> provider adapter
+                                      |-> transport factory
+                                      |-> circuit-breaker registry
+                                      '-> secret store
 
-Why this module exists:
-    - Provider construction may involve dynamic import, transport setup, breaker
-      wiring, and secret lookup. Repeating this per request is expensive.
-    - A stable cache per route keeps latency lower and reduces object churn.
-    - Concurrency-safe creation avoids duplicate providers under burst traffic.
-
-Rationale for design choices:
-    - Fast path: lock-free dict read for common cache hits.
-    - Slow path: double-checked locking for safe one-time creation.
-    - Fingerprint keying ensures cache separation when provider/model/endpoint/
-      credential reference changes.
-
-Step-by-step build flow:
-    1. Caller requests provider for resolved execution context.
-    2. Registry checks route-fingerprint cache.
-    3. On miss, registry builds provider class dynamically.
-    4. Registry obtains transport, circuit breaker, and plaintext secret.
-    5. Registry stores provider instance for subsequent reuse.
-
-Enterprise Pattern: Singleton Registry + Double-Checked Locking
-
-Author: Shubham Singh
+Provider objects contain a ``SecretStr`` with plaintext credential material.
+The cache is therefore both size-bounded and time-bounded: TTL makes secret
+rotation visible without a process restart, while LRU eviction prevents route
+cardinality from becoming unbounded memory growth.
 """
 
 from __future__ import annotations
 
 import asyncio
-import importlib
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from app.inference_routing.models import ResolvedExecutionContext
-    from app.infrastructure.http_client_factory import HTTPClientFactory
-    from app.infrastructure.provider_credentials import SecretStore
-    from app.infrastructure.redis_cache import RedisCache
-    from app.providers.base_provider import BaseProvider
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import SecretStr
 
-from app.infrastructure.provider_circuit_breaker import get_provider_circuit_breaker
+from app.core.exceptions import ConfigurationError
+from app.core.settings.models.provider_config import AuthMode, ProviderImplementation
+from app.providers.cloud.azure_openai_provider import AzureOpenAIProvider
+from app.providers.cloud.bedrock_provider import BedrockProvider
+from app.providers.direct.anthropic_provider import AnthropicProvider
+from app.providers.direct.openai_provider import OpenAIProvider
+from app.providers.direct.vllm_provider import VLLMProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from app.adapters.provider_transport import (
+        ProviderCircuitBreakerRegistry,
+        ProviderTransportFactory,
+    )
+    from app.adapters.secret_management import SecretStore
+    from app.inference_routing.models import ResolvedRoute
+    from app.providers.base_provider import BaseProvider
+
+ProviderClass = type["BaseProvider[Any]"]
+
+_BUILT_IN_PROVIDER_CLASSES: dict[ProviderImplementation, ProviderClass] = {
+    ProviderImplementation.OPENAI: OpenAIProvider,
+    ProviderImplementation.ANTHROPIC: AnthropicProvider,
+    ProviderImplementation.VLLM: VLLMProvider,
+    ProviderImplementation.AZURE_OPENAI: AzureOpenAIProvider,
+    ProviderImplementation.BEDROCK: BedrockProvider,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderCacheEntry:
+    """Pair a provider instance with the monotonic time it must be rebuilt."""
+
+    provider: BaseProvider[Any]
+    expires_at: float
 
 
 class ProviderRegistry:
-    """Thread-safe singleton cache of provider instances.
-
-    One provider instance per unique route fingerprint (provider + model + endpoint +
-    credential scope). Uses double-checked locking via asyncio.Lock for safe creation.
-
-    Why this matters:
-        Provider construction may involve network/secret operations. Reusing
-        built instances lowers latency and reduces repeated setup overhead.
-    """
+    """Coalesce construction and retain a bounded LRU of provider instances."""
 
     def __init__(
         self,
-        http_client_factory: HTTPClientFactory,
-        cache: RedisCache,
+        transport_factory: ProviderTransportFactory,
+        circuit_breaker_registry: ProviderCircuitBreakerRegistry,
         secret_store: SecretStore,
+        *,
+        cache_ttl_seconds: float,
+        max_cached_providers: int,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._providers: dict[str, BaseProvider[Any]] = {}
+        """Initialize explicit dependencies and cache safety limits."""
+        if cache_ttl_seconds <= 0:
+            raise ValueError("cache_ttl_seconds must be greater than zero")
+        if max_cached_providers < 1:
+            raise ValueError("max_cached_providers must be at least one")
+        self._providers: OrderedDict[str, _ProviderCacheEntry] = OrderedDict()
+        self._inflight: dict[str, asyncio.Task[BaseProvider[Any]]] = {}
         self._lock = asyncio.Lock()
-        self._http_client_factory = http_client_factory
-        self._cache = cache
+        self._transport_factory = transport_factory
+        self._circuit_breaker_registry = circuit_breaker_registry
         self._secret_store = secret_store
+        self._cache_ttl_seconds = cache_ttl_seconds
+        self._max_cached_providers = max_cached_providers
+        self._clock = clock
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    async def get_provider(self, context: ResolvedExecutionContext) -> BaseProvider[Any]:
-        """Return a cached or newly-built provider for the given execution context.
-
-        Fast-path read (no lock) for the common case where the provider is
-        already cached. Falls back to double-checked locking for creation.
-
-        The cache key is ``context.route_fingerprint`` so route-affecting
-        changes naturally map to new provider instances.
-        """
+    async def get_provider(self, context: ResolvedRoute) -> BaseProvider[Any]:
+        """Return a fresh cached provider or share one in-progress construction."""
         cache_key = context.route_fingerprint
-
-        # Fast path — no lock needed for reads (dict reads are GIL-safe)
-        if cache_key in self._providers:
-            return self._providers[cache_key]
-
-        # Slow path — acquire lock, double-check, build
         async with self._lock:
-            if cache_key in self._providers:
-                return self._providers[cache_key]
-            provider = await self._build_provider(context)
-            self._providers[cache_key] = provider
-            return provider
+            cached = self._read_fresh_entry(cache_key)
+            if cached is not None:
+                return cached
+            task = self._inflight.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._build_and_cache(cache_key, context),
+                    name=f"provider-build:{cache_key[:12]}",
+                )
+                self._inflight[cache_key] = task
+                task.add_done_callback(self._observe_build_result)
+        return await asyncio.shield(task)
 
     async def invalidate(self, route_fingerprint: str) -> None:
-        """Remove a cached provider so the next request rebuilds it.
-
-        Called when settings changes propagate via Redis pub/sub event.
-        The route_fingerprint is the same SHA-256 digest stored on ResolvedExecutionContext.
-
-        Rationale:
-            Invalidation avoids stale providers after config/credential changes.
-        """
+        """Evict one route so its next call re-reads the credential."""
         async with self._lock:
             self._providers.pop(route_fingerprint, None)
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
+    async def clear(self) -> None:
+        """Drop every cached provider during controlled operational refreshes."""
+        async with self._lock:
+            self._providers.clear()
 
-    async def _build_provider(self, context: ResolvedExecutionContext) -> BaseProvider[Any]:
-        """Build and return a new provider instance from the resolved execution context.
+    def _read_fresh_entry(self, cache_key: str) -> BaseProvider[Any] | None:
+        """Return and promote a fresh LRU entry; remove an expired one."""
+        entry = self._providers.get(cache_key)
+        if entry is None:
+            return None
+        if entry.expires_at <= self._clock():
+            self._providers.pop(cache_key, None)
+            return None
+        self._providers.move_to_end(cache_key)
+        return entry.provider
 
-        The provider_static_config, implementation_class, and secret_reference are
-        all pre-resolved by the OrchestrationPipeline — no additional config lookups needed.
+    async def _build_and_cache(
+        self,
+        cache_key: str,
+        context: ResolvedRoute,
+    ) -> BaseProvider[Any]:
+        """Build once, publish a fresh cache entry, and clear the ticket."""
+        try:
+            provider = await self._build_provider(context)
+        except Exception:
+            async with self._lock:
+                self._inflight.pop(cache_key, None)
+            raise
+        async with self._lock:
+            self._inflight.pop(cache_key, None)
+            self._providers[cache_key] = _ProviderCacheEntry(
+                provider=provider,
+                expires_at=self._clock() + self._cache_ttl_seconds,
+            )
+            self._providers.move_to_end(cache_key)
+            while len(self._providers) > self._max_cached_providers:
+                self._providers.popitem(last=False)
+        return provider
 
-        Security note:
-            Plaintext secret is fetched only at build time and injected as
-            ``SecretStr``; routing layer never carries plaintext credentials.
-        """
+    @staticmethod
+    def _observe_build_result(task: asyncio.Task[BaseProvider[Any]]) -> None:
+        """Mark background failures observed if the original caller disconnects."""
+        if not task.cancelled():
+            task.exception()
+
+    async def _build_provider(self, context: ResolvedRoute) -> BaseProvider[Any]:
+        """Construct one adapter from validated route dependencies."""
         provider_class = self._resolve_implementation_class(
             context.provider_static_config.implementation_class
         )
-        http_client = self._http_client_factory.create_client(
+        transport = self._transport_factory.create_transport(
             context.provider_static_config.provider_type
         )
-        circuit_breaker = await get_provider_circuit_breaker(context.provider_name, self._cache)
-
-        plaintext_api_key = await self._secret_store.get_secret(
-            context.secret_reference,
-            tenant_id=str(context.tenant_config.tenant_id),
-        )
-
+        breaker = await self._circuit_breaker_registry.get_breaker(context.provider_name)
+        api_key = await self._read_api_key(context)
         return provider_class(
             context=context,
-            http_client=http_client,
-            circuit_breaker=circuit_breaker,
-            api_key=SecretStr(plaintext_api_key),
+            http_client=transport,
+            circuit_breaker=breaker,
+            api_key=api_key,
         )
+
+    async def _read_api_key(self, context: ResolvedRoute) -> SecretStr | None:
+        """Fetch explicit credentials only for auth modes that require them."""
+        auth_mode = context.provider_static_config.auth.mode
+        if auth_mode in {AuthMode.AWS_SIGV4, AuthMode.NONE}:
+            return None
+        plaintext = await self._secret_store.get_secret(
+            context.secret_reference,
+            tenant_id=str(context.tenant_id),
+        )
+        return SecretStr(plaintext)
 
     @staticmethod
     def _resolve_implementation_class(
-        fully_qualified_name: str,
-    ) -> type[BaseProvider[Any]]:
-        """Dynamically import and return the provider class.
-
-        Args:
-            fully_qualified_name: e.g. "app.providers.direct.openai_provider.OpenAIProvider"
-
-        Returns:
-            The resolved class object (a concrete BaseProvider subclass).
-
-        Example:
-            ``app.providers.direct.openai_provider.OpenAIProvider`` ->
-            ``OpenAIProvider`` class object.
-        """
-        module_path, class_name = fully_qualified_name.rsplit(".", 1)
-        module = importlib.import_module(module_path)
-        return getattr(module, class_name)
+        implementation: ProviderImplementation,
+    ) -> ProviderClass:
+        """Resolve only audited built-in adapters, never arbitrary import paths."""
+        provider_class = _BUILT_IN_PROVIDER_CLASSES.get(implementation)
+        if provider_class is None:
+            raise ConfigurationError(
+                f"Provider implementation {implementation!r} is not registered."
+            )
+        return cast("ProviderClass", provider_class)

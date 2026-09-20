@@ -25,6 +25,13 @@ Step-by-step runtime relationship:
     5. Upstream services receive consistent contracts regardless of provider.
 
 Author: Shubham Singh
+
+Reading order:
+    1. ``registry.py`` — safe construction, secret lifetime, bounded caching.
+    2. ``base_provider.py`` — common execution and error contract.
+    3. ``circuit_breaker_stream.py`` — streaming backpressure and cancellation.
+    4. ``http_errors.py`` — raw transport/SDK error normalization.
+    5. one concrete adapter in ``direct/`` or ``cloud/``.
 """
 
 from app.providers.base_provider import BaseProvider
@@ -34,4 +41,3 @@ __all__ = [
     "BaseProvider",
     "ProviderRegistry",
 ]
-

@@ -27,23 +27,19 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.core.exceptions import ProviderError
 from app.providers.base_provider import BaseProvider
+from app.schemas.responses_schema import ChatResponse, ChatStreamChunk, HealthStatus, Usage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
-    from app.schemas.responses_schema import (
-        ChatResponse,
-        ChatStreamChunk,
-        EmbedResponse,
-        HealthStatus,
-        RerankResponse,
-    )
+    from app.schemas.responses_schema import EmbedResponse, RerankResponse
 
 
 class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
@@ -114,8 +110,6 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
-        from app.core.exceptions import ProviderError
-
         raise ProviderError(
             provider_name=self._static.provider_name,
             message="Embed is not supported by Anthropic.",
@@ -126,8 +120,6 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     async def _rerank(self, request: RerankRequest) -> RerankResponse:
-        from app.core.exceptions import ProviderError
-
         raise ProviderError(
             provider_name=self._static.provider_name,
             message="Rerank is not natively supported by Anthropic.",
@@ -139,8 +131,6 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
 
     async def health_check(self) -> HealthStatus:
         """Probe Anthropic models endpoint to assess provider health."""
-        from app.schemas.responses_schema import HealthStatus
-
         t0 = time.monotonic()
         try:
             response = await self._http_client.get(
@@ -161,7 +151,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
                 provider_name=self._static.provider_name,
                 healthy=False,
                 latency_ms=latency_ms,
-                detail=str(exc),
+                detail=self._safe_health_error_detail(exc),
             )
 
     # ------------------------------------------------------------------
@@ -191,12 +181,19 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         payload: dict[str, object] = {
             "model": self._context.model_name,
             "messages": messages,
-            "max_tokens": request.max_tokens or self._context.effective_max_tokens,
+            "max_tokens": (
+                request.max_tokens
+                if request.max_tokens is not None
+                else self._context.effective_max_tokens
+            ),
         }
         if system_prompts:
             payload["system"] = "\n".join(m.content for m in system_prompts)
-        if request.temperature is not None:
-            payload["temperature"] = request.temperature
+        payload["temperature"] = (
+            request.temperature
+            if request.temperature is not None
+            else self._context.effective_temperature
+        )
         if request.top_p is not None:
             payload["top_p"] = request.top_p
         if request.stop:
@@ -208,14 +205,14 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_messages_response(data: dict[str, object]) -> ChatResponse:
+    def _parse_messages_response(data: dict[str, Any]) -> ChatResponse:
         """Parse Anthropic messages response into normalized ``ChatResponse``."""
-        from app.schemas.responses_schema import ChatResponse, Usage
-
+        # Any here is confined to this JSON-response boundary: every value
+        # is validated when the ChatResponse below is constructed.
         raw_content = data.get("content", [])
         content_blocks = raw_content if isinstance(raw_content, list) else []
         text = "".join(
-            block["text"]  # type: ignore[index]
+            block["text"]
             for block in content_blocks
             if isinstance(block, dict)
             and block.get("type") == "text"
@@ -224,9 +221,9 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         usage_raw = data.get("usage", {})
         usage = (
             Usage(
-                prompt_tokens=usage_raw.get("input_tokens", 0),  # type: ignore[union-attr]
-                completion_tokens=usage_raw.get("output_tokens", 0),  # type: ignore[union-attr]
-                total_tokens=(usage_raw.get("input_tokens", 0) + usage_raw.get("output_tokens", 0)),  # type: ignore[union-attr]
+                prompt_tokens=usage_raw.get("input_tokens", 0),
+                completion_tokens=usage_raw.get("output_tokens", 0),
+                total_tokens=(usage_raw.get("input_tokens", 0) + usage_raw.get("output_tokens", 0)),
             )
             if usage_raw
             else None
@@ -234,24 +231,37 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         return ChatResponse(
             content=text,
             role="assistant",
-            finish_reason=data.get("stop_reason"),  # type: ignore[arg-type]
+            finish_reason=data.get("stop_reason"),
             usage=usage,
-            model=data.get("model", ""),  # type: ignore[arg-type]
+            model=data.get("model", ""),
             raw_response=data,
         )
 
     @staticmethod
-    def _parse_stream_event(data: dict[str, object]) -> ChatStreamChunk:
+    def _parse_stream_event(data: dict[str, Any]) -> ChatStreamChunk:
         """Parse Anthropic stream event into unified stream chunk contract."""
-        from app.schemas.responses_schema import ChatStreamChunk
-
         event_type = data.get("type", "")
+        message = data.get("message") or {}
+        usage_raw = data.get("usage") or message.get("usage") or {}
+        usage = (
+            Usage(
+                prompt_tokens=usage_raw.get("input_tokens", 0),
+                completion_tokens=usage_raw.get("output_tokens", 0),
+                total_tokens=(
+                    usage_raw.get("input_tokens", 0)
+                    + usage_raw.get("output_tokens", 0)
+                ),
+            )
+            if usage_raw
+            else None
+        )
         if event_type == "content_block_delta":
             delta = data.get("delta", {})
             return ChatStreamChunk(
-                content=delta.get("text", "") or "",  # type: ignore[arg-type]
+                content=delta.get("text", "") or "",
                 finish_reason=None,
-                index=data.get("index", 0),  # type: ignore[arg-type]
+                index=data.get("index", 0),
+                usage=usage,
                 raw_chunk=data,
             )
         if event_type == "message_stop":
@@ -259,12 +269,13 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
                 content="",
                 finish_reason="stop",
                 index=0,
+                usage=usage,
                 raw_chunk=data,
             )
         return ChatStreamChunk(
             content="",
             finish_reason=None,
             index=0,
+            usage=usage,
             raw_chunk=data,
         )
-

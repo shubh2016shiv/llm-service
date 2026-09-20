@@ -28,9 +28,19 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
+from botocore.config import Config
+
+from app.core.exceptions import ProviderError
 from app.providers.base_provider import BaseProvider
+from app.schemas.responses_schema import (
+    ChatResponse,
+    ChatStreamChunk,
+    EmbedResponse,
+    HealthStatus,
+    Usage,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -38,15 +48,9 @@ if TYPE_CHECKING:
     import aiobreaker
     from pydantic import SecretStr
 
-    from app.inference_routing.models import ResolvedExecutionContext
+    from app.inference_routing.models import ResolvedRoute
     from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
-    from app.schemas.responses_schema import (
-        ChatResponse,
-        ChatStreamChunk,
-        EmbedResponse,
-        HealthStatus,
-        RerankResponse,
-    )
+    from app.schemas.responses_schema import RerankResponse
 
 
 class BedrockProvider(BaseProvider[object]):
@@ -64,13 +68,15 @@ class BedrockProvider(BaseProvider[object]):
 
     def __init__(
         self,
-        context: ResolvedExecutionContext,
+        context: ResolvedRoute,
         http_client: object,  # aioboto3.Session in practice; typed loosely for ABC compatibility
         circuit_breaker: aiobreaker.CircuitBreaker,
         api_key: SecretStr | None = None,  # Accepted for registry compat; Bedrock uses IAM auth
     ) -> None:
         super().__init__(context, http_client, circuit_breaker, api_key)
-        self._bedrock_session = http_client  # stored as the aioboto3 session
+        # aioboto3 ships no type stubs, so the session is typed Any here:
+        # the client(...) calls below then type-check without ignores.
+        self._bedrock_session: Any = http_client  # stored as the aioboto3 session
 
     # ------------------------------------------------------------------
     # Chat
@@ -81,9 +87,10 @@ class BedrockProvider(BaseProvider[object]):
         payload = self._build_converse_payload(request)
         t0 = time.monotonic()
         try:
-            async with self._bedrock_session.client(  # type: ignore[union-attr]
+            async with self._bedrock_session.client(
                 "bedrock-runtime",
                 region_name=self._resolve_aws_region(),
+                config=self._client_config(),
             ) as client:
                 response = await client.converse(**payload)
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -102,9 +109,10 @@ class BedrockProvider(BaseProvider[object]):
         payload = self._build_converse_stream_payload(request)
         t0 = time.monotonic()
         try:
-            async with self._bedrock_session.client(  # type: ignore[union-attr]
+            async with self._bedrock_session.client(
                 "bedrock-runtime",
                 region_name=self._resolve_aws_region(),
+                config=self._client_config(),
             ) as client:
                 stream_response = await client.converse_stream(**payload)
                 stream = stream_response.get("stream")
@@ -122,13 +130,12 @@ class BedrockProvider(BaseProvider[object]):
 
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
         """Invoke Bedrock model endpoint for embeddings and normalize output."""
-        from app.schemas.responses_schema import EmbedResponse, Usage
-
         t0 = time.monotonic()
         try:
-            async with self._bedrock_session.client(  # type: ignore[union-attr]
+            async with self._bedrock_session.client(
                 "bedrock-runtime",
                 region_name=self._resolve_aws_region(),
+                config=self._client_config(),
             ) as client:
                 # Bedrock uses InvokeModel for embeddings (pre-Converse API)
                 body = self._build_embed_body(request)
@@ -137,11 +144,11 @@ class BedrockProvider(BaseProvider[object]):
                     body=json.dumps(body),
                     contentType="application/json",
                 )
-                response_body = json.loads(response["body"].read())
+                response_body = json.loads(await response["body"].read())
             latency_ms = int((time.monotonic() - t0) * 1000)
             self._emit_structured_log("embed", latency_ms)
             return EmbedResponse(
-                embeddings=response_body.get("embedding", []),  # type: ignore[arg-type]
+                embeddings=self._extract_embeddings(response_body),
                 model=self._context.model_name,
                 usage=Usage(),
             )
@@ -153,8 +160,6 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     async def _rerank(self, request: RerankRequest) -> RerankResponse:
-        from app.core.exceptions import ProviderError
-
         raise ProviderError(
             provider_name=self._static.provider_name,
             message="Rerank is not supported by Bedrock (use Cohere via Bedrock marketplace if needed).",
@@ -166,13 +171,12 @@ class BedrockProvider(BaseProvider[object]):
 
     async def health_check(self) -> HealthStatus:
         """Use Bedrock foundation-model listing as a health/permission probe."""
-        from app.schemas.responses_schema import HealthStatus
-
         t0 = time.monotonic()
         try:
-            async with self._bedrock_session.client(  # type: ignore[union-attr]
-                "bedrock-runtime",
+            async with self._bedrock_session.client(
+                "bedrock",
                 region_name=self._resolve_aws_region(),
+                config=self._client_config(),
             ) as client:
                 # Lightweight check: just verify the client can connect
                 await client.list_foundation_models()
@@ -189,7 +193,7 @@ class BedrockProvider(BaseProvider[object]):
                 provider_name=self._static.provider_name,
                 healthy=False,
                 latency_ms=latency_ms,
-                detail=str(exc),
+                detail=self._safe_health_error_detail(exc),
             )
 
     # ------------------------------------------------------------------
@@ -202,17 +206,24 @@ class BedrockProvider(BaseProvider[object]):
             "modelId": self._context.model_name,
             "messages": self._convert_messages_to_bedrock(request),
             "inferenceConfig": {
-                "temperature": request.temperature or self._context.effective_temperature,
-                "maxTokens": request.max_tokens or self._context.effective_max_tokens,
+                "temperature": (
+                    request.temperature
+                    if request.temperature is not None
+                    else self._context.effective_temperature
+                ),
+                "maxTokens": (
+                    request.max_tokens
+                    if request.max_tokens is not None
+                    else self._context.effective_max_tokens
+                ),
             },
         }
 
     def _build_converse_stream_payload(self, request: ChatRequest) -> dict[str, object]:
         """Build Bedrock Converse stream payload (currently same base fields)."""
         payload = self._build_converse_payload(request)
-        payload["inferenceConfig"] = {
-            **(payload.get("inferenceConfig", {})),  # type: ignore[arg-type]
-        }
+        inference_config = cast("dict[str, object]", payload.get("inferenceConfig", {}))
+        payload["inferenceConfig"] = {**inference_config}
         return payload
 
     def _build_embed_body(self, request: EmbedRequest) -> dict[str, object]:
@@ -241,53 +252,60 @@ class BedrockProvider(BaseProvider[object]):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_converse_response(response: dict[str, object]) -> ChatResponse:
+    def _parse_converse_response(response: dict[str, Any]) -> ChatResponse:
         """Parse Bedrock Converse response into normalized ``ChatResponse``."""
-        from app.schemas.responses_schema import ChatResponse, Usage
-
+        # Any here is confined to this JSON-response boundary: every value
+        # is validated when the ChatResponse below is constructed.
         output = response.get("output", {})
-        message = output.get("message", {})  # type: ignore[union-attr]
-        content_blocks = message.get("content", [])  # type: ignore[union-attr]
-        text = "".join(
-            block.get("text", "")
-            for block in content_blocks  # type: ignore[union-attr]
-        )
+        message = output.get("message", {})
+        content_blocks = message.get("content", [])
+        text = "".join(block.get("text", "") for block in content_blocks)
         usage_raw = response.get("usage", {})
         usage = (
             Usage(
-                prompt_tokens=usage_raw.get("inputTokens", 0),  # type: ignore[union-attr]
-                completion_tokens=usage_raw.get("outputTokens", 0),  # type: ignore[union-attr]
-                total_tokens=usage_raw.get("totalTokens", 0),  # type: ignore[union-attr]
+                prompt_tokens=usage_raw.get("inputTokens", 0),
+                completion_tokens=usage_raw.get("outputTokens", 0),
+                total_tokens=usage_raw.get("totalTokens", 0),
             )
             if usage_raw
             else None
         )
         return ChatResponse(
             content=text,
-            role=message.get("role", "assistant"),  # type: ignore[union-attr]
-            finish_reason=response.get("stopReason"),  # type: ignore[arg-type]
+            role=message.get("role", "assistant"),
+            finish_reason=response.get("stopReason"),
             usage=usage,
-            model=response.get("modelId", ""),  # type: ignore[arg-type]
+            model=response.get("modelId", ""),
             raw_response=response,
         )
 
     @staticmethod
-    def _parse_converse_stream_event(event: dict[str, object]) -> ChatStreamChunk:
+    def _parse_converse_stream_event(event: dict[str, Any]) -> ChatStreamChunk:
         """Parse Bedrock stream event object into normalized stream chunk."""
-        from app.schemas.responses_schema import ChatStreamChunk
-
         content = ""
         if "contentBlockDelta" in event:
-            content = event["contentBlockDelta"].get("delta", {}).get("text", "") or ""  # type: ignore[index]
+            content = event["contentBlockDelta"].get("delta", {}).get("text", "") or ""
 
         finish_reason = None
         if "messageStop" in event:
-            finish_reason = event["messageStop"].get("stopReason")  # type: ignore[index]
+            finish_reason = event["messageStop"].get("stopReason")
+
+        usage_raw = event.get("metadata", {}).get("usage", {})
+        usage = (
+            Usage(
+                prompt_tokens=usage_raw.get("inputTokens", 0),
+                completion_tokens=usage_raw.get("outputTokens", 0),
+                total_tokens=usage_raw.get("totalTokens", 0),
+            )
+            if usage_raw
+            else None
+        )
 
         return ChatStreamChunk(
             content=content,
             finish_reason=finish_reason,
             index=0,
+            usage=usage,
             raw_chunk=event,
         )
 
@@ -310,3 +328,22 @@ class BedrockProvider(BaseProvider[object]):
             return value
         return "us-east-1"
 
+    def _client_config(self) -> Config:
+        """Apply the resolved timeout and disable hidden SDK retries per call."""
+        timeout_seconds = self._effective_timeout()
+        return Config(
+            connect_timeout=timeout_seconds,
+            read_timeout=timeout_seconds,
+            retries={"max_attempts": 0, "mode": "standard"},
+        )
+
+    @staticmethod
+    def _extract_embeddings(response: dict[str, object]) -> list[list[float]]:
+        """Normalize Titan's single vector and Cohere's vector collection."""
+        vectors = response.get("embeddings")
+        if isinstance(vectors, list) and all(isinstance(item, list) for item in vectors):
+            return cast("list[list[float]]", vectors)
+        vector = response.get("embedding")
+        if isinstance(vector, list):
+            return [cast("list[float]", vector)]
+        raise ValueError("Bedrock embedding response did not contain a vector.")
