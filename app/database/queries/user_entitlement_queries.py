@@ -82,6 +82,25 @@ CHECK_ENTITLEMENT_NAME_EXISTS_SQL = """
 
 # ── Create ────────────────────────────────────────────────────────────────────
 
+ENTITLEMENT_SAFE_COLUMN_NAMES: tuple[str, ...] = (
+    "entitlement_id",
+    "tenant_id",
+    "user_id",
+    "deployment_key",
+    "provider_id",
+    "model_id",
+    "entitlement_name",
+    "status",
+    "api_endpoint_url",
+    "cloud_provider",
+    "cloud_region",
+    "provider_deployment_name",
+    "extra_config",
+    "created_by_user_id",
+    "created_at",
+    "updated_at",
+)
+
 CREATE_USER_ENTITLEMENT_SQL = """
     INSERT INTO user_entitlements (
         tenant_id,

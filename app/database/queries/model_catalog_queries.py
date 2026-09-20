@@ -1,5 +1,4 @@
-"""
-Model catalog SQL query constants.
+"""Model catalog SQL query constants.
 
 Table: model_catalog
   model_id                UUID PRIMARY KEY
@@ -21,6 +20,25 @@ Table: model_catalog
 Unique index: (provider_id, model_name, COALESCE(model_version, ''))
 """
 
+MODEL_CATALOG_COLUMN_NAMES: tuple[str, ...] = (
+    "model_id",
+    "provider_id",
+    "model_name",
+    "model_version",
+    "display_name",
+    "supported_operations",
+    "context_window_tokens",
+    "max_output_tokens",
+    "default_temperature",
+    "default_top_p",
+    "pricing_metadata",
+    "model_metadata",
+    "status",
+    "created_at",
+    "updated_at",
+)
+_MODEL_CATALOG_COLUMNS = ",\n        ".join(MODEL_CATALOG_COLUMN_NAMES)
+
 # ── Existence checks ──────────────────────────────────────────────────────────
 
 CHECK_MODEL_EXISTS_BY_ID_SQL = """
@@ -40,7 +58,7 @@ CHECK_MODEL_EXISTS_BY_NAME_SQL = """
 
 # ── Create ────────────────────────────────────────────────────────────────────
 
-CREATE_MODEL_SQL = """
+CREATE_MODEL_SQL = f"""
     INSERT INTO model_catalog (
         provider_id,
         model_name,
@@ -69,26 +87,30 @@ CREATE_MODEL_SQL = """
         :model_metadata,
         :status
     )
-    RETURNING *
+    RETURNING
+        {_MODEL_CATALOG_COLUMNS}
 """
 
 # ── Point reads ───────────────────────────────────────────────────────────────
 
-GET_MODEL_BY_ID_SQL = """
-    SELECT *
+GET_MODEL_BY_ID_SQL = f"""
+    SELECT
+        {_MODEL_CATALOG_COLUMNS}
     FROM model_catalog
     WHERE model_id = :model_id
 """
 
-GET_MODEL_BY_PROVIDER_AND_ID_SQL = """
-    SELECT *
+GET_MODEL_BY_PROVIDER_AND_ID_SQL = f"""
+    SELECT
+        {_MODEL_CATALOG_COLUMNS}
     FROM model_catalog
     WHERE provider_id = :provider_id
       AND model_id = :model_id
 """
 
-GET_MODEL_BY_NAME_SQL = """
-    SELECT *
+GET_MODEL_BY_NAME_SQL = f"""
+    SELECT
+        {_MODEL_CATALOG_COLUMNS}
     FROM model_catalog
     WHERE provider_id = :provider_id
       AND model_name = :model_name
@@ -97,16 +119,18 @@ GET_MODEL_BY_NAME_SQL = """
 
 # ── List reads ────────────────────────────────────────────────────────────────
 
-LIST_MODELS_BY_PROVIDER_SQL = """
-    SELECT *
+LIST_MODELS_BY_PROVIDER_SQL = f"""
+    SELECT
+        {_MODEL_CATALOG_COLUMNS}
     FROM model_catalog
     WHERE provider_id = :provider_id
     ORDER BY model_name, model_version
     LIMIT :limit OFFSET :offset
 """
 
-LIST_ACTIVE_MODELS_BY_PROVIDER_SQL = """
-    SELECT *
+LIST_ACTIVE_MODELS_BY_PROVIDER_SQL = f"""
+    SELECT
+        {_MODEL_CATALOG_COLUMNS}
     FROM model_catalog
     WHERE provider_id = :provider_id
       AND status = 'active'
@@ -114,8 +138,9 @@ LIST_ACTIVE_MODELS_BY_PROVIDER_SQL = """
     LIMIT :limit OFFSET :offset
 """
 
-LIST_MODELS_BY_OPERATION_SQL = """
-    SELECT *
+LIST_MODELS_BY_OPERATION_SQL = f"""
+    SELECT
+        {_MODEL_CATALOG_COLUMNS}
     FROM model_catalog
     WHERE :operation = ANY(supported_operations)
       AND status = 'active'

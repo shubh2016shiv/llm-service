@@ -24,7 +24,6 @@ Design notes:
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
@@ -35,7 +34,7 @@ from app.database.queries.tenant_deployment_queries import (
     CHECK_DEPLOYMENT_KEY_EXISTS_SQL,
     CREATE_DEPLOYMENT_SQL,
     DELETE_DEPLOYMENT_BY_ID_SQL,
-    DEPLOYMENT_SAFE_COLUMNS,
+    DEPLOYMENT_SAFE_COLUMN_NAMES,
     GET_DEFAULT_DEPLOYMENT_SQL,
     GET_DEPLOYMENT_BY_ID_SQL,
     GET_DEPLOYMENT_BY_KEY_SQL,
@@ -45,42 +44,22 @@ from app.database.queries.tenant_deployment_queries import (
     build_tenant_deployment_count_query,
     build_tenant_deployment_list_query,
 )
-from app.database.session import DatabaseSessionManager
+from app.schemas.enums import TenantDeploymentStatus
 from app.schemas.management_filters import TenantDeploymentListFilters
+from app.schemas.model_constraints import validate_temperature, validate_top_p
 
 if TYPE_CHECKING:
     from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-_VALID_STATUSES: list[str] = ["active", "inactive", "maintenance"]
-_TEMPERATURE_MIN = Decimal("0.00")
-_TEMPERATURE_MAX = Decimal("2.00")
-_TOP_P_MIN = Decimal("0.000")
-_TOP_P_MAX = Decimal("1.000")
-
 
 class TenantDeploymentPersistence(BasePersistence):
     """Persistence for tenant-scoped LLM routing and capacity configuration."""
 
-    def __init__(self, database_manager: DatabaseSessionManager | None = None) -> None:
-        super().__init__(database_manager)
-
     # =========================================================================
     # VALIDATION HELPERS
     # =========================================================================
-
-    def _validate_temperature(self, value: float, param_name: str) -> None:
-        v = Decimal(str(value))
-        if v < _TEMPERATURE_MIN or v > _TEMPERATURE_MAX:
-            raise ValueError(
-                f"{param_name} must be in [{_TEMPERATURE_MIN}, {_TEMPERATURE_MAX}], got {v}"
-            )
-
-    def _validate_top_p(self, value: float, param_name: str) -> None:
-        v = Decimal(str(value))
-        if v < _TOP_P_MIN or v > _TOP_P_MAX:
-            raise ValueError(f"{param_name} must be in [{_TOP_P_MIN}, {_TOP_P_MAX}], got {v}")
 
     async def deployment_key_exists(self, tenant_id: UUID, deployment_key: str) -> bool:
         """Return True if this (tenant_id, deployment_key) is already taken."""
@@ -174,20 +153,20 @@ class TenantDeploymentPersistence(BasePersistence):
         self.validate_string_not_empty(secret_reference, "secret_reference")
         self.validate_positive_integer(token_capacity_limit, "token_capacity_limit")
         self.validate_positive_integer(token_lock_duration_seconds, "token_lock_duration_seconds")
-        self.validate_enum_value(status, _VALID_STATUSES, "status")
-        self._validate_temperature(default_temperature, "default_temperature")
-        self._validate_top_p(default_top_p, "default_top_p")
+        self.validate_enum_member(TenantDeploymentStatus, status, "status")
+        validate_temperature(default_temperature, "default_temperature")
+        validate_top_p(default_top_p, "default_top_p")
         self.validate_positive_integer(routing_priority, "routing_priority", allow_zero=True)
 
         if max_retries is not None:
             self.validate_positive_integer(max_retries, "max_retries", allow_zero=True)
         if default_max_output_tokens is not None:
             self.validate_positive_integer(default_max_output_tokens, "default_max_output_tokens")
-        if timeout_seconds is not None and timeout_seconds <= 0:
-            raise ValueError(f"timeout_seconds must be positive, got {timeout_seconds}")
+        if timeout_seconds is not None:
+            self.validate_positive_number(timeout_seconds, "timeout_seconds")
 
-        headers_json = self._validate_and_serialize_json(extra_headers, "extra_headers")
-        config_json = self._validate_and_serialize_json(extra_config, "extra_config")
+        headers_json = self.serialize_json(extra_headers, "extra_headers")
+        config_json = self.serialize_json(extra_config, "extra_config")
 
         # ── Uniqueness pre-checks ───────────────────────────────────────────
         if await self.deployment_key_exists(tenant_id, deployment_key):
@@ -395,7 +374,6 @@ class TenantDeploymentPersistence(BasePersistence):
         sql, params = build_tenant_deployment_list_query(
             str(tenant_id),
             filters,
-            DEPLOYMENT_SAFE_COLUMNS,
             limit,
             offset,
         )
@@ -497,7 +475,7 @@ class TenantDeploymentPersistence(BasePersistence):
             self.validate_string_not_empty(deployment_name, "deployment_name")
             update_fields["deployment_name"] = deployment_name
         if status is not None:
-            self.validate_enum_value(status, _VALID_STATUSES, "status")
+            self.validate_enum_member(TenantDeploymentStatus, status, "status")
             update_fields["status"] = status
         if api_endpoint_url is not None:
             self.validate_string_not_empty(api_endpoint_url, "api_endpoint_url")
@@ -520,17 +498,16 @@ class TenantDeploymentPersistence(BasePersistence):
             )
             update_fields["token_lock_duration_seconds"] = token_lock_duration_seconds
         if timeout_seconds is not None:
-            if timeout_seconds <= 0:
-                raise ValueError(f"timeout_seconds must be positive, got {timeout_seconds}")
+            self.validate_positive_number(timeout_seconds, "timeout_seconds")
             update_fields["timeout_seconds"] = timeout_seconds
         if max_retries is not None:
             self.validate_positive_integer(max_retries, "max_retries", allow_zero=True)
             update_fields["max_retries"] = max_retries
         if default_temperature is not None:
-            self._validate_temperature(default_temperature, "default_temperature")
+            validate_temperature(default_temperature, "default_temperature")
             update_fields["default_temperature"] = str(default_temperature)
         if default_top_p is not None:
-            self._validate_top_p(default_top_p, "default_top_p")
+            validate_top_p(default_top_p, "default_top_p")
             update_fields["default_top_p"] = str(default_top_p)
         if default_max_output_tokens is not None:
             self.validate_positive_integer(default_max_output_tokens, "default_max_output_tokens")
@@ -541,38 +518,19 @@ class TenantDeploymentPersistence(BasePersistence):
             self.validate_positive_integer(routing_priority, "routing_priority", allow_zero=True)
             update_fields["routing_priority"] = routing_priority
         if extra_headers is not None:
-            update_fields["extra_headers"] = self._validate_and_serialize_json(
-                extra_headers, "extra_headers"
-            )
+            update_fields["extra_headers"] = self.serialize_json(extra_headers, "extra_headers")
         if extra_config is not None:
-            update_fields["extra_config"] = self._validate_and_serialize_json(
-                extra_config, "extra_config"
-            )
+            update_fields["extra_config"] = self.serialize_json(extra_config, "extra_config")
 
         if not update_fields:
             return await self.get_deployment_by_id(deployment_id)
 
-        # Build a custom RETURNING clause that excludes secret_reference.
-        returning_cols = (
-            "deployment_id, tenant_id, provider_id, model_id, deployment_key, "
-            "deployment_name, status, api_endpoint_url, cloud_provider, cloud_region, "
-            "provider_deployment_name, token_capacity_limit, token_lock_duration_seconds, "
-            "timeout_seconds, max_retries, default_temperature, default_top_p, "
-            "default_max_output_tokens, is_default, routing_priority, extra_headers, "
-            "extra_config, created_by_user_id, created_at, updated_at"
-        )
-        set_clauses = ["updated_at = CURRENT_TIMESTAMP"]
-        params: dict[str, Any] = {"deployment_id": str(deployment_id)}
-        for field, value in update_fields.items():
-            key = f"set_{field}"
-            set_clauses.append(f"{field} = :{key}")
-            params[key] = value
-
-        sql = (
-            f"UPDATE tenant_deployments "
-            f"SET {', '.join(set_clauses)} "
-            f"WHERE deployment_id = :deployment_id "
-            f"RETURNING {returning_cols}"
+        sql, params = self.build_dynamic_update_query(
+            table_name="tenant_deployments",
+            update_fields=update_fields,
+            where_clause="deployment_id = :deployment_id",
+            where_parameters={"deployment_id": str(deployment_id)},
+            returning_columns=DEPLOYMENT_SAFE_COLUMN_NAMES,
         )
 
         try:

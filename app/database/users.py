@@ -16,9 +16,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from functools import lru_cache
-from typing import Any, ClassVar
-from uuid import UUID
+from typing import TYPE_CHECKING, Any
 
 from email_validator import EmailNotValidError, validate_email
 from sqlalchemy import text
@@ -30,16 +28,24 @@ from app.database.queries.user_queries import (
     CHECK_USERNAME_EXISTS_SQL,
     COUNT_USERS_BY_ROLE_SQL,
     COUNT_USERS_BY_STATUS_SQL,
+    COUNT_USERS_SQL,
     CREATE_USER_SQL,
     DELETE_USER_BY_EMAIL_SQL,
     DELETE_USER_BY_ID_SQL,
     GET_USER_BY_EMAIL_SQL,
     GET_USER_BY_ID_SQL,
     GET_USER_BY_USERNAME_SQL,
+    USER_SAFE_COLUMN_NAMES,
+    build_user_count_query,
+    build_user_list_query,
 )
-from app.database.session import DatabaseSessionManager
+from app.schemas.enums import UserAccountStatus
+from app.schemas.role_hierarchy import VALID_PLATFORM_ROLE_LIST
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 
 class UserPersistence(BasePersistence):
@@ -52,21 +58,13 @@ class UserPersistence(BasePersistence):
     password_hash is accepted for create but never returned from reads.
     """
 
-    # Valid values match the CHECK constraint in create_users.sql
-    VALID_PLATFORM_ROLES: ClassVar[list[str]] = ["owner", "admin", "operator", "developer"]
-    VALID_USER_STATUSES: ClassVar[list[str]] = ["active", "suspended", "inactive", "deleted"]
-
-    def __init__(self, database_manager: DatabaseSessionManager | None = None) -> None:
-        super().__init__(database_manager)
-
     # =========================================================================
     # VALIDATION HELPERS
     # =========================================================================
 
     @staticmethod
-    @lru_cache(maxsize=1024)
     def _normalize_email(email_address: str) -> str:
-        """Validate and normalise an email address (cached for hot paths).
+        """Validate and normalise an email address.
 
         Args:
             email_address: Raw email string from the caller.
@@ -86,55 +84,29 @@ class UserPersistence(BasePersistence):
             raise ValueError(f"Invalid email address: {exc}") from exc
 
     def validate_platform_role(self, platform_role: str) -> None:
-        """Raise ValueError if platform_role is not in VALID_PLATFORM_ROLES."""
-        self.validate_enum_value(platform_role, self.VALID_PLATFORM_ROLES, "platform_role")
-
-    def validate_user_status(self, user_status: str) -> None:
-        """Raise ValueError if user_status is not in VALID_USER_STATUSES."""
-        self.validate_enum_value(user_status, self.VALID_USER_STATUSES, "status")
+        """Raise ValueError if platform_role is unknown to authorization."""
+        self.validate_enum_value(platform_role, VALID_PLATFORM_ROLE_LIST, "platform_role")
 
     async def check_email_exists(self, email: str) -> bool:
         """Return True if the email address is already registered."""
-        try:
-            async with self.get_session() as session:
-                result = await session.execute(text(CHECK_USER_EMAIL_EXISTS_SQL), {"email": email})
-                return result.first() is not None
-        except Exception:
-            logger.error(
-                "UserPersistence: check_email_exists failed — email=%s", email, exc_info=True
-            )
-            raise
+        async with self.get_session() as session:
+            result = await session.execute(text(CHECK_USER_EMAIL_EXISTS_SQL), {"email": email})
+            return result.first() is not None
 
     async def check_username_exists(self, username: str) -> bool:
         """Return True if the username is already registered."""
-        try:
-            async with self.get_session() as session:
-                result = await session.execute(
-                    text(CHECK_USERNAME_EXISTS_SQL), {"username": username}
-                )
-                return result.first() is not None
-        except Exception:
-            logger.error(
-                "UserPersistence: check_username_exists failed — username=%s",
-                username,
-                exc_info=True,
-            )
-            raise
+        async with self.get_session() as session:
+            result = await session.execute(text(CHECK_USERNAME_EXISTS_SQL), {"username": username})
+            return result.first() is not None
 
     async def check_user_exists(self, user_id: UUID | str) -> bool:
         """Return True if a user with this UUID exists."""
         self.validate_uuid(user_id, "user_id")
-        try:
-            async with self.get_session() as session:
-                result = await session.execute(
-                    text(CHECK_USER_EXISTS_BY_ID_SQL), {"user_id": str(user_id)}
-                )
-                return result.first() is not None
-        except Exception:
-            logger.error(
-                "UserPersistence: check_user_exists failed — user_id=%s", user_id, exc_info=True
+        async with self.get_session() as session:
+            result = await session.execute(
+                text(CHECK_USER_EXISTS_BY_ID_SQL), {"user_id": str(user_id)}
             )
-            raise
+            return result.first() is not None
 
     # =========================================================================
     # CREATE
@@ -181,7 +153,7 @@ class UserPersistence(BasePersistence):
         self.validate_string_not_empty(last_name, "last_name")
         self.validate_string_not_empty(password_hash, "password_hash")
         self.validate_platform_role(platform_role)
-        self.validate_user_status(status)
+        self.validate_enum_member(UserAccountStatus, status, "status")
 
         if await self.check_email_exists(normalized_email):
             raise ValueError(f"Email '{normalized_email}' is already registered")
@@ -231,11 +203,6 @@ class UserPersistence(BasePersistence):
         Returns:
             Row dict (without password_hash) or None.
         """
-        if isinstance(user_id, str):
-            try:
-                user_id = UUID(user_id)
-            except ValueError as exc:
-                raise ValueError("user_id must be a valid UUID string") from exc
         self.validate_uuid(user_id, "user_id")
 
         try:
@@ -272,11 +239,7 @@ class UserPersistence(BasePersistence):
                 row = result.mappings().one_or_none()
                 return dict(row) if row else None
         except Exception:
-            logger.error(
-                "UserPersistence: get_user_by_username failed — username=%s",
-                username,
-                exc_info=True,
-            )
+            logger.error("UserPersistence: get_user_by_username failed", exc_info=True)
             raise
 
     async def get_all_users(
@@ -298,34 +261,26 @@ class UserPersistence(BasePersistence):
             List of user row dicts ordered by created_at DESC.
         """
         self.validate_pagination_parameters(limit, offset)
-        if platform_role_filter:
+        if platform_role_filter is not None:
             self.validate_platform_role(platform_role_filter)
-        if status_filter:
-            self.validate_user_status(status_filter)
+        if status_filter is not None:
+            self.validate_enum_member(UserAccountStatus, status_filter, "status_filter")
 
-        sql = (
-            "SELECT user_id, username, email, first_name, last_name, "
-            "platform_role, status, created_at, updated_at "
-            "FROM users WHERE 1=1"
+        sql, params = build_user_list_query(
+            platform_role_filter,
+            status_filter,
+            limit,
+            offset,
         )
-        params: dict[str, Any] = {}
-
-        if platform_role_filter:
-            sql += " AND platform_role = :platform_role"
-            params["platform_role"] = platform_role_filter
-        if status_filter:
-            sql += " AND status = :status"
-            params["status"] = status_filter
-
-        sql += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
-        params["limit"] = limit
-        params["offset"] = offset
 
         try:
             async with self.get_session() as session:
                 result = await session.execute(text(sql), params)
                 rows = result.mappings().all()
-                logger.debug("UserPersistence: get_all_users returned %d rows", len(rows))
+                logger.debug(
+                    "User list query completed",
+                    extra={"repository": self._service_name, "row_count": len(rows)},
+                )
                 return [dict(row) for row in rows]
         except Exception:
             logger.error("UserPersistence: get_all_users failed", exc_info=True)
@@ -333,7 +288,7 @@ class UserPersistence(BasePersistence):
 
     async def count_users_by_status(self, user_status: str) -> int:
         """Return the number of users with the given status."""
-        self.validate_user_status(user_status)
+        self.validate_enum_member(UserAccountStatus, user_status, "status")
         try:
             async with self.get_session() as session:
                 result = await session.execute(
@@ -352,7 +307,7 @@ class UserPersistence(BasePersistence):
         """Return the total number of users."""
         try:
             async with self.get_session() as session:
-                result = await session.execute(text("SELECT COUNT(*) FROM users"))
+                result = await session.execute(text(COUNT_USERS_SQL))
                 return result.scalar_one_or_none() or 0
         except Exception:
             logger.error("UserPersistence: count_users failed", exc_info=True)
@@ -385,20 +340,12 @@ class UserPersistence(BasePersistence):
         Mirrors the WHERE clause of get_all_users so that list and count
         always agree on the same predicate.
         """
-        if platform_role_filter:
+        if platform_role_filter is not None:
             self.validate_platform_role(platform_role_filter)
-        if status_filter:
-            self.validate_user_status(status_filter)
+        if status_filter is not None:
+            self.validate_enum_member(UserAccountStatus, status_filter, "status_filter")
 
-        sql = "SELECT COUNT(*) FROM users WHERE 1=1"
-        params: dict[str, Any] = {}
-
-        if platform_role_filter:
-            sql += " AND platform_role = :platform_role"
-            params["platform_role"] = platform_role_filter
-        if status_filter:
-            sql += " AND status = :status"
-            params["status"] = status_filter
+        sql, params = build_user_count_query(platform_role_filter, status_filter)
 
         try:
             async with self.get_session() as session:
@@ -448,7 +395,7 @@ class UserPersistence(BasePersistence):
         if platform_role is not None:
             self.validate_platform_role(platform_role)
         if status is not None:
-            self.validate_user_status(status)
+            self.validate_enum_member(UserAccountStatus, status, "status")
 
         update_fields: dict[str, Any] = {}
         if email_address is not None:
@@ -469,6 +416,7 @@ class UserPersistence(BasePersistence):
             update_fields=update_fields,
             where_clause="user_id = :user_id",
             where_parameters={"user_id": str(user_id)},
+            returning_columns=USER_SAFE_COLUMN_NAMES,
         )
 
         try:
@@ -540,10 +488,11 @@ class UserPersistence(BasePersistence):
                 result = await session.execute(
                     text(DELETE_USER_BY_EMAIL_SQL), {"email": normalized}
                 )
-                deleted = getattr(result, "rowcount", 0) > 0
-                if deleted:
-                    self.log_operation("DELETE", normalized)
-                return bool(deleted)
+                deleted_user_id = result.scalar_one_or_none()
+                if deleted_user_id is None:
+                    return False
+                self.log_operation("DELETE", deleted_user_id)
+                return True
         except Exception:
             logger.error("UserPersistence: delete_user_by_email failed", exc_info=True)
             raise

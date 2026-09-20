@@ -16,9 +16,19 @@ Unique constraint: (tenant_id, user_id)
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.schemas.management_filters import TenantMembershipListFilters
+
+TENANT_MEMBERSHIP_COLUMN_NAMES: tuple[str, ...] = (
+    "membership_id",
+    "tenant_id",
+    "user_id",
+    "tenant_role",
+    "status",
+    "created_by_user_id",
+    "created_at",
+    "updated_at",
+)
+_TENANT_MEMBERSHIP_COLUMNS = ",\n        ".join(TENANT_MEMBERSHIP_COLUMN_NAMES)
 
 # ── Existence checks ──────────────────────────────────────────────────────────
 
@@ -37,7 +47,7 @@ CHECK_MEMBERSHIP_EXISTS_BY_ID_SQL = """
 
 # ── Create ────────────────────────────────────────────────────────────────────
 
-CREATE_MEMBERSHIP_SQL = """
+CREATE_MEMBERSHIP_SQL = f"""
     INSERT INTO tenant_memberships (
         tenant_id,
         user_id,
@@ -52,19 +62,22 @@ CREATE_MEMBERSHIP_SQL = """
         :status,
         :created_by_user_id
     )
-    RETURNING *
+    RETURNING
+        {_TENANT_MEMBERSHIP_COLUMNS}
 """
 
 # ── Point reads ───────────────────────────────────────────────────────────────
 
-GET_MEMBERSHIP_BY_ID_SQL = """
-    SELECT *
+GET_MEMBERSHIP_BY_ID_SQL = f"""
+    SELECT
+        {_TENANT_MEMBERSHIP_COLUMNS}
     FROM tenant_memberships
     WHERE membership_id = :membership_id
 """
 
-GET_MEMBERSHIP_BY_TENANT_AND_USER_SQL = """
-    SELECT *
+GET_MEMBERSHIP_BY_TENANT_AND_USER_SQL = f"""
+    SELECT
+        {_TENANT_MEMBERSHIP_COLUMNS}
     FROM tenant_memberships
     WHERE tenant_id = :tenant_id
       AND user_id = :user_id
@@ -72,24 +85,27 @@ GET_MEMBERSHIP_BY_TENANT_AND_USER_SQL = """
 
 # ── List reads ────────────────────────────────────────────────────────────────
 
-LIST_MEMBERSHIPS_BY_TENANT_SQL = """
-    SELECT *
+LIST_MEMBERSHIPS_BY_TENANT_SQL = f"""
+    SELECT
+        {_TENANT_MEMBERSHIP_COLUMNS}
     FROM tenant_memberships
     WHERE tenant_id = :tenant_id
     ORDER BY created_at DESC
     LIMIT :limit OFFSET :offset
 """
 
-LIST_MEMBERSHIPS_BY_USER_SQL = """
-    SELECT *
+LIST_MEMBERSHIPS_BY_USER_SQL = f"""
+    SELECT
+        {_TENANT_MEMBERSHIP_COLUMNS}
     FROM tenant_memberships
     WHERE user_id = :user_id
     ORDER BY created_at DESC
     LIMIT :limit OFFSET :offset
 """
 
-LIST_ACTIVE_MEMBERSHIPS_BY_TENANT_SQL = """
-    SELECT *
+LIST_ACTIVE_MEMBERSHIPS_BY_TENANT_SQL = f"""
+    SELECT
+        {_TENANT_MEMBERSHIP_COLUMNS}
     FROM tenant_memberships
     WHERE tenant_id = :tenant_id
       AND status = 'active'
@@ -97,8 +113,9 @@ LIST_ACTIVE_MEMBERSHIPS_BY_TENANT_SQL = """
     LIMIT :limit OFFSET :offset
 """
 
-LIST_MEMBERSHIPS_BY_TENANT_AND_ROLE_SQL = """
-    SELECT *
+LIST_MEMBERSHIPS_BY_TENANT_AND_ROLE_SQL = f"""
+    SELECT
+        {_TENANT_MEMBERSHIP_COLUMNS}
     FROM tenant_memberships
     WHERE tenant_id = :tenant_id
       AND tenant_role = :tenant_role
@@ -127,33 +144,34 @@ def build_tenant_membership_list_query(
     filters: TenantMembershipListFilters,
     limit: int,
     offset: int,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, object]]:
     """Build the tenant membership list query for the supplied filters."""
     where_clauses: list[str] = ["tenant_id = :tenant_id"]
-    params: dict[str, Any] = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
+    params: dict[str, object] = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
     if filters.tenant_role_filter is not None:
         where_clauses.append("tenant_role = :tenant_role")
         params["tenant_role"] = filters.tenant_role_filter
     if filters.active_only:
         where_clauses.append("status = 'active'")
 
-    sql = """
-        SELECT *
+    sql = f"""
+        SELECT
+            {_TENANT_MEMBERSHIP_COLUMNS}
         FROM tenant_memberships
-        WHERE {where_clause}
+        WHERE {" AND ".join(where_clauses)}
         ORDER BY created_at DESC
         LIMIT :limit OFFSET :offset
-    """.format(where_clause=" AND ".join(where_clauses))
+    """
     return sql, params
 
 
 def build_tenant_membership_count_query(
     tenant_id: str,
     filters: TenantMembershipListFilters,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, object]]:
     """Build the tenant membership count query for the supplied filters."""
     where_clauses: list[str] = ["tenant_id = :tenant_id"]
-    params: dict[str, Any] = {"tenant_id": tenant_id}
+    params: dict[str, object] = {"tenant_id": tenant_id}
     if filters.tenant_role_filter is not None:
         where_clauses.append("tenant_role = :tenant_role")
         params["tenant_role"] = filters.tenant_role_filter
@@ -162,6 +180,7 @@ def build_tenant_membership_count_query(
 
     sql = "SELECT COUNT(*) FROM tenant_memberships WHERE " + " AND ".join(where_clauses)
     return sql, params
+
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 

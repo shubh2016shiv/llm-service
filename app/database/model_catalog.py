@@ -18,7 +18,6 @@ should use LIST_ACTIVE_MODELS_BY_PROVIDER_SQL which returns all versions.
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
@@ -37,21 +36,15 @@ from app.database.queries.model_catalog_queries import (
     LIST_ACTIVE_MODELS_BY_PROVIDER_SQL,
     LIST_MODELS_BY_OPERATION_SQL,
     LIST_MODELS_BY_PROVIDER_SQL,
+    MODEL_CATALOG_COLUMN_NAMES,
 )
-from app.database.session import DatabaseSessionManager
+from app.schemas.enums import ModelLifecycleStatus
+from app.schemas.model_constraints import validate_temperature, validate_top_p
 
 if TYPE_CHECKING:
     from uuid import UUID
 
 logger = logging.getLogger(__name__)
-
-_VALID_MODEL_STATUSES: list[str] = ["active", "deprecated", "retired"]
-
-# Numeric constraints matching the DB CHECK constraints
-_TEMPERATURE_MIN = Decimal("0.00")
-_TEMPERATURE_MAX = Decimal("2.00")
-_TOP_P_MIN = Decimal("0.000")
-_TOP_P_MAX = Decimal("1.000")
 
 
 class ModelCatalogPersistence(BasePersistence):
@@ -62,26 +55,9 @@ class ModelCatalogPersistence(BasePersistence):
     FK constraint violation.
     """
 
-    def __init__(self, database_manager: DatabaseSessionManager | None = None) -> None:
-        super().__init__(database_manager)
-
     # =========================================================================
     # VALIDATION HELPERS
     # =========================================================================
-
-    def _validate_temperature(self, temperature: float | Decimal, param_name: str) -> None:
-        val = Decimal(str(temperature))
-        if val < _TEMPERATURE_MIN or val > _TEMPERATURE_MAX:
-            raise ValueError(
-                f"{param_name} must be between {_TEMPERATURE_MIN} and {_TEMPERATURE_MAX}, got {val}"
-            )
-
-    def _validate_top_p(self, top_p: float | Decimal, param_name: str) -> None:
-        val = Decimal(str(top_p))
-        if val < _TOP_P_MIN or val > _TOP_P_MAX:
-            raise ValueError(
-                f"{param_name} must be between {_TOP_P_MIN} and {_TOP_P_MAX}, got {val}"
-            )
 
     async def model_exists_by_id(self, provider_id: UUID, model_id: UUID) -> bool:
         """Return True if (provider_id, model_id) exists in model_catalog."""
@@ -150,9 +126,9 @@ class ModelCatalogPersistence(BasePersistence):
         """
         self.validate_uuid(provider_id, "provider_id")
         self.validate_string_not_empty(model_name, "model_name")
-        self.validate_enum_value(status, _VALID_MODEL_STATUSES, "status")
-        self._validate_temperature(default_temperature, "default_temperature")
-        self._validate_top_p(default_top_p, "default_top_p")
+        self.validate_enum_member(ModelLifecycleStatus, status, "status")
+        validate_temperature(default_temperature, "default_temperature")
+        validate_top_p(default_top_p, "default_top_p")
 
         if not supported_operations:
             raise ValueError("supported_operations must contain at least one operation")
@@ -161,8 +137,8 @@ class ModelCatalogPersistence(BasePersistence):
         if max_output_tokens is not None:
             self.validate_positive_integer(max_output_tokens, "max_output_tokens")
 
-        pricing_json = self._validate_and_serialize_json(pricing_metadata, "pricing_metadata")
-        model_meta_json = self._validate_and_serialize_json(model_metadata, "model_metadata")
+        pricing_json = self.serialize_json(pricing_metadata, "pricing_metadata")
+        model_meta_json = self.serialize_json(model_metadata, "model_metadata")
 
         if await self.model_exists_by_name(provider_id, model_name, model_version):
             version_label = f"version '{model_version}'" if model_version else "no version"
@@ -359,7 +335,7 @@ class ModelCatalogPersistence(BasePersistence):
         if display_name is not None:
             update_fields["display_name"] = display_name
         if status is not None:
-            self.validate_enum_value(status, _VALID_MODEL_STATUSES, "status")
+            self.validate_enum_member(ModelLifecycleStatus, status, "status")
             update_fields["status"] = status
         if context_window_tokens is not None:
             self.validate_positive_integer(context_window_tokens, "context_window_tokens")
@@ -368,19 +344,17 @@ class ModelCatalogPersistence(BasePersistence):
             self.validate_positive_integer(max_output_tokens, "max_output_tokens")
             update_fields["max_output_tokens"] = max_output_tokens
         if default_temperature is not None:
-            self._validate_temperature(default_temperature, "default_temperature")
+            validate_temperature(default_temperature, "default_temperature")
             update_fields["default_temperature"] = str(default_temperature)
         if default_top_p is not None:
-            self._validate_top_p(default_top_p, "default_top_p")
+            validate_top_p(default_top_p, "default_top_p")
             update_fields["default_top_p"] = str(default_top_p)
         if pricing_metadata is not None:
-            update_fields["pricing_metadata"] = self._validate_and_serialize_json(
+            update_fields["pricing_metadata"] = self.serialize_json(
                 pricing_metadata, "pricing_metadata"
             )
         if model_metadata is not None:
-            update_fields["model_metadata"] = self._validate_and_serialize_json(
-                model_metadata, "model_metadata"
-            )
+            update_fields["model_metadata"] = self.serialize_json(model_metadata, "model_metadata")
 
         if not update_fields:
             return await self.get_model_by_provider_and_id(provider_id, model_id)
@@ -393,6 +367,7 @@ class ModelCatalogPersistence(BasePersistence):
                 "provider_id": str(provider_id),
                 "model_id": str(model_id),
             },
+            returning_columns=MODEL_CATALOG_COLUMN_NAMES,
         )
 
         try:

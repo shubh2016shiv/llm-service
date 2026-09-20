@@ -35,8 +35,6 @@ Partial unique index: (tenant_id, provider_id) WHERE is_default = TRUE
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.schemas.management_filters import TenantDeploymentListFilters
 
 # ── Existence checks ──────────────────────────────────────────────────────────
@@ -147,35 +145,34 @@ CREATE_DEPLOYMENT_SQL = """
 
 # Excludes secret_reference from the standard projection. A dedicated SQL
 # constant is provided for the routing layer that legitimately needs it.
-_DEPLOYMENT_SAFE_COLUMNS = """
-    deployment_id,
-    tenant_id,
-    provider_id,
-    model_id,
-    deployment_key,
-    deployment_name,
-    status,
-    api_endpoint_url,
-    cloud_provider,
-    cloud_region,
-    provider_deployment_name,
-    token_capacity_limit,
-    token_lock_duration_seconds,
-    timeout_seconds,
-    max_retries,
-    default_temperature,
-    default_top_p,
-    default_max_output_tokens,
-    is_default,
-    routing_priority,
-    extra_headers,
-    extra_config,
-    created_by_user_id,
-    created_at,
-    updated_at
-"""
-
-DEPLOYMENT_SAFE_COLUMNS = _DEPLOYMENT_SAFE_COLUMNS
+DEPLOYMENT_SAFE_COLUMN_NAMES: tuple[str, ...] = (
+    "deployment_id",
+    "tenant_id",
+    "provider_id",
+    "model_id",
+    "deployment_key",
+    "deployment_name",
+    "status",
+    "api_endpoint_url",
+    "cloud_provider",
+    "cloud_region",
+    "provider_deployment_name",
+    "token_capacity_limit",
+    "token_lock_duration_seconds",
+    "timeout_seconds",
+    "max_retries",
+    "default_temperature",
+    "default_top_p",
+    "default_max_output_tokens",
+    "is_default",
+    "routing_priority",
+    "extra_headers",
+    "extra_config",
+    "created_by_user_id",
+    "created_at",
+    "updated_at",
+)
+_DEPLOYMENT_SAFE_COLUMNS = ",\n    ".join(DEPLOYMENT_SAFE_COLUMN_NAMES)
 
 GET_DEPLOYMENT_BY_ID_SQL = f"""
     SELECT {_DEPLOYMENT_SAFE_COLUMNS}
@@ -288,13 +285,12 @@ COUNT_ACTIVE_DEPLOYMENTS_BY_TENANT_SQL = """
 def build_tenant_deployment_list_query(
     tenant_id: str,
     filters: TenantDeploymentListFilters,
-    safe_columns: str,
     limit: int,
     offset: int,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, object]]:
     """Build the tenant deployment list query for the supplied filters."""
     where_clauses: list[str] = ["tenant_id = :tenant_id"]
-    params: dict[str, Any] = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
+    params: dict[str, object] = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
     if filters.provider_id is not None:
         where_clauses.append("provider_id = :provider_id")
         params["provider_id"] = str(filters.provider_id)
@@ -302,9 +298,9 @@ def build_tenant_deployment_list_query(
         where_clauses.append("status = 'active'")
 
     sql = f"""
-        SELECT {safe_columns}
+        SELECT {_DEPLOYMENT_SAFE_COLUMNS}
         FROM tenant_deployments
-        WHERE {' AND '.join(where_clauses)}
+        WHERE {" AND ".join(where_clauses)}
         ORDER BY routing_priority DESC, deployment_name
         LIMIT :limit OFFSET :offset
     """
@@ -314,10 +310,10 @@ def build_tenant_deployment_list_query(
 def build_tenant_deployment_count_query(
     tenant_id: str,
     filters: TenantDeploymentListFilters,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, object]]:
     """Build the tenant deployment count query for the supplied filters."""
     where_clauses: list[str] = ["tenant_id = :tenant_id"]
-    params: dict[str, Any] = {"tenant_id": tenant_id}
+    params: dict[str, object] = {"tenant_id": tenant_id}
     if filters.provider_id is not None:
         where_clauses.append("provider_id = :provider_id")
         params["provider_id"] = str(filters.provider_id)
@@ -326,6 +322,7 @@ def build_tenant_deployment_count_query(
 
     sql = "SELECT COUNT(*) FROM tenant_deployments WHERE " + " AND ".join(where_clauses)
     return sql, params
+
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 

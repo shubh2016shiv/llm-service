@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
@@ -46,6 +46,7 @@ from app.database.queries.user_entitlement_queries import (
     COUNT_USER_ENTITLEMENTS_SQL,
     CREATE_USER_ENTITLEMENT_SQL,
     DELETE_ENTITLEMENT_BY_ID_SQL,
+    ENTITLEMENT_SAFE_COLUMN_NAMES,
     GET_ACTIVE_ENTITLEMENT_FOR_ROUTE_SQL,
     GET_ENTITLEMENT_BY_ID_SQL,
     GET_ENTITLEMENT_SECRET_REFERENCE_SQL,
@@ -56,7 +57,7 @@ from app.database.queries.user_entitlement_queries import (
     LIST_USER_ENTITLEMENTS_SQL,
     REVOKE_USER_ENTITLEMENTS_SQL,
 )
-from app.database.session import DatabaseSessionManager
+from app.schemas.enums import UserEntitlementStatus
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -75,11 +76,6 @@ class UserEntitlementPersistence(BasePersistence):
     get_entitlement_secret_reference() explicitly, making accidental exposure
     an explicit code decision rather than a default behaviour.
     """
-
-    VALID_ENTITLEMENT_STATUSES: ClassVar[list[str]] = ["active", "inactive", "revoked"]
-
-    def __init__(self, database_manager: DatabaseSessionManager | None = None) -> None:
-        super().__init__(database_manager)
 
     # =========================================================================
     # PRE-FLIGHT VALIDATION HELPERS
@@ -216,9 +212,9 @@ class UserEntitlementPersistence(BasePersistence):
         self.validate_string_not_empty(entitlement_name, "entitlement_name")
         self.validate_string_not_empty(api_endpoint_url, "api_endpoint_url")
         self.validate_string_not_empty(secret_reference, "secret_reference")
-        self.validate_enum_value(status, self.VALID_ENTITLEMENT_STATUSES, "status")
+        self.validate_enum_member(UserEntitlementStatus, status, "status")
 
-        extra_config_json = self._validate_and_serialize_json(extra_config, "extra_config")
+        extra_config_json = self.serialize_json(extra_config, "extra_config")
 
         # ── Pre-flight database checks ──────────────────────────────────────
         if not await self._tenant_exists(tenant_id):
@@ -585,7 +581,7 @@ class UserEntitlementPersistence(BasePersistence):
         """
         self.validate_uuid(entitlement_id, "entitlement_id")
         if status is not None:
-            self.validate_enum_value(status, self.VALID_ENTITLEMENT_STATUSES, "status")
+            self.validate_enum_member(UserEntitlementStatus, status, "status")
         if api_endpoint_url is not None:
             self.validate_string_not_empty(api_endpoint_url, "api_endpoint_url")
         if secret_reference is not None:
@@ -605,9 +601,7 @@ class UserEntitlementPersistence(BasePersistence):
         if provider_deployment_name is not None:
             update_fields["provider_deployment_name"] = provider_deployment_name
         if extra_config is not None:
-            update_fields["extra_config"] = self._validate_and_serialize_json(
-                extra_config, "extra_config"
-            )
+            update_fields["extra_config"] = self.serialize_json(extra_config, "extra_config")
 
         if not update_fields:
             logger.warning(
@@ -616,25 +610,12 @@ class UserEntitlementPersistence(BasePersistence):
             )
             return await self.get_entitlement_by_id(entitlement_id)
 
-        # Build a custom RETURNING clause that excludes secret_reference.
-        returning_cols = (
-            "entitlement_id, tenant_id, user_id, deployment_key, "
-            "provider_id, model_id, entitlement_name, status, api_endpoint_url, "
-            "cloud_provider, cloud_region, provider_deployment_name, extra_config, "
-            "created_by_user_id, created_at, updated_at"
-        )
-        set_clauses = ["updated_at = CURRENT_TIMESTAMP"]
-        params: dict[str, Any] = {"entitlement_id": str(entitlement_id)}
-        for field, value in update_fields.items():
-            key = f"set_{field}"
-            set_clauses.append(f"{field} = :{key}")
-            params[key] = value
-
-        sql = (
-            f"UPDATE user_entitlements "
-            f"SET {', '.join(set_clauses)} "
-            f"WHERE entitlement_id = :entitlement_id "
-            f"RETURNING {returning_cols}"
+        sql, params = self.build_dynamic_update_query(
+            table_name="user_entitlements",
+            update_fields=update_fields,
+            where_clause="entitlement_id = :entitlement_id",
+            where_parameters={"entitlement_id": str(entitlement_id)},
+            returning_columns=ENTITLEMENT_SAFE_COLUMN_NAMES,
         )
 
         try:

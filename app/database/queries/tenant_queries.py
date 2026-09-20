@@ -17,9 +17,22 @@ Table: tenants
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.schemas.management_filters import TenantListFilters
+
+TENANT_COLUMN_NAMES: tuple[str, ...] = (
+    "tenant_id",
+    "tenant_name",
+    "tenant_slug",
+    "status",
+    "tier",
+    "rate_limit_requests_per_minute",
+    "rate_limit_tokens_per_minute",
+    "rate_limit_concurrent_requests",
+    "allowed_provider_names",
+    "created_at",
+    "updated_at",
+)
+_TENANT_COLUMNS = ",\n        ".join(TENANT_COLUMN_NAMES)
 
 # ── Existence checks ──────────────────────────────────────────────────────────
 
@@ -37,7 +50,7 @@ CHECK_TENANT_EXISTS_BY_SLUG_SQL = """
 
 # ── Create ────────────────────────────────────────────────────────────────────
 
-CREATE_TENANT_SQL = """
+CREATE_TENANT_SQL = f"""
     INSERT INTO tenants (
         tenant_name,
         tenant_slug,
@@ -58,13 +71,15 @@ CREATE_TENANT_SQL = """
         :rate_limit_concurrent_requests,
         :allowed_provider_names
     )
-    RETURNING *
+    RETURNING
+        {_TENANT_COLUMNS}
 """
 
 # ── Point reads ───────────────────────────────────────────────────────────────
 
-GET_TENANT_BY_ID_SQL = """
-    SELECT *
+GET_TENANT_BY_ID_SQL = f"""
+    SELECT
+        {_TENANT_COLUMNS}
     FROM tenants
     WHERE tenant_id = :tenant_id
 """
@@ -87,31 +102,35 @@ GET_TENANT_FOR_ROUTING_BY_ID_SQL = """
     WHERE tenant_id = :tenant_id
 """
 
-GET_TENANT_BY_SLUG_SQL = """
-    SELECT *
+GET_TENANT_BY_SLUG_SQL = f"""
+    SELECT
+        {_TENANT_COLUMNS}
     FROM tenants
     WHERE tenant_slug = :tenant_slug
 """
 
 # ── List reads ────────────────────────────────────────────────────────────────
 
-LIST_TENANTS_SQL = """
-    SELECT *
+LIST_TENANTS_SQL = f"""
+    SELECT
+        {_TENANT_COLUMNS}
     FROM tenants
     ORDER BY tenant_name
     LIMIT :limit OFFSET :offset
 """
 
-LIST_TENANTS_BY_STATUS_SQL = """
-    SELECT *
+LIST_TENANTS_BY_STATUS_SQL = f"""
+    SELECT
+        {_TENANT_COLUMNS}
     FROM tenants
     WHERE status = :status
     ORDER BY tenant_name
     LIMIT :limit OFFSET :offset
 """
 
-LIST_TENANTS_BY_TIER_SQL = """
-    SELECT *
+LIST_TENANTS_BY_TIER_SQL = f"""
+    SELECT
+        {_TENANT_COLUMNS}
     FROM tenants
     WHERE tier = :tier
     ORDER BY tenant_name
@@ -137,10 +156,10 @@ def build_tenant_list_query(
     filters: TenantListFilters,
     limit: int,
     offset: int,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[str, object]]:
     """Build the tenant list query for the supplied filters."""
     where_clauses: list[str] = []
-    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    params: dict[str, object] = {"limit": limit, "offset": offset}
     if filters.status_filter is not None:
         where_clauses.append("status = :status")
         params["status"] = filters.status_filter
@@ -148,8 +167,9 @@ def build_tenant_list_query(
         where_clauses.append("tier = :tier")
         params["tier"] = filters.tier_filter
 
-    sql = """
-        SELECT *
+    sql = f"""
+        SELECT
+            {_TENANT_COLUMNS}
         FROM tenants
     """
     if where_clauses:
@@ -158,10 +178,10 @@ def build_tenant_list_query(
     return sql, params
 
 
-def build_tenant_count_query(filters: TenantListFilters) -> tuple[str, dict[str, Any]]:
+def build_tenant_count_query(filters: TenantListFilters) -> tuple[str, dict[str, object]]:
     """Build the tenant count query for the supplied filters."""
     where_clauses: list[str] = []
-    params: dict[str, Any] = {}
+    params: dict[str, object] = {}
     if filters.status_filter is not None:
         where_clauses.append("status = :status")
         params["status"] = filters.status_filter
@@ -173,6 +193,7 @@ def build_tenant_count_query(filters: TenantListFilters) -> tuple[str, dict[str,
     if where_clauses:
         sql = f"{sql} WHERE {' AND '.join(where_clauses)}"
     return sql, params
+
 
 # ── Delete ────────────────────────────────────────────────────────────────────
 

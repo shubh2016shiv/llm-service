@@ -30,16 +30,14 @@ from app.database.queries.provider_catalog_queries import (
     GET_PROVIDER_BY_NAME_SQL,
     LIST_ACTIVE_PROVIDERS_SQL,
     LIST_ALL_PROVIDERS_SQL,
+    PROVIDER_CATALOG_COLUMN_NAMES,
 )
-from app.database.session import DatabaseSessionManager
+from app.schemas.enums import ProviderCatalogAuthMode, ProviderCatalogType
 
 if TYPE_CHECKING:
     from uuid import UUID
 
 logger = logging.getLogger(__name__)
-
-_VALID_PROVIDER_TYPES: list[str] = ["direct_api", "cloud_api", "self_hosted", "gateway"]
-_VALID_AUTH_MODES: list[str] = ["bearer_token", "api_key_header", "aws_sigv4", "oauth", "custom"]
 
 
 class ProviderCatalogPersistence(BasePersistence):
@@ -48,13 +46,6 @@ class ProviderCatalogPersistence(BasePersistence):
     provider_name must match the regex '^[a-z][a-z0-9_]*$' (enforced by DB).
     supported_operations must be non-empty (enforced by DB).
     """
-
-    def __init__(self, database_manager: DatabaseSessionManager | None = None) -> None:
-        super().__init__(database_manager)
-
-    # =========================================================================
-    # VALIDATION HELPERS
-    # =========================================================================
 
     async def provider_name_exists(self, provider_name: str) -> bool:
         """Return True if a provider with this name is already registered."""
@@ -109,13 +100,13 @@ class ProviderCatalogPersistence(BasePersistence):
         """
         self.validate_string_not_empty(provider_name, "provider_name")
         self.validate_string_not_empty(display_name, "display_name")
-        self.validate_enum_value(provider_type, _VALID_PROVIDER_TYPES, "provider_type")
-        self.validate_enum_value(auth_mode, _VALID_AUTH_MODES, "auth_mode")
+        self.validate_enum_member(ProviderCatalogType, provider_type, "provider_type")
+        self.validate_enum_member(ProviderCatalogAuthMode, auth_mode, "auth_mode")
 
         if not supported_operations:
             raise ValueError("supported_operations must contain at least one operation")
 
-        metadata_json = self._validate_and_serialize_json(provider_metadata, "provider_metadata")
+        metadata_json = self.serialize_json(provider_metadata, "provider_metadata")
 
         if await self.provider_name_exists(provider_name):
             raise ValueError(f"Provider '{provider_name}' is already registered")
@@ -273,7 +264,7 @@ class ProviderCatalogPersistence(BasePersistence):
                 raise ValueError("supported_operations must contain at least one operation")
             update_fields["supported_operations"] = supported_operations
         if provider_metadata is not None:
-            update_fields["provider_metadata"] = self._validate_and_serialize_json(
+            update_fields["provider_metadata"] = self.serialize_json(
                 provider_metadata, "provider_metadata"
             )
 
@@ -285,6 +276,7 @@ class ProviderCatalogPersistence(BasePersistence):
             update_fields=update_fields,
             where_clause="provider_id = :provider_id",
             where_parameters={"provider_id": str(provider_id)},
+            returning_columns=PROVIDER_CATALOG_COLUMN_NAMES,
         )
 
         try:

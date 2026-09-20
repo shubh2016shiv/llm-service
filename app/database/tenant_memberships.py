@@ -29,30 +29,22 @@ from app.database.queries.tenant_membership_queries import (
     GET_MEMBERSHIP_BY_ID_SQL,
     GET_MEMBERSHIP_BY_TENANT_AND_USER_SQL,
     LIST_MEMBERSHIPS_BY_USER_SQL,
+    TENANT_MEMBERSHIP_COLUMN_NAMES,
     build_tenant_membership_count_query,
     build_tenant_membership_list_query,
 )
-from app.database.session import DatabaseSessionManager
+from app.schemas.enums import TenantMembershipStatus
 from app.schemas.management_filters import TenantMembershipListFilters
+from app.schemas.role_hierarchy import VALID_TENANT_ROLE_LIST
 
 if TYPE_CHECKING:
     from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-_VALID_TENANT_ROLES: list[str] = ["owner", "admin", "developer", "viewer", "operator"]
-_VALID_STATUSES: list[str] = ["active", "suspended", "inactive"]
-
 
 class TenantMembershipPersistence(BasePersistence):
     """Persistence for user-to-tenant role assignments."""
-
-    def __init__(self, database_manager: DatabaseSessionManager | None = None) -> None:
-        super().__init__(database_manager)
-
-    # =========================================================================
-    # VALIDATION HELPERS
-    # =========================================================================
 
     async def membership_exists(self, tenant_id: UUID, user_id: UUID) -> bool:
         """Return True if a membership already exists for this (tenant, user) pair."""
@@ -93,8 +85,8 @@ class TenantMembershipPersistence(BasePersistence):
         self.validate_uuid(tenant_id, "tenant_id")
         self.validate_uuid(user_id, "user_id")
         self.validate_uuid(created_by_user_id, "created_by_user_id")
-        self.validate_enum_value(tenant_role, _VALID_TENANT_ROLES, "tenant_role")
-        self.validate_enum_value(status, _VALID_STATUSES, "status")
+        self.validate_enum_value(tenant_role, VALID_TENANT_ROLE_LIST, "tenant_role")
+        self.validate_enum_member(TenantMembershipStatus, status, "status")
 
         if await self.membership_exists(tenant_id, user_id):
             raise ValueError(
@@ -193,10 +185,10 @@ class TenantMembershipPersistence(BasePersistence):
         """Return memberships for a tenant, with optional role and status filters."""
         self.validate_uuid(tenant_id, "tenant_id")
         self.validate_pagination_parameters(limit, offset)
-        if filters.tenant_role_filter:
+        if filters.tenant_role_filter is not None:
             self.validate_enum_value(
                 filters.tenant_role_filter,
-                _VALID_TENANT_ROLES,
+                VALID_TENANT_ROLE_LIST,
                 "tenant_role_filter",
             )
         sql, params = build_tenant_membership_list_query(str(tenant_id), filters, limit, offset)
@@ -241,10 +233,10 @@ class TenantMembershipPersistence(BasePersistence):
     ) -> int:
         """Return member count for a tenant."""
         self.validate_uuid(tenant_id, "tenant_id")
-        if filters.tenant_role_filter:
+        if filters.tenant_role_filter is not None:
             self.validate_enum_value(
                 filters.tenant_role_filter,
-                _VALID_TENANT_ROLES,
+                VALID_TENANT_ROLE_LIST,
                 "tenant_role_filter",
             )
         sql, params = build_tenant_membership_count_query(str(tenant_id), filters)
@@ -284,10 +276,10 @@ class TenantMembershipPersistence(BasePersistence):
 
         update_fields: dict[str, Any] = {}
         if tenant_role is not None:
-            self.validate_enum_value(tenant_role, _VALID_TENANT_ROLES, "tenant_role")
+            self.validate_enum_value(tenant_role, VALID_TENANT_ROLE_LIST, "tenant_role")
             update_fields["tenant_role"] = tenant_role
         if status is not None:
-            self.validate_enum_value(status, _VALID_STATUSES, "status")
+            self.validate_enum_member(TenantMembershipStatus, status, "status")
             update_fields["status"] = status
 
         if not update_fields:
@@ -298,6 +290,7 @@ class TenantMembershipPersistence(BasePersistence):
             update_fields=update_fields,
             where_clause="membership_id = :membership_id",
             where_parameters={"membership_id": str(membership_id)},
+            returning_columns=TENANT_MEMBERSHIP_COLUMN_NAMES,
         )
 
         try:

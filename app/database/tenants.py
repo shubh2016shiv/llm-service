@@ -27,10 +27,11 @@ from app.database.queries.tenant_queries import (
     GET_TENANT_BY_ID_SQL,
     GET_TENANT_BY_SLUG_SQL,
     GET_TENANT_FOR_ROUTING_BY_ID_SQL,
+    TENANT_COLUMN_NAMES,
     build_tenant_count_query,
     build_tenant_list_query,
 )
-from app.database.session import DatabaseSessionManager
+from app.schemas.enums import TenantLifecycleStatus, TenantSubscriptionTier
 from app.schemas.management_filters import TenantListFilters
 
 if TYPE_CHECKING:
@@ -38,15 +39,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_VALID_STATUSES: list[str] = ["active", "trial", "suspended", "deleted"]
-_VALID_TIERS: list[str] = ["free", "starter", "professional", "enterprise"]
-
 
 class TenantPersistence(BasePersistence):
     """Persistence for tenant lifecycle management."""
-
-    def __init__(self, database_manager: DatabaseSessionManager | None = None) -> None:
-        super().__init__(database_manager)
 
     # =========================================================================
     # VALIDATION HELPERS
@@ -104,8 +99,8 @@ class TenantPersistence(BasePersistence):
         """
         self.validate_string_not_empty(tenant_name, "tenant_name")
         self.validate_string_not_empty(tenant_slug, "tenant_slug")
-        self.validate_enum_value(tier, _VALID_TIERS, "tier")
-        self.validate_enum_value(status, _VALID_STATUSES, "status")
+        self.validate_enum_member(TenantSubscriptionTier, tier, "tier")
+        self.validate_enum_member(TenantLifecycleStatus, status, "status")
         self.validate_positive_integer(
             rate_limit_requests_per_minute, "rate_limit_requests_per_minute"
         )
@@ -115,7 +110,7 @@ class TenantPersistence(BasePersistence):
         )
 
         if await self.slug_exists(tenant_slug):
-            raise ValueError(f"Tenant slug '{tenant_slug}' is already in use")
+            raise ValueError(f"'{tenant_name}' tenant already exists")
 
         params = {
             "tenant_name": tenant_name,
@@ -214,10 +209,10 @@ class TenantPersistence(BasePersistence):
     ) -> list[dict[str, Any]]:
         """Return a paginated tenant list with optional status/tier filters."""
         self.validate_pagination_parameters(limit, offset)
-        if filters.status_filter:
-            self.validate_enum_value(filters.status_filter, _VALID_STATUSES, "status_filter")
-        if filters.tier_filter:
-            self.validate_enum_value(filters.tier_filter, _VALID_TIERS, "tier_filter")
+        if filters.status_filter is not None:
+            self.validate_enum_member(TenantLifecycleStatus, filters.status_filter, "status_filter")
+        if filters.tier_filter is not None:
+            self.validate_enum_member(TenantSubscriptionTier, filters.tier_filter, "tier_filter")
         sql, params = build_tenant_list_query(filters, limit, offset)
 
         try:
@@ -230,10 +225,10 @@ class TenantPersistence(BasePersistence):
 
     async def count_tenants(self, filters: TenantListFilters) -> int:
         """Return tenant count for the supplied filters."""
-        if filters.status_filter:
-            self.validate_enum_value(filters.status_filter, _VALID_STATUSES, "status_filter")
-        if filters.tier_filter:
-            self.validate_enum_value(filters.tier_filter, _VALID_TIERS, "tier_filter")
+        if filters.status_filter is not None:
+            self.validate_enum_member(TenantLifecycleStatus, filters.status_filter, "status_filter")
+        if filters.tier_filter is not None:
+            self.validate_enum_member(TenantSubscriptionTier, filters.tier_filter, "tier_filter")
         sql, params = build_tenant_count_query(filters)
         try:
             async with self.get_session() as session:
@@ -266,10 +261,10 @@ class TenantPersistence(BasePersistence):
             self.validate_string_not_empty(tenant_name, "tenant_name")
             update_fields["tenant_name"] = tenant_name
         if status is not None:
-            self.validate_enum_value(status, _VALID_STATUSES, "status")
+            self.validate_enum_member(TenantLifecycleStatus, status, "status")
             update_fields["status"] = status
         if tier is not None:
-            self.validate_enum_value(tier, _VALID_TIERS, "tier")
+            self.validate_enum_member(TenantSubscriptionTier, tier, "tier")
             update_fields["tier"] = tier
         if rate_limit_requests_per_minute is not None:
             self.validate_positive_integer(
@@ -297,6 +292,7 @@ class TenantPersistence(BasePersistence):
             update_fields=update_fields,
             where_clause="tenant_id = :tenant_id",
             where_parameters={"tenant_id": str(tenant_id)},
+            returning_columns=TENANT_COLUMN_NAMES,
         )
 
         try:

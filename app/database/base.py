@@ -13,7 +13,7 @@ focused on their domain logic rather than boilerplate:
   - Structured operation logging for observability
 
 Threading model:
-  Each method acquires a fresh session via DatabaseSessionManager.get_session().
+  Each method acquires a fresh session via PostgresSessionProvider.get_session().
   Sessions are not shared across calls. SQLAlchemy's async_sessionmaker handles
   the QueuePool checkout internally, making all methods safe for concurrent use.
 """
@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -29,14 +31,22 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from app.database.session import DatabaseSessionManager
+from app.adapters.postgresql import PostgresSessionProvider
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Mapping
+    from collections.abc import AsyncGenerator, Collection, Mapping
+    from enum import StrEnum
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+_SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SIMPLE_WHERE_PATTERN = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*\s*=\s*:[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:\s+AND\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*:[A-Za-z_][A-Za-z0-9_]*)*$",
+    re.IGNORECASE,
+)
 
 
 class MissingReferencedResourceError(ValueError):
@@ -52,17 +62,16 @@ class MissingReferencedResourceError(ValueError):
 class BasePersistence:
     """Base class for all persistence layer classes.
 
-    Inherit from this class and call super().__init__(database_manager) to gain
+    Inherit from this class and call ``super().__init__(session_provider)`` to gain
     access to session management, query helpers, and validation utilities.
 
     Args:
-        database_manager: Optional DatabaseSessionManager instance. When None,
-            the singleton manager is used. Inject a test manager in unit tests
-            to control the database connection.
+        session_provider: Application-scoped PostgreSQL session provider.
     """
 
-    def __init__(self, database_manager: DatabaseSessionManager | None = None) -> None:
-        self.database_manager = database_manager or DatabaseSessionManager()
+    def __init__(self, session_provider: PostgresSessionProvider) -> None:
+        """Store the explicitly injected PostgreSQL session provider."""
+        self.session_provider = session_provider
         self._service_name = self.__class__.__name__
 
     # =========================================================================
@@ -73,13 +82,13 @@ class BasePersistence:
     async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
         """Acquire a managed async session from the pool.
 
-        Delegates directly to DatabaseSessionManager.get_session(). The
+        Delegates directly to PostgresSessionProvider.get_session(). The
         transaction is committed on normal exit and rolled back on exception.
 
         Yields:
             AsyncSession: A live SQLAlchemy async session.
         """
-        async with self.database_manager.get_session() as session:
+        async with self.session_provider.get_session() as session:
             yield session
 
     # =========================================================================
@@ -118,9 +127,11 @@ class BasePersistence:
                 return None
         except Exception:
             logger.error(
-                "%s: execute_single_query failed — sql=%r",
-                self._service_name,
-                sql_query[:120],
+                "Database query execution failed",
+                extra={
+                    "repository": self._service_name,
+                    "sql_preview": sql_query[:120],
+                },
                 exc_info=True,
             )
             raise
@@ -148,8 +159,12 @@ class BasePersistence:
         Raises:
             Any database exception from SQLAlchemy or asyncpg.
         """
+        self.validate_positive_integer(page_size, "page_size")
         if not parameter_list:
-            logger.warning("%s: execute_batch_insert called with empty list", self._service_name)
+            logger.warning(
+                "Database batch insert skipped because it was empty",
+                extra={"repository": self._service_name},
+            )
             return 0
 
         try:
@@ -161,10 +176,17 @@ class BasePersistence:
                         result = await session.execute(text(sql_query), params)
                         rows_affected += getattr(result, "rowcount", 0)
 
-            logger.info("%s: batch insert completed — rows=%d", self._service_name, rows_affected)
+            logger.info(
+                "Database batch insert completed",
+                extra={"repository": self._service_name, "rows_affected": rows_affected},
+            )
             return rows_affected
         except Exception:
-            logger.error("%s: execute_batch_insert failed", self._service_name, exc_info=True)
+            logger.error(
+                "Database batch insert failed",
+                extra={"repository": self._service_name},
+                exc_info=True,
+            )
             raise
 
     # =========================================================================
@@ -174,15 +196,17 @@ class BasePersistence:
     def build_dynamic_update_query(
         self,
         table_name: str,
-        update_fields: dict[str, Any],
+        update_fields: Mapping[str, object],
         where_clause: str,
-        where_parameters: dict[str, Any],
-    ) -> tuple[str, dict[str, Any]]:
+        where_parameters: Mapping[str, object],
+        returning_columns: Collection[str],
+    ) -> tuple[str, dict[str, object]]:
         """Construct an UPDATE statement from only the supplied fields.
 
         Avoids writing unchanged columns, reducing write amplification and
         trigger churn. Always appends `updated_at = CURRENT_TIMESTAMP` and
-        adds a `RETURNING *` clause.
+        adds an explicit RETURNING projection so future schema changes cannot
+        expose newly added columns by accident.
 
         Args:
             table_name: Target table name.
@@ -190,6 +214,7 @@ class BasePersistence:
                 be empty; raises ValueError if it is.
             where_clause: Parameterised WHERE expression (e.g. "id = :id").
             where_parameters: Bind values for the WHERE clause.
+            returning_columns: Explicit columns safe to return to callers.
 
         Returns:
             (sql_string, merged_parameters) ready to pass to session.execute().
@@ -203,29 +228,53 @@ class BasePersistence:
                 {"email": "new@example.com"},
                 "user_id = :user_id",
                 {"user_id": some_uuid},
+                ("user_id", "email", "updated_at"),
             )
         """
         if not update_fields:
             raise ValueError("update_fields must contain at least one field to update")
+        self.validate_sql_identifier(table_name, "table_name")
+        for field_name in update_fields:
+            self.validate_sql_identifier(field_name, "update field")
+        if not _SIMPLE_WHERE_PATTERN.fullmatch(where_clause.strip()):
+            raise ValueError(
+                "where_clause must contain only parameterized equality conditions joined by AND"
+            )
 
         set_clauses: list[str] = ["updated_at = CURRENT_TIMESTAMP"]
-        parameters: dict[str, Any] = {}
+        parameters: dict[str, object] = {}
 
         for field_name, field_value in update_fields.items():
             param_key = f"set_{field_name}"
             set_clauses.append(f"{field_name} = :{param_key}")
             parameters[param_key] = field_value
 
+        conflicting_parameters = parameters.keys() & where_parameters.keys()
+        if conflicting_parameters:
+            conflicts = ", ".join(sorted(conflicting_parameters))
+            raise ValueError(f"where_parameters conflict with update parameters: {conflicts}")
         parameters.update(where_parameters)
 
+        if not returning_columns:
+            raise ValueError("returning_columns must not be empty")
+        for column_name in returning_columns:
+            self.validate_sql_identifier(column_name, "returning column")
+        returning_clause = ", ".join(returning_columns)
+
         sql_query = (
-            f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE {where_clause} RETURNING *"
+            f"UPDATE {table_name} SET {', '.join(set_clauses)} "
+            f"WHERE {where_clause} RETURNING {returning_clause}"
         )
         return sql_query, parameters
 
     # =========================================================================
     # VALIDATION UTILITIES
     # =========================================================================
+
+    def validate_sql_identifier(self, identifier: str, parameter_name: str) -> None:
+        """Reject table or column names that could alter generated SQL structure."""
+        if not _SQL_IDENTIFIER_PATTERN.fullmatch(identifier):
+            raise ValueError(f"{parameter_name} must be a plain SQL identifier, got {identifier!r}")
 
     def validate_uuid(self, uuid_value: UUID | str, parameter_name: str = "UUID") -> None:
         """Validate that a value is a non-None UUID or a valid UUID string.
@@ -262,7 +311,7 @@ class BasePersistence:
         Raises:
             ValueError: If the value does not meet the requirement.
         """
-        if not isinstance(integer_value, int):
+        if isinstance(integer_value, bool) or not isinstance(integer_value, int):
             raise ValueError(
                 f"{parameter_name} must be an integer, got {type(integer_value).__name__}"
             )
@@ -270,6 +319,24 @@ class BasePersistence:
         if integer_value < minimum:
             threshold = "non-negative" if allow_zero else "positive"
             raise ValueError(f"{parameter_name} must be {threshold}, got {integer_value}")
+
+    def validate_positive_number(
+        self,
+        numeric_value: int | float,
+        parameter_name: str = "value",
+        allow_zero: bool = False,
+    ) -> None:
+        """Validate that a finite number meets the positivity requirement."""
+        if isinstance(numeric_value, bool) or not isinstance(numeric_value, (int, float)):
+            raise ValueError(
+                f"{parameter_name} must be a number, got {type(numeric_value).__name__}"
+            )
+        if not math.isfinite(numeric_value):
+            raise ValueError(f"{parameter_name} must be finite, got {numeric_value}")
+        minimum_is_valid = numeric_value >= 0 if allow_zero else numeric_value > 0
+        if not minimum_is_valid:
+            threshold = "non-negative" if allow_zero else "positive"
+            raise ValueError(f"{parameter_name} must be {threshold}, got {numeric_value}")
 
     def validate_string_not_empty(self, string_value: str, parameter_name: str = "value") -> None:
         """Validate that a string is non-None, non-empty, and not all whitespace.
@@ -285,7 +352,7 @@ class BasePersistence:
     def validate_enum_value(
         self,
         enum_value: str,
-        valid_values: list[str],
+        valid_values: Collection[str],
         parameter_name: str = "value",
     ) -> None:
         """Validate that a string belongs to an allowed set.
@@ -304,6 +371,30 @@ class BasePersistence:
                 f"Must be one of: {', '.join(sorted(valid_values))}"
             )
 
+    def validate_enum_member(
+        self,
+        enum_type: type[StrEnum],
+        enum_value: str,
+        parameter_name: str = "value",
+    ) -> None:
+        """Validate a string against a shared StrEnum vocabulary.
+
+        Args:
+            enum_type: Canonical enum declaring the allowed values.
+            enum_value: Raw value received by the repository.
+            parameter_name: Label used in the error message.
+
+        Raises:
+            ValueError: If enum_value is not declared by enum_type.
+        """
+        try:
+            enum_type(enum_value)
+        except ValueError as exc:
+            allowed_values = ", ".join(member.value for member in enum_type)
+            raise ValueError(
+                f"Invalid {parameter_name}: {enum_value!r}. Must be one of: {allowed_values}"
+            ) from exc
+
     def validate_pagination_parameters(
         self, limit: int, offset: int, max_limit: int = 1000
     ) -> None:
@@ -317,16 +408,15 @@ class BasePersistence:
         Raises:
             ValueError: If any parameter is out of range.
         """
-        if limit <= 0:
-            raise ValueError(f"limit must be a positive integer, got {limit}")
+        self.validate_positive_integer(limit, "limit")
+        self.validate_positive_integer(offset, "offset", allow_zero=True)
+        self.validate_positive_integer(max_limit, "max_limit")
         if limit > max_limit:
             raise ValueError(f"limit cannot exceed {max_limit}, got {limit}")
-        if offset < 0:
-            raise ValueError(f"offset must be non-negative, got {offset}")
 
-    def _validate_and_serialize_json(
+    def serialize_json(
         self,
-        data: dict[str, Any] | None,
+        data: Mapping[str, object] | None,
         param_name: str = "metadata",
     ) -> str | None:
         """Serialise a dict to a JSON string after validating serializability.
@@ -347,7 +437,7 @@ class BasePersistence:
         if data is None:
             return None
         try:
-            return json.dumps(data)
+            return json.dumps(data, allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{param_name} contains non-JSON-serializable values: {exc}") from exc
 
@@ -370,17 +460,19 @@ class BasePersistence:
             success: True for info-level log; False for error-level.
             additional_context: Optional detail appended to the log message.
         """
-        status_word = "succeeded" if success else "failed"
-        message = (
-            f"{self._service_name}: {operation_type} {status_word} — entity={entity_identifier}"
-        )
-        if additional_context:
-            message = f"{message} — {additional_context}"
+        context = {
+            "repository": self._service_name,
+            "database_operation": operation_type,
+            "entity_id": str(entity_identifier),
+        }
+        if additional_context is not None:
+            context["details"] = additional_context
 
-        if success:
-            logger.info(message)
-        else:
-            logger.error(message)
+        log_method = logger.info if success else logger.error
+        log_method(
+            "Database operation succeeded" if success else "Database operation failed",
+            extra=context,
+        )
 
     def raise_for_foreign_key_violation(
         self,
