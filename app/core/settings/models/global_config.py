@@ -44,7 +44,7 @@ class LoggingConfig(BaseModel):
         'DEBUG'
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     level: str = Field(
         default="INFO",
@@ -92,7 +92,7 @@ class HTTPPoolConfig(BaseModel):
         50
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     max_connections: int = Field(
         default=100,
@@ -157,7 +157,7 @@ class RetryConfig(BaseModel):
         (429, 500, 502, 503, 504)
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     max_attempts: int = Field(
         default=3,
@@ -190,7 +190,7 @@ class ServiceConfig(BaseModel):
         'production'
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(
         default="llm-provider-service",
@@ -223,7 +223,7 @@ class GlobalConfig(BaseModel):
         'production'
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     service: ServiceConfig = Field(default_factory=ServiceConfig)
     http_pool: HTTPPoolConfig = Field(default_factory=HTTPPoolConfig)

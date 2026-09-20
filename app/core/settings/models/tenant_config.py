@@ -37,18 +37,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.settings.models.provider_config import validate_lowercase_provider_name
-from app.schemas.enums import (
-    TenantDeploymentStatus,
-    TenantLifecycleStatus,
-    TenantSubscriptionTier,
-)
+from app.schemas.enums import TenantDeploymentStatus, TenantLifecycleStatus, TenantSubscriptionTier
 from app.schemas.model_constraints import MAX_TEMPERATURE, MIN_TEMPERATURE
-
-# Backwards-compatible import name for existing settings consumers. The
-# canonical tenant vocabularies live in app.schemas.enums.
-DeploymentStatus = TenantDeploymentStatus
-TenantStatus = TenantLifecycleStatus
-TenantTier = TenantSubscriptionTier
 
 
 class TenantRateLimits(BaseModel):
@@ -60,7 +50,7 @@ class TenantRateLimits(BaseModel):
         500
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     rpm: int = Field(
         default=1000,
@@ -96,7 +86,7 @@ class TenantConfig(BaseModel):
         True
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     tenant_id: UUID = Field(description="Unique tenant identifier (UUID v4).")
     tenant_name: str = Field(description="Display name for this organisation.")
@@ -160,7 +150,7 @@ class DeploymentConfig(BaseModel):
         ... )
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     deployment_id: UUID
     tenant_id: UUID
@@ -168,7 +158,7 @@ class DeploymentConfig(BaseModel):
         description="URL-safe human identifier, e.g. 'gpt4-prod'.",
     )
     deployment_name: str = Field(description="Human display name.")
-    status: DeploymentStatus = Field(default=DeploymentStatus.ACTIVE)
+    status: TenantDeploymentStatus = Field(default=TenantDeploymentStatus.ACTIVE)
 
     # ── Provider + Model ──────────────────────────────────────────────────
     provider_name: str = Field(
@@ -242,7 +232,7 @@ class DeploymentConfig(BaseModel):
         Returns:
             True only when status is ACTIVE.
         """
-        return self.status == DeploymentStatus.ACTIVE
+        return self.status == TenantDeploymentStatus.ACTIVE
 
 
 class UserEntitlementConfig(BaseModel):
@@ -263,7 +253,7 @@ class UserEntitlementConfig(BaseModel):
         ... )
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     entitlement_id: UUID
     user_id: UUID

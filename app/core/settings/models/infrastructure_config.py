@@ -6,7 +6,9 @@ Architecture:
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+
+from app.core.settings.url_validation import validate_service_url
 
 
 class DatabaseConfig(BaseModel):
@@ -50,6 +52,17 @@ class DatabaseConfig(BaseModel):
         ge=1,
         description="PostgreSQL server-side timeout applied to every statement.",
     )
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url(cls, value: SecretStr) -> SecretStr:
+        """Require the async PostgreSQL driver expected by the session adapter."""
+        validate_service_url(
+            value.get_secret_value(),
+            field_name="database_url",
+            allowed_schemes={"postgresql+asyncpg"},
+        )
+        return value
 
 
 class CacheConfig(BaseModel):
@@ -120,6 +133,16 @@ class CacheConfig(BaseModel):
             )
         return self
 
+    @field_validator("redis_url")
+    @classmethod
+    def validate_redis_url(cls, value: str) -> str:
+        """Require a Redis URL instead of failing later inside redis-py."""
+        return validate_service_url(
+            value,
+            field_name="redis_url",
+            allowed_schemes={"redis", "rediss"},
+        )
+
 
 class TokenManagerConfig(BaseModel):
     """Define the internal token-manager HTTP integration."""
@@ -138,6 +161,16 @@ class TokenManagerConfig(BaseModel):
     token_manager_read_timeout_seconds: float = Field(default=5.0, gt=0)
     token_manager_write_timeout_seconds: float = Field(default=5.0, gt=0)
     token_manager_pool_timeout_seconds: float = Field(default=2.0, gt=0)
+
+    @field_validator("token_manager_base_url")
+    @classmethod
+    def validate_token_manager_url(cls, value: str) -> str:
+        """Require an absolute HTTP(S) address for the internal API."""
+        return validate_service_url(
+            value,
+            field_name="token_manager_base_url",
+            allowed_schemes={"http", "https"},
+        ).rstrip("/")
 
 
 class StreamingConfig(BaseModel):

@@ -11,13 +11,14 @@ Architecture:
 
 This module deliberately contains no field definitions. The focused Pydantic
 models in ``models/`` own validation and documentation; this composition root
-preserves the existing flat application-settings API for all callers.
+adds only rules that depend on more than one settings concern.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.settings.models.environment_config import EnvironmentConfig
@@ -60,6 +61,25 @@ class ApplicationSettings(  # pyright: ignore[reportIncompatibleVariableOverride
         case_sensitive=False,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_production_safety(self) -> ApplicationSettings:
+        """Reject development-only values when the process declares production."""
+        if self.app_environment != "production":
+            return self
+        local_origins = {
+            origin
+            for origin in self.get_cors_allowed_origins()
+            if "localhost" in origin or "127.0.0.1" in origin
+        }
+        if local_origins:
+            raise ValueError(
+                "production cors_allowed_origins cannot contain local origins: "
+                f"{sorted(local_origins)}"
+            )
+        if self.jwt_secret_key.get_secret_value().startswith("change-me"):
+            raise ValueError("production jwt_secret_key cannot use the example placeholder")
+        return self
 
 
 @lru_cache(maxsize=1)

@@ -31,7 +31,7 @@ from app.core.settings.models.cloud_config import (
     CloudVendor,
     GCPCloudConfig,
 )
-from app.core.settings.models.environment_config import EnvironmentConfig
+from app.core.settings.models.environment_config import DeploymentEnvironment, EnvironmentConfig
 from app.core.settings.models.global_config import (
     GlobalConfig,
     HTTPPoolConfig,
@@ -57,11 +57,8 @@ from app.core.settings.models.provider_config import (
 from app.core.settings.models.security_config import SecurityConfig
 from app.core.settings.models.tenant_config import (
     DeploymentConfig,
-    DeploymentStatus,
     TenantConfig,
     TenantRateLimits,
-    TenantStatus,
-    TenantTier,
     UserEntitlementConfig,
 )
 from app.core.settings.models.vault_config import VaultConfig
@@ -76,7 +73,7 @@ __all__: list[str] = [
     "CloudVendor",
     "DatabaseConfig",
     "DeploymentConfig",
-    "DeploymentStatus",
+    "DeploymentEnvironment",
     "EnvironmentConfig",
     "GCPCloudConfig",
     "GlobalConfig",
@@ -96,8 +93,6 @@ __all__: list[str] = [
     "StreamingConfig",
     "TenantConfig",
     "TenantRateLimits",
-    "TenantStatus",
-    "TenantTier",
     "TokenManagerConfig",
     "UserEntitlementConfig",
     "VaultConfig",

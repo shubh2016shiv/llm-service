@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Self
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+
+from app.core.settings.url_validation import validate_service_url
 
 
 class VaultConfig(BaseModel):
@@ -76,6 +78,16 @@ class VaultConfig(BaseModel):
     vault_retry_max_delay_seconds: float = Field(
         default=2.0, gt=0, description="Maximum full-jitter retry-delay cap."
     )
+
+    @field_validator("vault_addr")
+    @classmethod
+    def validate_vault_address(cls, value: str) -> str:
+        """Require an absolute HTTP(S) Vault address without a trailing slash."""
+        return validate_service_url(
+            value,
+            field_name="vault_addr",
+            allowed_schemes={"http", "https"},
+        ).rstrip("/")
 
     @model_validator(mode="after")
     def validate_retry_window(self) -> Self:

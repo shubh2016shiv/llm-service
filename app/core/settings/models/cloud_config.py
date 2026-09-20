@@ -51,7 +51,7 @@ class AWSCloudConfig(BaseModel):
         'us-east-1'
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     vendor: CloudVendor = Field(default=CloudVendor.AWS)
 
@@ -100,7 +100,7 @@ class AzureCloudConfig(BaseModel):
         '2024-02-01'
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     vendor: CloudVendor = Field(default=CloudVendor.AZURE)
 
@@ -125,7 +125,7 @@ class GCPCloudConfig(BaseModel):
         >>> gcp = GCPCloudConfig(default_project_id="my-project")
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     vendor: CloudVendor = Field(default=CloudVendor.GCP)
 

@@ -29,7 +29,7 @@ from app.core.settings.models import (
     CircuitBreakerPolicyConfig,
     CloudVendor,
     DeploymentConfig,
-    DeploymentStatus,
+    DeploymentEnvironment,
     GCPCloudConfig,
     GlobalConfig,
     HTTPPoolConfig,
@@ -45,8 +45,6 @@ from app.core.settings.models import (
     ServiceConfig,
     TenantConfig,
     TenantRateLimits,
-    TenantStatus,
-    TenantTier,
     UserEntitlementConfig,
 )
 from app.core.settings.settings import ApplicationSettings, get_application_settings
@@ -61,7 +59,7 @@ __all__: list[str] = [
     "CloudVendor",
     "ConfigLoader",
     "DeploymentConfig",
-    "DeploymentStatus",
+    "DeploymentEnvironment",
     "GCPCloudConfig",
     "GlobalConfig",
     "HTTPPoolConfig",
@@ -77,8 +75,6 @@ __all__: list[str] = [
     "ServiceConfig",
     "TenantConfig",
     "TenantRateLimits",
-    "TenantStatus",
-    "TenantTier",
     "UserEntitlementConfig",
     "get_application_settings",
 ]

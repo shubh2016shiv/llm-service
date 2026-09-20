@@ -6,6 +6,8 @@ Architecture:
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 
@@ -24,21 +26,40 @@ class SecurityConfig(BaseModel):
         description="Secret backend: environment, vault, or aes_gcm.",
     )
     jwt_secret_key: SecretStr = Field(description="Secret key used to sign and verify JWTs.")
-    jwt_algorithm: str = Field(default="HS256", description="JWT signing algorithm.")
-    jwt_access_token_expire_hours: int = Field(
-        default=24,
-        ge=1,
-        description="Access-token lifetime in hours.",
+    jwt_algorithm: Literal["HS256", "HS384", "HS512"] = Field(
+        default="HS256",
+        description="Allowed symmetric JWT verification algorithm.",
     )
-    jwt_refresh_token_expire_days: int = Field(
-        default=7,
-        ge=1,
-        description="Refresh-token lifetime in days.",
+    jwt_issuer: str = Field(
+        default="llm-identity-service",
+        min_length=1,
+        description="Exact issuer claim accepted from the trusted identity service.",
     )
-    jwt_refresh_enabled: bool = Field(
-        default=False,
-        description="Whether refresh-token issuance and exchange are enabled.",
+    jwt_audience: str = Field(
+        default="llm-provider-service",
+        min_length=1,
+        description="Exact audience claim required for tokens sent to this API.",
     )
+    jwt_clock_skew_seconds: int = Field(
+        default=30,
+        ge=0,
+        le=300,
+        description="Small expiry/not-before tolerance for clock differences between services.",
+    )
+    jwt_max_token_age_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        description="Longest access-token lifetime this resource server will trust.",
+    )
+
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def validate_jwt_secret_key(cls, value: SecretStr) -> SecretStr:
+        """Reject weak HMAC keys before the application begins accepting traffic."""
+        if len(value.get_secret_value().encode("utf-8")) < 32:
+            raise ValueError("jwt_secret_key must contain at least 32 UTF-8 bytes")
+        return value
 
     @field_validator("secret_backend")
     @classmethod

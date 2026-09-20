@@ -110,7 +110,7 @@ class ProviderAuthConfig(BaseModel):
         ... )
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     mode: AuthMode = Field(
         description="Authentication strategy for this provider.",
@@ -142,7 +142,7 @@ class ProviderEndpointConfig(BaseModel):
         'https://api.openai.com/v1/chat/completions'
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     base_url: str = Field(
         description="Root URL for the provider API, without trailing slash.",
@@ -217,7 +217,7 @@ class ProviderStaticConfig(BaseModel):
         LLMModelSpec(name='gpt-4o', ...)
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     provider_name: str = Field(
         description="Canonical lowercase provider identifier (e.g., 'openai').",

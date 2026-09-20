@@ -70,7 +70,7 @@ class LLMModelSpec(BaseModel):
         True
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(
         description="Model identifier as used in API calls (e.g., 'gpt-4o').",

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class CircuitBreakerPolicyConfig(BaseModel):
     """Define when a provider circuit opens and when recovery is attempted."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     failure_threshold: int = Field(
         default=5,
@@ -25,7 +25,7 @@ class CircuitBreakerPolicyConfig(BaseModel):
 class ProviderCircuitBreakerConfig(BaseModel):
     """Hold the default breaker policy and provider-specific overrides."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     default: CircuitBreakerPolicyConfig = Field(default_factory=CircuitBreakerPolicyConfig)
     providers: dict[str, CircuitBreakerPolicyConfig] = Field(default_factory=dict)
