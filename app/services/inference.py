@@ -9,7 +9,7 @@ final request parameters) and performs the actual inference call.
 Design principle - what this service does NOT know:
     This service intentionally knows nothing about routing strategy, tenant
     lookup, credential resolution, or authorization decisions. That work is
-    completed earlier by ``OrchestrationPipeline`` in ``app/inference_routing``.
+    completed earlier by ``InferenceRouteResolver`` in ``app/inference_routing``.
     Keeping this boundary strict means routing can evolve independently while
     this service stays a stable execution component.
 
@@ -33,14 +33,22 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from app.services.stream_session import StreamingInferenceSession
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from uuid import UUID
 
-    from app.clients.token_manager_client import TokenManagerClient
-    from app.inference_routing.models import ResolvedExecutionContext
+    from app.clients.token_manager_client import (
+        FinalizationStatus,
+        TokenManagerClient,
+        TokenReservation,
+    )
+    from app.inference_routing.models import ResolvedRoute
     from app.providers.registry import ProviderRegistry
     from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses_schema import (
@@ -49,6 +57,7 @@ if TYPE_CHECKING:
         EmbedResponse,
         RerankResponse,
     )
+    from app.streaming.admission import StreamAdmissionController
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +67,7 @@ class InferenceService:
 
     This service is the final step in the request pipeline. It does not
     make routing decisions or authorization checks; it assumes the caller
-    has already resolved a valid ``ResolvedExecutionContext`` and now
+    has already resolved a valid ``ResolvedRoute`` and now
     needs the provider call to execute.
 
     Dependencies (both injected at construction and reused across requests):
@@ -71,14 +80,23 @@ class InferenceService:
         self,
         token_manager_client: TokenManagerClient,
         provider_registry: ProviderRegistry,
+        stream_admission: StreamAdmissionController,
+        stream_cleanup_timeout_seconds: float = 5.0,
     ) -> None:
+        if stream_cleanup_timeout_seconds <= 0:
+            raise ValueError("stream_cleanup_timeout_seconds must be positive")
         self._token_manager = token_manager_client
         self._registry = provider_registry
+        self._stream_admission = stream_admission
+        self._stream_cleanup_timeout_seconds = stream_cleanup_timeout_seconds
 
     async def execute_chat(
         self,
-        context: ResolvedExecutionContext,
+        context: ResolvedRoute,
         request: ChatRequest,
+        *,
+        user_id: UUID,
+        request_id: str | None = None,
     ) -> ChatResponse:
         """Run a non-streaming chat completion against the resolved provider.
 
@@ -95,46 +113,85 @@ class InferenceService:
         "Usage reconciliation" means updating quota with real token counts
         rather than only pre-call estimates.
         """
-        await self._token_manager.check_quota(
-            context.tenant_config.tenant_id, context.quota_key, request
+        reservation = await self._token_manager.acquire_reservation(
+            user_id=user_id,
+            context=context,
+            request=request,
+            request_id=request_id,
         )
-        provider = await self._registry.get_provider(context)
-        response = await provider.generate(request)
-        if response.usage:
-            await self._token_manager.report_usage(
-                context.tenant_config.tenant_id,
-                context.quota_key,
-                response.usage.prompt_tokens,
-                response.usage.completion_tokens,
-            )
+        try:
+            provider = await self._registry.get_provider(context)
+            response = await provider.generate(request)
+        except asyncio.CancelledError:
+            await self._finalize_preserving_original(reservation, status="cancelled")
+            raise
+        except Exception:
+            await self._finalize_preserving_original(reservation, status="failed")
+            raise
+        usage = response.usage
+        await self._finalize(
+            reservation,
+            status="completed",
+            prompt_tokens=usage.prompt_tokens if usage else None,
+            completion_tokens=usage.completion_tokens if usage else None,
+        )
         return response
 
-    async def execute_stream_chat(
+    async def prepare_stream_chat(
         self,
-        context: ResolvedExecutionContext,
+        context: ResolvedRoute,
         request: ChatRequest,
+        *,
+        user_id: UUID,
+        request_id: str | None = None,
     ) -> AsyncIterator[ChatStreamChunk]:
-        """Run a streaming chat completion and yield chunks as they arrive.
+        """Acquire capacity and return an exact-once managed provider stream.
 
-        Quota is checked once before streaming starts. Unlike the
-        non-streaming path, this method does not perform post-stream usage
-        reporting. The caller is responsible for aggregating usage metadata
-        from streamed chunks (if available) and reporting it separately.
-
-        This keeps stream delivery low-latency and avoids delaying chunk
-        forwarding for bookkeeping.
+        Preparation is eager so acquisition and provider-construction failures
+        are translated to an HTTP error before SSE response headers are sent.
         """
-        await self._token_manager.check_quota(
-            context.tenant_config.tenant_id, context.quota_key, request
+        lease = await self._stream_admission.acquire()
+        try:
+            reservation = await self._token_manager.acquire_reservation(
+                user_id=user_id,
+                context=context,
+                request=request,
+                request_id=request_id,
+            )
+        except BaseException:
+            await lease.release()
+            raise
+        try:
+            provider = await self._registry.get_provider(context)
+            provider_chunks = provider.stream_generate(request)
+        except asyncio.CancelledError:
+            await self._finalize_preserving_original(reservation, status="cancelled")
+            await lease.release()
+            raise
+        except Exception:
+            await self._finalize_preserving_original(reservation, status="failed")
+            await lease.release()
+            raise
+        return StreamingInferenceSession(
+            provider_chunks=provider_chunks,
+            lease=lease,
+            cleanup_timeout_seconds=self._stream_cleanup_timeout_seconds,
+            finalize=lambda status, prompt_tokens, completion_tokens: (
+                self._finalize_preserving_original(
+                    reservation,
+                    status=status,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+            ),
         )
-        provider = await self._registry.get_provider(context)
-        async for chunk in provider.stream_generate(request):
-            yield chunk
 
     async def execute_embed(
         self,
-        context: ResolvedExecutionContext,
+        context: ResolvedRoute,
         request: EmbedRequest,
+        *,
+        user_id: UUID,
     ) -> EmbedResponse:
         """Run an embedding request against the resolved provider.
 
@@ -143,24 +200,35 @@ class InferenceService:
         tokens but do not generate completion text, so reported completion
         token count is always zero.
         """
-        await self._token_manager.check_quota(
-            context.tenant_config.tenant_id, context.quota_key, request
+        reservation = await self._token_manager.acquire_reservation(
+            user_id=user_id,
+            context=context,
+            request=request,
         )
-        provider = await self._registry.get_provider(context)
-        response = await provider.embed(request)
-        if response.usage:
-            await self._token_manager.report_usage(
-                context.tenant_config.tenant_id,
-                context.quota_key,
-                response.usage.prompt_tokens,
-                0,
-            )
+        try:
+            provider = await self._registry.get_provider(context)
+            response = await provider.embed(request)
+        except asyncio.CancelledError:
+            await self._finalize_preserving_original(reservation, status="cancelled")
+            raise
+        except Exception:
+            await self._finalize_preserving_original(reservation, status="failed")
+            raise
+        usage = response.usage
+        await self._finalize(
+            reservation,
+            status="completed",
+            prompt_tokens=usage.prompt_tokens if usage else None,
+            completion_tokens=0 if usage else None,
+        )
         return response
 
     async def execute_rerank(
         self,
-        context: ResolvedExecutionContext,
+        context: ResolvedRoute,
         request: RerankRequest,
+        *,
+        user_id: UUID,
     ) -> RerankResponse:
         """Run a re-ranking request against the resolved provider.
 
@@ -169,8 +237,77 @@ class InferenceService:
         metadata, and the operation is relevance scoring rather than text
         generation.
         """
-        await self._token_manager.check_quota(
-            context.tenant_config.tenant_id, context.quota_key, request
+        reservation = await self._token_manager.acquire_reservation(
+            user_id=user_id,
+            context=context,
+            request=request,
         )
-        provider = await self._registry.get_provider(context)
-        return await provider.rerank(request)
+        try:
+            provider = await self._registry.get_provider(context)
+            response = await provider.rerank(request)
+        except asyncio.CancelledError:
+            await self._finalize_preserving_original(reservation, status="cancelled")
+            raise
+        except Exception:
+            await self._finalize_preserving_original(reservation, status="failed")
+            raise
+        usage = response.usage
+        await self._finalize(
+            reservation,
+            status="completed",
+            prompt_tokens=usage.prompt_tokens if usage else None,
+            completion_tokens=usage.completion_tokens if usage else None,
+        )
+        return response
+
+    async def _finalize(
+        self,
+        reservation: TokenReservation,
+        *,
+        status: FinalizationStatus,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+    ) -> None:
+        """Commit the terminal accounting record.
+
+        On a successful non-streaming call this is part of the operation, not
+        best-effort cleanup. Propagating an accounting failure prevents the
+        API from claiming success while quota state remains uncommitted.
+        """
+        await self._token_manager.finalize_reservation(
+            reservation,
+            status=status,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+    async def _finalize_preserving_original(
+        self,
+        reservation: TokenReservation,
+        *,
+        status: FinalizationStatus,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+    ) -> None:
+        """Attempt cleanup without hiding the provider or cancellation error.
+
+        Streaming also uses this path because headers may already be sent when
+        terminal accounting happens; the failure is therefore observable in
+        logs but cannot safely become a second HTTP response.
+        """
+        try:
+            await self._finalize(
+                reservation,
+                status=status,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+        except Exception:
+            logger.error(
+                "Token reservation finalization failed",
+                extra={
+                    "reservation_id": reservation.reservation_id,
+                    "status": status,
+                },
+                exc_info=True,
+            )

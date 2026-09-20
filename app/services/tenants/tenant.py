@@ -39,7 +39,7 @@ from app.services.management_helpers import (
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from app.auth.authorization.cache import InferenceAuthorizationCache
+    from app.auth.authorization.authorization_grant_cache import AuthorizationGrantCache
     from app.auth.authorization.tenant_access import TenantAccessService
     from app.database import TenantPersistence
     from app.schemas.auth_schema import AuthTokenPayload
@@ -54,9 +54,9 @@ class TenantService:
         self,
         tenant_persistence: TenantPersistence,
         access_service: TenantAccessService,
-        authorization_cache: InferenceAuthorizationCache | None = None,
+        authorization_cache: AuthorizationGrantCache,
     ) -> None:
-        """Initialize with persistence, access control, and optional cache."""
+        """Initialize with persistence, access control, and cache coherence."""
         self._tenants = tenant_persistence
         self._access = access_service
         self._authorization_cache = authorization_cache
@@ -161,9 +161,7 @@ class TenantService:
     async def _invalidate_tenant_scope(self, tenant_id: UUID) -> None:
         """Invalidate authorization cache entries linked to one tenant.
 
-        This helper is a no-op when cache infrastructure is not injected,
-        which keeps local/test execution lightweight.
+        Invalidation is mandatory: silently skipping it can leave a cached
+        authorization grant valid after a tenant is suspended or deleted.
         """
-        if self._authorization_cache is None:
-            return
         await self._authorization_cache.invalidate_tenant(tenant_id)

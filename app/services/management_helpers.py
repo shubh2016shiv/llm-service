@@ -29,16 +29,26 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, NoReturn
 
 from app.core.exceptions import ManagementValidationError, ResourceConflictError
-from app.database.base import MissingReferencedResourceError
+from app.database.base import DuplicateResourceError, MissingReferencedResourceError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
-_SECRET_FIELDS: frozenset[str] = frozenset({"password", "password_hash", "secret_reference"})
-_CONFLICT_HINTS: tuple[str, ...] = ("already", "duplicate", "unique", "exists")
+_SECRET_FIELDS: frozenset[str] = frozenset(
+    {
+        "api_key",
+        "client_secret",
+        "credential",
+        "password",
+        "password_hash",
+        "secret_reference",
+        "token",
+    }
+)
 RowValue = object
 Row = dict[str, RowValue]
 
@@ -56,7 +66,26 @@ def clean_row(row: Mapping[str, RowValue]) -> Row:
     Returns:
         A new dictionary without keys listed in ``_SECRET_FIELDS``.
     """
-    return {key: value for key, value in row.items() if key not in _SECRET_FIELDS}
+    return {
+        key: _redact_nested(value)
+        for key, value in row.items()
+        if key.lower() not in _SECRET_FIELDS
+    }
+
+
+def _redact_nested(value: RowValue) -> RowValue:
+    """Recursively remove secret-named keys from JSON-like response values."""
+    if isinstance(value, Mapping):
+        return {
+            key: _redact_nested(nested)
+            for key, nested in value.items()
+            if isinstance(key, str) and key.lower() not in _SECRET_FIELDS
+        }
+    if isinstance(value, list):
+        return [_redact_nested(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_nested(item) for item in value)
+    return value
 
 
 def clean_rows(rows: Sequence[Mapping[str, RowValue]]) -> list[Row]:
@@ -86,7 +115,7 @@ def raise_clean_validation_error(exc: ValueError) -> NoReturn:
 
     Translation rules:
         - ``MissingReferencedResourceError`` -> ``ResourceNotFoundError``
-        - conflict-like message hints -> ``ResourceConflictError``
+        - ``DuplicateResourceError`` -> ``ResourceConflictError``
         - all other validation errors -> ``ManagementValidationError``
 
     Args:
@@ -101,10 +130,9 @@ def raise_clean_validation_error(exc: ValueError) -> NoReturn:
         from app.core.exceptions import ResourceNotFoundError
 
         raise ResourceNotFoundError(exc.resource_name, exc.resource_id) from exc
-    message = str(exc)
-    if any(hint in message.lower() for hint in _CONFLICT_HINTS):
-        raise ResourceConflictError(message) from exc
-    raise ManagementValidationError(message) from exc
+    if isinstance(exc, DuplicateResourceError):
+        raise ResourceConflictError(str(exc)) from exc
+    raise ManagementValidationError(str(exc)) from exc
 
 
 def require_row[T](value: T | None, resource_name: str, resource_id: str) -> T:

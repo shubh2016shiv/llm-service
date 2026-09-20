@@ -24,6 +24,7 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 from typing import TYPE_CHECKING
@@ -60,7 +61,9 @@ class UserService:
                 email=str(request.email),
                 first_name=request.first_name,
                 last_name=request.last_name,
-                password_hash=self._hash_password(request.password),
+                # PBKDF2 is deliberately CPU-expensive. A worker thread keeps
+                # one signup from pausing every coroutine on the event loop.
+                password_hash=await asyncio.to_thread(self._hash_password, request.password),
                 platform_role=request.platform_role,
                 status=request.status,
             )
@@ -156,7 +159,8 @@ class UserService:
         if not deleted:
             raise ResourceNotFoundError("User", str(user_id))
 
-    def _hash_password(self, password: str) -> str:
+    @staticmethod
+    def _hash_password(password: str) -> str:
         """Hash a plaintext password using PBKDF2-HMAC-SHA256.
 
         PBKDF2 is a key-derivation function designed to make brute-force

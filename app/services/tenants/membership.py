@@ -37,7 +37,7 @@ from app.services.management_helpers import (
 )
 
 if TYPE_CHECKING:
-    from app.auth.authorization.cache import InferenceAuthorizationCache
+    from app.auth.authorization.authorization_grant_cache import AuthorizationGrantCache
     from app.auth.authorization.tenant_access import TenantAccessService
     from app.database import TenantMembershipPersistence
     from app.schemas.auth_schema import AuthTokenPayload
@@ -56,9 +56,9 @@ class TenantMembershipService:
         membership_persistence: TenantMembershipPersistence,
         access_service: TenantAccessService,
         reference_validation_service: ManagementReferenceValidationService,
-        authorization_cache: InferenceAuthorizationCache | None = None,
+        authorization_cache: AuthorizationGrantCache,
     ) -> None:
-        """Initialize with persistence, access checks, and optional cache."""
+        """Initialize with persistence, access checks, and cache coherence."""
         self._memberships = membership_persistence
         self._access = access_service
         self._references = reference_validation_service
@@ -104,9 +104,11 @@ class TenantMembershipService:
     async def count_tenant_members(
         self,
         tenant_id: UUID,
+        current_user: AuthTokenPayload,
         filters: TenantMembershipListFilters,
     ) -> int:
-        """Count tenant memberships matching the supplied filter set."""
+        """Count memberships after the same authorization as the list query."""
+        await self._access.ensure_tenant_read(tenant_id, current_user)
         return await self._memberships.count_tenant_members(tenant_id, filters)
 
     async def get_tenant_membership(
@@ -178,6 +180,4 @@ class TenantMembershipService:
 
     async def _invalidate_membership_scope(self, tenant_id: UUID, user_id: UUID) -> None:
         """Invalidate cached authorization decisions for one tenant/user pair."""
-        if self._authorization_cache is None:
-            return
         await self._authorization_cache.invalidate_membership(tenant_id, user_id)
