@@ -3,8 +3,14 @@ services:
   # ---------------------------------------------------------------------------
   # HashiCorp Vault — secret management
   #
-  # Dev mode: starts pre-unsealed with a fixed root token. No persistence.
-  # Switch to a file/consul backend + proper TLS for staging/production.
+  # Persistent (non-dev) mode with the file storage backend, so credentials
+  # written through the management API survive a restart. Dev mode was
+  # in-memory only and silently discarded them, leaving deployment rows
+  # pointing at Vault paths that no longer existed.
+  #
+  # Still local-only: TLS is disabled and unsealing is scripted with a single
+  # key share (see vault/config/vault.hcl). Staging/production needs TLS plus
+  # cloud-KMS auto-unseal.
   # ---------------------------------------------------------------------------
   vault:
     image: hashicorp/vault:1.18
@@ -13,13 +19,36 @@ services:
     ports:
       - "8200:8200"
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:-local-vault-root-token}
-      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
-      VAULT_ADDR: "http://0.0.0.0:8200"
-    cap_add:
-      - IPC_LOCK          # prevents Vault memory from being swapped to disk
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      # The image's entrypoint runs `setcap cap_ipc_lock=+ep` on the vault
+      # binary before exec'ing the server. On Docker Desktop's filesystem that
+      # call grinds indefinitely and the server never starts. The capability
+      # only exists to allow mlock, which vault.hcl disables anyway
+      # (disable_mlock = true), so skipping it is coherent rather than a
+      # workaround. Dev mode took a different entrypoint branch, which is why
+      # this surfaced only after moving to persistent server mode.
+      SKIP_SETCAP: "true"
+    # Just "server", with no -config flag: the image entrypoint already appends
+    # -config=$VAULT_CONFIG_DIR (/vault/config), where vault.hcl is mounted
+    # below. Passing -config explicitly as well made Vault load the directory
+    # AND the file, parsing the listener stanza twice and failing the second
+    # bind with "address already in use" against itself.
+    command: ["server"]
+    volumes:
+      - ./vault/config/vault.hcl:/vault/config/vault.hcl:ro
+      - vault_data:/vault/file
+    # `vault status` exits non-zero while sealed, but a sealed Vault is exactly
+    # the state vault-init must be allowed to connect to in order to unseal it.
+    # This probe therefore asks the health endpoint to report 200 for the
+    # sealed and uninitialized cases, so "healthy" here means "API reachable",
+    # not "ready to serve secrets".
     healthcheck:
-      test: ["CMD", "vault", "status"]
+      test:
+        - CMD
+        - wget
+        - --spider
+        - -q
+        - "http://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=200&uninitcode=200"
       interval: 5s
       timeout: 3s
       retries: 10
@@ -42,10 +71,15 @@ services:
       VAULT_ROOT_TOKEN: ${VAULT_ROOT_TOKEN:-local-vault-root-token}
       VAULT_SERVICE_USERNAME: ${VAULT_SERVICE_USERNAME:-llm-service}
       VAULT_SERVICE_PASSWORD: ${VAULT_SERVICE_PASSWORD:-local-vault-service-password}
+      VAULT_ADMIN_USERNAME: ${VAULT_ADMIN_USERNAME:-llm-service-admin}
+      VAULT_ADMIN_PASSWORD: ${VAULT_ADMIN_PASSWORD:-local-vault-admin-password}
       VAULT_KV_PREFIX: ${VAULT_KV_PREFIX:-llm-provider-service}
     volumes:
       - ./vault/scripts/init.sh:/scripts/init.sh:ro
       - ./vault/policies:/policies:ro
+      # Shares the storage volume so init.sh can persist (and on later starts
+      # re-read) the unseal key and root token produced by `operator init`.
+      - vault_data:/vault/file
     entrypoint: ["sh", "/scripts/init.sh"]
     networks:
       - llm_net
@@ -56,7 +90,7 @@ services:
   #
   # The data directory is backed by a named Docker volume so local data survives
   # container restarts. Schema creation is handled by
-  # infrastructure/manage_local_infrastructure.py instead of
+  # `python -m infrastructure schema` instead of
   # /docker-entrypoint-initdb.d because this repository contains historical SQL
   # files that must not be executed accidentally.
   postgres:
@@ -114,6 +148,12 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    # host.docker.internal isn't guaranteed to resolve on every Docker Desktop
+    # version/network combination without this explicit mapping — needed so
+    # a deployment can reach a server running on the host itself (e.g. LM
+    # Studio, Ollama) rather than another container on llm_net.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       vault-init:
         condition: service_completed_successfully
@@ -122,24 +162,53 @@ services:
       redis:
         condition: service_healthy
     environment:
+      # Stage 2 / Sub-stage 2.1: local cryptographic settings. These defaults
+      # make the disposable development stack bootable; deployments must inject
+      # independently generated values through their secret manager.
+      ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-local-jwt-signing-key-replace-outside-development}
+      # The infra-generated dashboard token carries these exact claims; the API
+      # rejects any token whose iss/aud differ, so both sides must read .env.
+      JWT_ISSUER: ${JWT_ISSUER:-llm-local-infrastructure}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-llm-provider-service}
+      JWT_MAX_TOKEN_AGE_SECONDS: ${JWT_MAX_TOKEN_AGE_SECONDS:-3600}
+      TOKEN_MANAGER_BASE_URL: http://llm_tm_api:8000
+      TOKEN_MANAGER_SERVICE_ID: llm-services
+      # Development's provider HTTP pool is 20; production may raise this to
+      # 100 (or another value no larger than its configured pool of 200).
+      STREAM_MAX_CONCURRENT_PER_WORKER: ${STREAM_MAX_CONCURRENT_PER_WORKER:-20}
+      STREAM_HEARTBEAT_INTERVAL_SECONDS: ${STREAM_HEARTBEAT_INTERVAL_SECONDS:-15}
+      STREAM_CAPACITY_RETRY_AFTER_SECONDS: ${STREAM_CAPACITY_RETRY_AFTER_SECONDS:-1}
+      STREAM_CLEANUP_TIMEOUT_SECONDS: ${STREAM_CLEANUP_TIMEOUT_SECONDS:-5}
       APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-llm_user}:${POSTGRES_PASSWORD:-local-postgres-password}@postgres:5432/${POSTGRES_DB:-llm_services}
+      DATABASE_CONNECT_TIMEOUT_SECONDS: ${DATABASE_CONNECT_TIMEOUT_SECONDS:-5}
       REDIS_URL: redis://:${REDIS_PASSWORD:-local-redis-password}@redis:6379/0
       SECRET_BACKEND: vault
       VAULT_ADDR: http://vault:8200
       VAULT_USERNAME: ${VAULT_SERVICE_USERNAME:-llm-service}
       VAULT_PASSWORD: ${VAULT_SERVICE_PASSWORD:-local-vault-service-password}
+      VAULT_ADMIN_USERNAME: ${VAULT_ADMIN_USERNAME:-llm-service-admin}
+      VAULT_ADMIN_PASSWORD: ${VAULT_ADMIN_PASSWORD:-local-vault-admin-password}
       VAULT_MOUNT_PATH: ${VAULT_MOUNT_PATH:-secret}
       VAULT_KV_PREFIX: ${VAULT_KV_PREFIX:-llm-provider-service}
+      VAULT_TOKEN_REFRESH_AFTER_LEASE_FRACTION: ${VAULT_TOKEN_REFRESH_AFTER_LEASE_FRACTION:-0.9}
     networks:
       - llm_net
+      - llm_control_plane_net
 
 volumes:
   postgres_data:
     name: llm_services_postgres_data
   redis_data:
     name: llm_services_redis_data
+  vault_data:
+    name: llm_services_vault_data
 
 networks:
   llm_net:
+    driver: bridge
+  llm_control_plane_net:
+    name: llm_control_plane_net
     driver: bridge

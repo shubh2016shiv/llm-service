@@ -16,6 +16,11 @@ FROM base AS builder
 
 WORKDIR /build
 
+# Stage 1 / Sub-stage 1.1: install the locked runtime dependencies directly
+# into the virtual environment copied to the final image. Without this setting,
+# uv creates /build/.venv and leaves /opt/venv without application commands.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends build-essential gcc \
     && rm -rf /var/lib/apt/lists/*
@@ -26,8 +31,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync \
     --frozen \
     --no-dev \
-    --no-install-project \
-    --python "${VIRTUAL_ENV}/bin/python"
+    --no-install-project
 
 
 FROM base AS runtime

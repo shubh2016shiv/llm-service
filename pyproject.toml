@@ -66,6 +66,9 @@ dev = [
     "moto>=5.0.0",            # AWS mock for Bedrock tests
     "fakeredis>=2.26.0",      # in-memory Redis for tests
 ]
+graphify = [
+    "graphifyy>=0.9.48",
+]
 
 # ── Ruff (Linting + Formatting) ───────────────────────────────────────────────
 [tool.ruff]
