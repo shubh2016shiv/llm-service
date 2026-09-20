@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends
 
 from app.api.shared_dependencies import (
     AuthorizationCacheDependency,

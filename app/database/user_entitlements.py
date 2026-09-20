@@ -395,14 +395,11 @@ class UserEntitlementPersistence(BasePersistence):
         deployment_key: str,
         entitlement_id: UUID,
     ) -> dict[str, Any] | None:
-        """Return active entitlements for routing, with provider/model names resolved via JOIN.
+        """Return the exact active entitlement approved by authorization.
 
-        Unlike get_active_entitlement_for_route (which matches by UUID foreign keys),
-        this method returns name-resolved rows for the routing layer which works with
-        string names rather than catalog UUIDs.
-
-        When entitlement_id is supplied the result is pinned to that single record,
-        aligning with the pre-authorized route from the auth layer.
+        The JOIN resolves catalog UUIDs to provider/model names used by the
+        execution layer. All four identity dimensions remain in the WHERE
+        clause so this read cannot substitute another user's or route's grant.
         """
         self.validate_uuid(tenant_id, "tenant_id")
         self.validate_uuid(user_id, "user_id")

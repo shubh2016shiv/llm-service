@@ -7,15 +7,15 @@ What this file is for
 Two frozen shapes, one for each end of the routing conversation:
 
     ResolutionRequest  — what goes IN: everything the resolver needs to
-                         decide (tenant, user, deployment key, operation,
-                         plus two optional hints).
+                         validate the exact authorization decision (tenant,
+                         user, deployment, entitlement, and operation).
     ResolvedRoute      — what comes OUT: everything downstream execution
                          needs, with every "which setting wins?" question
                          already answered (effective timeout, temperature,
                          token limit, headers...).
 
-Both are frozen (immutable): once built they can be shared across
-requests and tasks without anyone accidentally changing them.
+Both forbid unknown fields and prevent attribute reassignment, making contract
+drift fail loudly at construction time.
 """
 
 # This line makes every type hint below a lazy string. (Boilerplate.)
@@ -41,7 +41,8 @@ class ResolutionRequest(BaseModel):
     """The question the resolver is asked.
 
     Built AFTER authentication and authorization: everything in here is
-    already trusted. The resolver only has to pick WHERE the prompt goes.
+    already trusted. The resolver verifies that exact grant still exists and
+    enriches it with current provider/model execution settings.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -58,9 +59,8 @@ class ResolutionRequest(BaseModel):
 class ResolvedRoute(BaseModel):
     """The complete answer: every fact execution needs, nothing more.
 
-    The "effective" fields mean the winner of the settings cascade has
-    already been chosen (deployment override vs. provider/model default),
-    so execution code never has to re-derive them.
+    The "effective" fields mean request execution receives one resolved value
+    and never has to re-derive provider/model defaults.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
