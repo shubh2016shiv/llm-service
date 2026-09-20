@@ -44,19 +44,14 @@ class ResolutionRequest(BaseModel):
     already trusted. The resolver only has to pick WHERE the prompt goes.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     tenant_id: UUID  # which customer is asking
     user_id: UUID  # which user is asking
     deployment_key: str = Field(min_length=1)  # which route they want
     operation: OperationType  # chat, embed, rerank, ...
-    pre_authorized_entitlement_id: UUID | None = Field(
-        default=None,
-        description="Entitlement already verified by the authorization layer.",
-    )
-    requested_model_name: str | None = Field(
-        default=None,
-        description="Optional model hint used to match a user entitlement.",
+    entitlement_id: UUID = Field(
+        description="Exact entitlement already verified by authorization.",
     )
 
 
@@ -68,7 +63,7 @@ class ResolvedRoute(BaseModel):
     so execution code never has to re-derive them.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     tenant_id: UUID  # who this route belongs to
     deployment_key: str  # which route key it answers

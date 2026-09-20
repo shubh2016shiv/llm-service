@@ -1,104 +1,65 @@
 # Inference routing
 
-This module answers one question: given an authorized tenant, user, deployment
-key, and operation, which exact provider route should execute the request?
+Inference routing runs **after authorization**. Its job is not to decide which
+credential a user may use. Authorization already made that security decision
+and supplied an exact `entitlement_id`.
 
-It does not authenticate users, call providers, fetch plaintext secrets, enforce
-quota, or write configuration. Those concerns remain outside the module.
-
-## Current end-to-end flow
-
-```mermaid
-flowchart TD
-    A[Authorized API request] --> B[Build ResolutionRequest]
-    B --> C[InferenceRouteResolver.resolve_route]
-    C --> D[Read tenant from PostgreSQL]
-    D --> E{Tenant active or trial?}
-    E -- No --> F[Raise tenant error]
-    E -- Yes --> G[Read matching user entitlements]
-    G --> H{Active entitlement count}
-    H -- More than one --> I[Raise ambiguous entitlement error]
-    H -- One --> J[Use entitlement route]
-    H -- None --> K[Read deployment through cache-aside reader]
-    K --> L{Valid Redis value?}
-    L -- Yes --> M[Use cached deployment]
-    L -- Missing --> N[Read PostgreSQL]
-    L -- Corrupt --> O[Delete or ignore bad value]
-    O --> N
-    N --> P[Best-effort repopulate Redis]
-    M --> Q[Use deployment route]
-    P --> Q
-    J --> R[Enforce tenant provider allow-list]
-    Q --> R
-    R --> S[Load provider YAML and model specification]
-    S --> T[Validate requested operation capability]
-    T --> U[Build immutable ResolvedRoute]
-    U --> V[InferenceService]
-    V --> W[ProviderRegistry and provider adapter]
+```text
+HTTP request
+    -> authorization validates tenant + membership + deployment + entitlement
+    -> ResolutionRequest carries the approved entitlement_id
+    -> resolver re-reads that exact active entitlement from PostgreSQL
+    -> resolver checks current tenant policy and provider/model capability
+    -> route builder returns one immutable ResolvedRoute
+    -> provider execution
 ```
 
-Redis is an optimization. PostgreSQL remains authoritative. A corrupt cache
-entry is ignored even if deletion fails, and a cache write failure never blocks
-a valid database route.
+## Why the entitlement id is required
 
-## Decision rules
+Imagine authorization approves entitlement A. If routing later searched all
+records and selected entitlement B, execution would use a credential that was
+never authorized. Requiring the identifier makes that impossible. If A is
+revoked between the two steps, routing returns
+`AUTHORIZED_ENTITLEMENT_UNAVAILABLE` and fails closed.
 
-1. Missing, suspended, or deleted tenants are rejected.
-2. One active user entitlement overrides the tenant deployment.
-3. Multiple active entitlements are rejected as ambiguous.
-4. With no active entitlement, the active tenant deployment is used.
-5. The selected provider must be allowed by tenant policy.
-6. The provider and model must exist in the static catalog.
-7. The model must support the requested operation.
+There is deliberately no fallback. A deleted, revoked, or malformed grant must
+be authorized again; silently choosing a deployment credential would turn a
+security change into unintended access.
 
-The resolver either returns one complete `ResolvedRoute` or raises a typed
-domain exception. It never returns a partial route.
+## The two input sources
 
-## Public API
+`InferenceRoutingConfigReader` reads current tenant policy and the exact
+entitlement from PostgreSQL. These security-sensitive reads are not cached, so
+suspension and revocation apply to the next request.
+
+`ProviderConfigCatalog` supplies provider and model metadata loaded and
+validated during application startup. It answers whether the provider exists,
+the model exists, and the model supports chat, embedding, or reranking.
+
+## Example
 
 ```python
 request = ResolutionRequest(
-    tenant_id=tenant_id,
-    user_id=user_id,
-    deployment_key=deployment_key,
+    tenant_id=access_context.tenant_id,
+    user_id=access_context.user_id,
+    deployment_key=access_context.deployment_key,
+    entitlement_id=access_context.entitlement_id,
     operation=OperationType.CHAT,
-    pre_authorized_entitlement_id=entitlement_id,
 )
-
-route = await route_resolver.resolve_route(request)
+route = await resolver.resolve_route(request)
 ```
 
-`ResolvedRoute` contains only values consumed by execution:
+`ResolvedRoute` is the handoff to execution. It contains the endpoint, secret
+reference (never plaintext secret), effective defaults, quota key, and a stable
+fingerprint. Downstream code consumes this answer and makes no routing choices.
 
-- tenant and deployment identity;
-- provider metadata, provider name, model name, and endpoint;
-- secret reference, never plaintext credentials;
-- effective timeout, temperature, and token limit;
-- provider-specific headers and configuration;
-- quota key and deterministic route fingerprint.
+## Failure meanings
 
-## File map
+- Missing or suspended tenant: current tenant policy no longer allows traffic.
+- Unavailable authorized entitlement: the exact grant disappeared or was revoked.
+- Provider forbidden: the tenant allow-list changed after authorization.
+- Unknown provider/model: runtime data disagrees with the startup catalog.
+- Unsupported operation: the selected model cannot perform the requested task.
 
-| File | Responsibility |
-|---|---|
-| `route_resolution.py` | Precedence, policy, catalog validation, and route construction |
-| `models.py` | Immutable input and output contracts |
-| `contracts.py` | One reader protocol used by the resolver |
-| `exceptions.py` | Routing-specific domain errors |
-| `../adapters/inference_routing/cached_config_reader.py` | PostgreSQL mapping and Redis cache-aside behavior |
-
-There is one concrete resolver and one data-reader protocol. A base class is not
-needed because there are no interchangeable resolver algorithms.
-
-## Extension guide
-
-- Add a provider by extending provider configuration and its adapter. The route
-  resolver should not change unless routing policy changes.
-- Add a new operation by extending the shared operation/capability enums and
-  provider model configuration.
-- Change precedence only in `InferenceRouteResolver` and cover it with a
-  resolver-level behavior test.
-- Change persistence schemas only in the infrastructure reader's row mapping.
-
-Keep helpers private only when they protect an internal boundary. Public
-workflow names should remain descriptive and searchable.
+For storage details, continue with
+`app/adapters/inference_routing/postgres_config_reader.py`.

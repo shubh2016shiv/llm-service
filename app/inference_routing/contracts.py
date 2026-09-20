@@ -1,70 +1,47 @@
-"""
-The storage contract — what the resolver needs from the outside world
-========================================================================
+"""Narrow boundaries used by inference route resolution.
 
-What this file is for
----------------------
-The resolver decides routes, but it does not read databases itself. It
-asks a "reader" for three kinds of facts. This file declares those three
-questions as a Protocol — a shape that any class with these three
-methods satisfies automatically, no inheritance required.
+Architecture:
+    API -> InferenceRouteResolver -> these Protocols -> adapters
 
-The real reader is CachedInferenceRoutingConfigReader (in
-app/adapters/inference_routing), which answers from PostgreSQL + Redis.
-Tests supply tiny fakes instead. The resolver cannot tell the difference
-— that is the point.
-
-The three questions
--------------------
-    read_tenant_config     -> the tenant's rules: active? plan? allowed
-                              providers?
-    find_user_entitlements -> this user's personal API-key records
-                              (bring-your-own-key candidates).
-    read_deployment_config -> the tenant's shared deployment setup.
+Authorization has already selected one entitlement before this package runs.
+The resolver therefore asks storage for that exact record; it never searches
+for alternatives or silently changes the authorization decision.
 """
 
-# This line makes every type hint below a lazy string. (Boilerplate.)
 from __future__ import annotations
 
-# TYPE_CHECKING is only True while a type checker reads the file, never at
-# runtime — imports under it exist purely for type hints.
-# Protocol = describes "any class with these methods" (structural typing).
 from typing import TYPE_CHECKING, Protocol
 
-# Names used only in type hints, so they are imported only for the checker.
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from app.core.settings.models.tenant_config import (
-        DeploymentConfig,
-        TenantConfig,
-        UserEntitlementConfig,
-    )
+    from app.core.settings.models.provider_config import ProviderStaticConfig
+    from app.core.settings.models.tenant_config import TenantConfig, UserEntitlementConfig
     from app.inference_routing.models import ResolutionRequest
 
 
 class InferenceRoutingConfigReader(Protocol):
-    """The three storage questions the route resolver needs answered."""
+    """Read fresh tenant policy and the exact authorized entitlement."""
 
     async def read_tenant_config(self, tenant_id: UUID) -> TenantConfig | None:
-        """Return the tenant's rules, or None when the tenant does not exist."""
+        """Return current tenant policy, or ``None`` when absent."""
         ...
 
-    async def find_user_entitlements(
+    async def read_entitlement_config(
         self,
         request: ResolutionRequest,
-    ) -> list[UserEntitlementConfig]:
-        """Return this user's personal-key records matching the request.
-
-        An empty list simply means "no personal key here" — that is
-        normal, not an error.
-        """
+    ) -> UserEntitlementConfig | None:
+        """Return the authorization-approved entitlement, or ``None`` when absent."""
         ...
 
-    async def read_deployment_config(
-        self,
-        tenant_id: UUID,
-        deployment_key: str,
-    ) -> DeploymentConfig | None:
-        """Return the deployment's setup, or None when it does not exist."""
+
+class ProviderConfigCatalog(Protocol):
+    """Supply the preloaded provider/model catalog used by routing policy."""
+
+    def load_provider_config(self, provider_name: str) -> ProviderStaticConfig:
+        """Return one provider configuration.
+
+        Raises:
+            KeyError: If the provider was not loaded during startup.
+        """
         ...
