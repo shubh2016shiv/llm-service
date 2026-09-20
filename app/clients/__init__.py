@@ -26,8 +26,17 @@ Author: Shubham Singh
 """
 
 from app.clients.token_manager_client import (
-    QuotaExceededError,
     TokenManagerClient,
+    TokenManagerProtocolError,
+    TokenManagerUnavailableError,
+    TokenReservation,
+    TokenReservationRejectedError,
 )
 
-__all__ = ["QuotaExceededError", "TokenManagerClient"]
+__all__ = [
+    "TokenManagerClient",
+    "TokenManagerProtocolError",
+    "TokenManagerUnavailableError",
+    "TokenReservation",
+    "TokenReservationRejectedError",
+]
