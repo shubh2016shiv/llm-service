@@ -5,7 +5,7 @@ Reads credentials from the project .env file — no arguments required.
 Run from anywhere inside the repository.
 
 Usage:
-    python infrastructure/test_redis_connection.py
+    python -m infrastructure.diagnostics.redis
 
 Exit codes:
     0  connection succeeded
@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import _ansi
+from infrastructure.local_stack import console as _ansi
 
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
@@ -28,6 +28,7 @@ REDIS_PORT = 6379
 # ---------------------------------------------------------------------------
 # Project root / .env
 # ---------------------------------------------------------------------------
+
 
 def _find_project_root() -> Path:
     try:
@@ -58,6 +59,7 @@ def _load_env(env_path: Path) -> dict[str, str]:
 # Async connection test
 # ---------------------------------------------------------------------------
 
+
 async def _connect(host: str, port: int, password: str) -> dict[str, Any]:
     try:
         import redis.asyncio as aioredis
@@ -67,24 +69,25 @@ async def _connect(host: str, port: int, password: str) -> dict[str, Any]:
     client = aioredis.Redis(host=host, port=port, password=password, socket_timeout=5)
     try:
         await client.ping()
-        info     = await client.info()
+        info = await client.info()
         keyspace = await client.info("keyspace")
     finally:
         await client.close()
 
     return {
-        "redis_version":     info.get("redis_version"),
-        "uptime_seconds":    info.get("uptime_in_seconds"),
-        "used_memory":       info.get("used_memory_human"),
+        "redis_version": info.get("redis_version"),
+        "uptime_seconds": info.get("uptime_in_seconds"),
+        "used_memory": info.get("used_memory_human"),
         "connected_clients": info.get("connected_clients"),
-        "role":              info.get("role"),
-        "databases":         {k: v for k, v in keyspace.items() if k.startswith("db")},
+        "role": info.get("role"),
+        "databases": {k: v for k, v in keyspace.items() if k.startswith("db")},
     }
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     print(_ansi.bold("Redis Connection Diagnostic"))

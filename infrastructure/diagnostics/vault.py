@@ -5,7 +5,7 @@ Reads credentials from the project .env file — no arguments required.
 Run from anywhere inside the repository.
 
 Usage:
-    python infrastructure/test_vault_connection.py
+    python -m infrastructure.diagnostics.vault
 
 Exit codes:
     0  connection succeeded and Vault is unsealed
@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import _ansi
+from infrastructure.local_stack import console as _ansi
 
 VAULT_DEFAULT_ADDR = "http://localhost:8200"
 
@@ -27,6 +27,7 @@ VAULT_DEFAULT_ADDR = "http://localhost:8200"
 # ---------------------------------------------------------------------------
 # Project root / .env
 # ---------------------------------------------------------------------------
+
 
 def _find_project_root() -> Path:
     try:
@@ -57,6 +58,7 @@ def _load_env(env_path: Path) -> dict[str, str]:
 # Async Vault checks
 # ---------------------------------------------------------------------------
 
+
 async def _check_health(addr: str) -> dict[str, Any]:
     """
     GET /v1/sys/health — Vault returns a body even for non-2xx responses
@@ -70,7 +72,8 @@ async def _check_health(addr: str) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=5) as client:
         response = await client.get(f"{addr}/v1/sys/health")
 
-    return response.json()
+    payload: dict[str, Any] = response.json()
+    return payload
 
 
 async def _authenticate_userpass(addr: str, username: str, password: str) -> dict[str, Any]:
@@ -97,9 +100,9 @@ async def _authenticate_userpass(addr: str, username: str, password: str) -> dic
     data = lookup.json()["data"]
     return {
         "token_prefix": token[:8] + "...",
-        "policies":     data.get("policies", []),
-        "ttl":          data.get("ttl"),
-        "renewable":    data.get("renewable"),
+        "policies": data.get("policies", []),
+        "ttl": data.get("ttl"),
+        "renewable": data.get("renewable"),
         "display_name": data.get("display_name"),
     }
 
@@ -107,6 +110,7 @@ async def _authenticate_userpass(addr: str, username: str, password: str) -> dic
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     print(_ansi.bold("HashiCorp Vault Connection Diagnostic"))
@@ -116,7 +120,7 @@ def main() -> int:
     env = _load_env(project_root / ".env")
 
     _ansi.header("Credentials  (.env)")
-    addr     = env.get("VAULT_ADDR", VAULT_DEFAULT_ADDR)
+    addr = env.get("VAULT_ADDR", VAULT_DEFAULT_ADDR)
     username = env.get("VAULT_SERVICE_USERNAME") or env.get("VAULT_USERNAME", "")
     password = env.get("VAULT_SERVICE_PASSWORD") or env.get("VAULT_PASSWORD", "")
 
@@ -137,9 +141,9 @@ def main() -> int:
         return 1
 
     initialized = health.get("initialized", False)
-    sealed      = health.get("sealed", True)
-    version     = health.get("version", "unknown")
-    cluster     = health.get("cluster_name", "")
+    sealed = health.get("sealed", True)
+    version = health.get("version", "unknown")
+    cluster = health.get("cluster_name", "")
 
     print(f"  Version      : {version}")
     print(f"  Cluster      : {cluster or '(dev mode - no cluster name)'}")

@@ -5,7 +5,7 @@ Reads credentials from the project .env file — no arguments required.
 Run from anywhere inside the repository.
 
 Usage:
-    python infrastructure/test_postgres_connection.py
+    python -m infrastructure.diagnostics.postgres
 
 Exit codes:
     0  connection succeeded
@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import _ansi
+from infrastructure.local_stack import console as _ansi
 
 POSTGRES_HOST = "localhost"
 POSTGRES_PORT = 5432
@@ -29,6 +29,7 @@ POSTGRES_PORT = 5432
 # ---------------------------------------------------------------------------
 # Project root / .env
 # ---------------------------------------------------------------------------
+
 
 def _find_project_root() -> Path:
     try:
@@ -59,11 +60,14 @@ def _load_env(env_path: Path) -> dict[str, str]:
 # Port-conflict detection
 # ---------------------------------------------------------------------------
 
+
 def _pids_on_port(port: int) -> list[str]:
     try:
         if platform.system() == "Windows":
             out = subprocess.check_output(
-                ["netstat", "-ano"], text=True, stderr=subprocess.DEVNULL,
+                ["netstat", "-ano"],
+                text=True,
+                stderr=subprocess.DEVNULL,
             )
             pids: list[str] = []
             for line in out.splitlines():
@@ -74,7 +78,8 @@ def _pids_on_port(port: int) -> list[str]:
         else:
             out = subprocess.check_output(
                 ["ss", "-tlnp", f"sport = :{port}"],
-                text=True, stderr=subprocess.DEVNULL,
+                text=True,
+                stderr=subprocess.DEVNULL,
             )
             return [line.split()[-1] for line in out.splitlines()[1:] if line.strip()]
     except Exception:
@@ -109,6 +114,7 @@ def _warn_port_conflict(port: int) -> bool:
 # Async connection test
 # ---------------------------------------------------------------------------
 
+
 async def _connect(host: str, port: int, database: str, user: str, password: str) -> dict[str, Any]:
     try:
         import asyncpg
@@ -116,8 +122,12 @@ async def _connect(host: str, port: int, database: str, user: str, password: str
         raise RuntimeError("asyncpg is not installed. Run: uv pip install asyncpg") from exc
 
     conn = await asyncpg.connect(
-        host=host, port=port, database=database,
-        user=user, password=password, timeout=5,
+        host=host,
+        port=port,
+        database=database,
+        user=user,
+        password=password,
+        timeout=5,
     )
     try:
         row = await conn.fetchrow(
@@ -136,12 +146,13 @@ async def _connect(host: str, port: int, database: str, user: str, password: str
     finally:
         await conn.close()
 
-    return dict(row)  # type: ignore[arg-type]
+    return dict(row)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     print(_ansi.bold("PostgreSQL Connection Diagnostic"))
@@ -151,7 +162,7 @@ def main() -> int:
     env = _load_env(project_root / ".env")
 
     _ansi.header("Credentials  (.env)")
-    user     = env.get("POSTGRES_USER", "llm_user")
+    user = env.get("POSTGRES_USER", "llm_user")
     password = env.get("POSTGRES_PASSWORD", "")
     database = env.get("POSTGRES_DB", "llm_services")
 

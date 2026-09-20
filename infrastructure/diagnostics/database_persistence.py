@@ -20,7 +20,7 @@ Set CLEANUP = True (below) to delete all test records after the run.
 Set CLEANUP = False to leave records in the database for post-run inspection.
 
 Usage (from project root):
-    python infrastructure/test_database_layer.py
+    python -m infrastructure.diagnostics.database_persistence
 
 Exit codes:
     0  all steps passed
@@ -52,7 +52,7 @@ def _find_project_root() -> Path:
         ).strip()
         return Path(root)
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return Path(__file__).resolve().parent.parent
+        return Path(__file__).resolve().parents[2]
 
 
 _PROJECT_ROOT = _find_project_root()
@@ -83,7 +83,7 @@ os.environ.setdefault(
     "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 )
 
-import _ansi  # noqa: E402 — must come after sys.path bootstrap
+from infrastructure.local_stack import console as _ansi  # noqa: E402 — after path bootstrap
 
 # ---------------------------------------------------------------------------
 # Test fixtures
@@ -198,8 +198,9 @@ class _Steps:
 async def main() -> int:
     from sqlalchemy import text
 
+    from app.adapters.postgresql import PostgresSessionProvider
+    from app.core.settings.settings import get_application_settings
     from app.database import (
-        DatabaseSessionManager,
         ModelCatalogPersistence,
         ProviderCatalogPersistence,
         TenantDeploymentPersistence,
@@ -207,6 +208,11 @@ async def main() -> int:
         TenantPersistence,
         UserEntitlementPersistence,
         UserPersistence,
+    )
+    from app.schemas.management_filters import (
+        TenantDeploymentListFilters,
+        TenantListFilters,
+        TenantMembershipListFilters,
     )
 
     steps = _Steps()
@@ -231,15 +237,19 @@ async def main() -> int:
     print(f"  User UUID  : {_USER_ID}")
     print()
 
-    manager = DatabaseSessionManager()
+    # Every persistence class takes the same application-scoped session
+    # provider, exactly as the FastAPI lifespan wires it in production. Sharing
+    # one provider here means this diagnostic exercises the real pool
+    # behaviour rather than a per-class connection of its own.
+    manager = PostgresSessionProvider(get_application_settings())
 
-    provider_p = ProviderCatalogPersistence()
-    model_p = ModelCatalogPersistence()
-    tenant_p = TenantPersistence()
-    user_p = UserPersistence()
-    membership_p = TenantMembershipPersistence()
-    deployment_p = TenantDeploymentPersistence()
-    entitlement_p = UserEntitlementPersistence()
+    provider_p = ProviderCatalogPersistence(manager)
+    model_p = ModelCatalogPersistence(manager)
+    tenant_p = TenantPersistence(manager)
+    user_p = UserPersistence(manager)
+    membership_p = TenantMembershipPersistence(manager)
+    deployment_p = TenantDeploymentPersistence(manager)
+    entitlement_p = UserEntitlementPersistence(manager)
 
     try:
         # =====================================================================
@@ -249,14 +259,17 @@ async def main() -> int:
 
         try:
             async with manager.get_session() as session:
-                result = await session.execute(
+                # Named distinctly from the `result` used by every persistence
+                # call below: this one is a SQLAlchemy Result, and reusing the
+                # name would give the whole function a contradictory type.
+                connectivity = await session.execute(
                     text("SELECT version() AS pg_version, current_database() AS db")
                 )
-                info = dict(result.mappings().one())
-            steps.ok("DatabaseSessionManager.get_session", str(info["pg_version"])[:60])
+                info = dict(connectivity.mappings().one())
+            steps.ok("PostgresSessionProvider.get_session", str(info["pg_version"])[:60])
             steps.ok("Connected to database", str(info["db"]))
         except Exception as exc:
-            steps.fail("DatabaseSessionManager.get_session", exc)
+            steps.fail("PostgresSessionProvider.get_session", exc)
             _ansi.fail("Cannot reach the database — aborting.")
             steps.summary()
             return 1
@@ -790,9 +803,9 @@ async def main() -> int:
             steps.fail("list/count models", exc)
 
         try:
-            rows = await tenant_p.list_tenants()
+            rows = await tenant_p.list_tenants(TenantListFilters())
             steps.ok("list_tenants", f"{len(rows)} row(s)")
-            count = await tenant_p.count_tenants()
+            count = await tenant_p.count_tenants(TenantListFilters())
             steps.ok("count_tenants", str(count))
         except Exception as exc:
             steps.fail("list/count tenants", exc)
@@ -808,11 +821,12 @@ async def main() -> int:
             steps.fail("list/count users", exc)
 
         try:
-            rows = await membership_p.list_tenant_memberships(tenant_id)
+            membership_filters = TenantMembershipListFilters()
+            rows = await membership_p.list_tenant_memberships(tenant_id, membership_filters)
             steps.ok("list_tenant_memberships", f"{len(rows)} row(s)")
             rows = await membership_p.list_user_memberships(user_id)
             steps.ok("list_user_memberships", f"{len(rows)} row(s)")
-            count = await membership_p.count_tenant_members(tenant_id)
+            count = await membership_p.count_tenant_members(tenant_id, membership_filters)
             steps.ok("count_tenant_members", str(count))
             count = await membership_p.count_user_tenants(user_id)
             steps.ok("count_user_tenants", str(count))
@@ -821,11 +835,20 @@ async def main() -> int:
 
         if deployment_id is not None:
             try:
-                rows = await deployment_p.list_deployments(tenant_id)
+                rows = await deployment_p.list_deployments(
+                    tenant_id,
+                    TenantDeploymentListFilters(),
+                )
                 steps.ok("list_deployments (all)", f"{len(rows)} row(s)")
-                rows = await deployment_p.list_deployments(tenant_id, active_only=True)
+                rows = await deployment_p.list_deployments(
+                    tenant_id,
+                    TenantDeploymentListFilters(active_only=True),
+                )
                 steps.ok("list_deployments (active_only)", f"{len(rows)} row(s)")
-                count = await deployment_p.count_deployments(tenant_id)
+                count = await deployment_p.count_deployments(
+                    tenant_id,
+                    TenantDeploymentListFilters(),
+                )
                 steps.ok("count_deployments", str(count))
             except Exception as exc:
                 steps.fail("list/count deployments", exc)
