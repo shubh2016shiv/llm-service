@@ -1,7 +1,7 @@
 # settings/cloud_providers/azure_openai.yaml — Azure OpenAI static provider definition
 # Endpoint and deployment_name are per-tenant (in DeploymentConfig).
-# Lives under cloud_providers/ alongside azure.yaml (platform infra) because
-# Azure OpenAI is a cloud-platform-native SDK provider, not a direct REST API.
+# Provider metadata belongs beside every other runtime provider. Azure platform
+# defaults remain separately owned by cloud_providers/azure.yaml.
 
 provider_name: azure_openai
 provider_type: rest_api

@@ -1,7 +1,7 @@
 # settings/cloud_providers/bedrock.yaml — AWS Bedrock static provider definition
 # Uses AWS SigV4 auth — no API key header. Region from DeploymentConfig.
-# Lives under cloud_providers/ alongside aws.yaml (platform infra) because
-# Bedrock is a cloud-platform-native SDK provider, not a direct REST API.
+# Provider metadata belongs beside every other runtime provider. AWS platform
+# defaults remain separately owned by cloud_providers/aws.yaml.
 
 provider_name: bedrock
 provider_type: aws_sdk
