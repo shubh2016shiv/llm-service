@@ -1,125 +1,186 @@
 """
-JWT Token Service
-=================
+JWT token service — the ID card printer and verifier
+=====================================================
 
-Creates, decodes, and validates JWTs used for authenticated API sessions.
+What this file is for
+---------------------
+Sessions here work with ID cards instead of server-side memory. A JWT
+(JSON Web Token) is a small signed card:
 
-This module is intentionally stateless: it performs cryptographic token
-operations and claim validation without querying database state.
+    - anyone can READ it (it is just encoded text),
+    - only this service can MAKE a valid one (it signs with a secret),
+    - the signature proves the card was not altered since printing,
+    - the card carries an expiry, so old cards stop working on their own.
 
-Enterprise Pattern: Stateless Authentication Pattern
-    Token validation is self-contained and deterministic, which helps services
-    scale horizontally without a shared session store.
+Because the card proves itself, the server needs no session storage —
+that is what "stateless" means here, and why many server copies can all
+accept the same card.
+
+The four operations, in plain words
+-----------------------------------
+    create_access_token  -> print a short-lived "entry card" at login.
+    create_refresh_token -> print a long-lived "renewal card" whose only
+                            job is to get a new entry card later.
+    decode_token         -> read a card back and prove it is genuine.
+    verify_token_type    -> check the card is the right KIND (entry vs.
+                            renewal), so a renewal card cannot be used
+                            where an entry card is required.
 
 Security note:
-    Every token includes a ``type`` claim so refresh tokens cannot be used where
-    access tokens are required.
+    Every card carries a "type" line. The signature alone cannot tell an
+    entry card from a renewal card — only this line can.
 
-Step-by-step relation in auth flow:
-    1. Login flow calls ``create_access_token`` (and optionally refresh token).
-    2. Client sends access token on API requests.
-    3. Route dependency calls ``decode_token`` to verify signature and claims.
-    4. ``verify_token_type`` enforces context correctness (access vs refresh).
+Who uses this file
+------------------
+    Login flow   -> create_access_token / create_refresh_token
+    Route guards -> decode_token / verify_token_type
+                    (see auth_dependencies.py)
 
 Author: Shubham Singh
 """
 
+# This line makes every type hint below a lazy string. (Boilerplate.)
 from __future__ import annotations
 
+# logging = writing to the application log.
 import logging
+
+# datetime/UTC/timedelta = stamp the card's "issued at" and "expires at".
 from datetime import UTC, datetime, timedelta
-from typing import Any, get_args
+
+# TYPE_CHECKING is only True while a type checker reads the file.
+# Literal = a value that may be exactly one of a fixed set.
+# get_args = list the allowed values of a Literal at runtime.
+# cast = tell the type checker "we verified this already".
+from typing import TYPE_CHECKING, Literal, cast, get_args
+
+# UUID = the globally unique user id type.
 from uuid import UUID
 
+# The JWT library: jwt.encode/jwt.decode, plus its JWTError family.
 from jose import JWTError, jwt
 
+# The app's settings (signing secret, algorithm, token lifetimes).
 from app.core.settings.settings import get_application_settings
+
+# The typed identity a decoded card becomes.
 from app.schemas.auth_schema import AuthTokenPayload, UserRole
+
+# The set of all known platform role names.
+from app.schemas.role_hierarchy import ALL_PLATFORM_ROLES
+
+# Names used only in type hints, so they are imported only for the checker.
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
-# Derived from the canonical UserRole Literal so adding a role in auth_schema.py
-# is the single change required — no need to update this set manually.
-_VALID_ROLES: frozenset[str] = frozenset(get_args(UserRole))
+# The two kinds of card: an "access" entry card and a "refresh" renewal
+# card. The type checker then rejects any other string.
+TokenType = Literal["access", "refresh"]
 
 
 def _build_token_claims(
     user_id: UUID,
     role: str,
-    token_type: str,
+    token_type: TokenType,
     expires_at: datetime,
 ) -> dict[str, object]:
-    """Assemble standard claims required by this service's token contract.
+    """Assemble the standard lines printed on every card.
 
-    Centralizing claim construction keeps access and refresh token payloads
-    consistent, reducing drift between token types.
+    Building every card through this one helper keeps the entry card and
+    the renewal card identical in shape — only their "type" line and
+    expiry differ — so the two can never drift apart.
     """
     now = datetime.now(UTC)
     return {
-        "user_id": str(user_id),
-        "role": role,
-        "type": token_type,
-        "exp": expires_at,
-        "iat": now,
+        "user_id": str(user_id),  # who the card belongs to
+        "role": role,  # their clearance level
+        "type": token_type,  # "access" (entry) or "refresh" (renewal)
+        "exp": expires_at,  # when the card stops working
+        "iat": now,  # when the card was printed
     }
 
 
 def _assert_valid_role(role: str) -> None:
-    """Validate role against the canonical role set before token issuance."""
-    if role not in _VALID_ROLES:
-        raise ValueError(f"Role {role!r} is not valid. Must be one of: {sorted(_VALID_ROLES)}")
+    """Refuse to print a card with a clearance level that does not exist."""
+    if role not in ALL_PLATFORM_ROLES:
+        raise ValueError(
+            f"Role {role!r} is not valid. Must be one of: {sorted(ALL_PLATFORM_ROLES)}"
+        )
 
 
 def create_access_token(user_id: UUID, role: str) -> str:
-    """Create a signed JWT access token.
+    """Print a signed, short-lived entry card.
+
+    Called once, at login. From then on, the client attaches this card to
+    every API call as ``Authorization: Bearer <token>``, and the route
+    guards read it back.
 
     Args:
-        user_id: UUID of the authenticated user.
-        role: User's role — developer, operator, admin, or owner.
+        user_id: Who the card belongs to.
+        role: Their clearance level (developer, operator, admin, owner).
 
     Returns:
-        Signed JWT string intended for API request authorization.
+        The signed JWT string.
 
     Raises:
-        ValueError: If the role is not in the allowed set.
-        JWTError: If token signing fails.
+        ValueError: The role is not a known platform role.
+        JWTError: Signing failed.
     """
-    _assert_valid_role(role)
+    # Auth Stage 1 / Sub-stage 1.1: mint the short-lived token the client
+    # will attach to every API call from now on. Called once, at login.
+    # What next: the client stores this and sends it as
+    # `Authorization: Bearer <token>` on every request; Auth Stage 2 reads it.
+    _assert_valid_role(role)  # no card with a made-up clearance level
     settings = get_application_settings()
+    # Entry cards live for hours, not days.
     expires_at = datetime.now(UTC) + timedelta(hours=settings.jwt_access_token_expire_hours)
     claims = _build_token_claims(user_id, role, "access", expires_at)
 
+    # Sign the card with the service's secret. Signature proves it was
+    # printed here and has not been altered.
     token: str = jwt.encode(
         claims,
         settings.jwt_secret_key.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
-    logger.debug("Access token created | user_id=%s role=%s", user_id, role)
+    logger.debug("Access token created", extra={"user_id": str(user_id), "role": role})
     return token
 
 
 def create_refresh_token(user_id: UUID, role: str) -> str:
-    """Create a signed JWT refresh token.
+    """Print a signed, long-lived renewal card.
 
-    Refresh tokens have a longer lifetime than access tokens and are meant
-    only for token rotation flows, not direct API authorization.
+    The renewal card's ONLY job is to obtain a new entry card later,
+    without asking for the password again. It is never sent to ordinary
+    business endpoints — those demand an entry card.
 
     Args:
-        user_id: UUID of the authenticated user.
-        role: User's role.
+        user_id: Who the card belongs to.
+        role: Their clearance level.
 
     Returns:
-        Signed JWT refresh token string.
+        The signed JWT refresh token string.
 
     Raises:
-        ValueError: If refresh tokens are disabled or the role is invalid.
-        JWTError: If token signing fails.
+        ValueError: Refresh tokens are disabled, or the role is not a
+            known platform role.
+        JWTError: Signing failed.
     """
+    # Auth Stage 1 / Sub-stage 1.2: mint the long-lived companion token
+    # whose only job is to get a new access token later, without asking
+    # for a password again. Never sent to ordinary business endpoints.
+    # What next: the client holds this until the access token expires,
+    # then exchanges it (login/refresh flow, outside this module) for a
+    # fresh one.
     settings = get_application_settings()
+    # Renewal cards can be switched off entirely by configuration.
     if not settings.jwt_refresh_enabled:
         raise ValueError("Refresh tokens are disabled. Set JWT_REFRESH_ENABLED=true to enable.")
 
     _assert_valid_role(role)
+    # Renewal cards live for days, not hours.
     expires_at = datetime.now(UTC) + timedelta(days=settings.jwt_refresh_token_expire_days)
     claims = _build_token_claims(user_id, role, "refresh", expires_at)
 
@@ -128,65 +189,100 @@ def create_refresh_token(user_id: UUID, role: str) -> str:
         settings.jwt_secret_key.get_secret_value(),
         algorithm=settings.jwt_algorithm,
     )
-    logger.debug("Refresh token created | user_id=%s role=%s", user_id, role)
+    logger.debug("Refresh token created", extra={"user_id": str(user_id), "role": role})
     return token
 
 
 def decode_token(token: str) -> AuthTokenPayload:
-    """Decode and cryptographically validate a JWT token.
+    """Read a card back and prove it is genuine.
 
-    ``python-jose`` validates signature and expiry. This function then
-    validates required custom claims and maps raw values into the strongly
-    typed ``AuthTokenPayload`` used across the application.
+    The JWT library verifies the signature and expiry. This function then
+    checks that every required line is present and maps the raw values
+    into the strongly typed AuthTokenPayload the rest of the app uses.
 
     Args:
-        token: Raw JWT string from the Authorization header.
+        token: The raw JWT string from the Authorization header.
 
     Returns:
-        Decoded and validated ``AuthTokenPayload``.
+        The decoded, validated identity.
 
     Raises:
-        JWTError: If the token is expired, tampered, or malformed.
-        ValueError: If a required claim is missing from the payload.
+        JWTError: The token is expired, tampered, or malformed.
+        ValueError: A required line is missing from the card.
     """
+    # Auth Stage 1 / Sub-stage 1.3: read a token back and prove it is
+    # genuine -- unmodified, unexpired, and signed with our secret. This
+    # is called from Auth Stage 2 (`get_current_user`) on every protected
+    # request.
+    # What next: on success, the caller still must run `verify_token_type`
+    # (Sub-stage 1.4) before trusting the payload for a specific purpose.
     settings = get_application_settings()
     try:
-        claims: dict[str, Any] = jwt.decode(
+        # Verify the signature and expiry with our secret and algorithm.
+        decoded_claims = jwt.decode(
             token,
             settings.jwt_secret_key.get_secret_value(),
             algorithms=[settings.jwt_algorithm],
         )
     except JWTError as exc:
-        logger.warning("JWT decode failed: %s", exc)
+        # Tampered, expired, or not signed by us. Log the failure TYPE
+        # (never the token) and let the caller turn it into a 401.
+        logger.warning("JWT validation failed", extra={"error_type": type(exc).__name__})
         raise
 
-    # Validate presence of all required custom claims.
+    # Turn the decoded dict into a plain mapping of string -> value.
+    claims: Mapping[str, object] = {
+        str(claim_name): claim_value for claim_name, claim_value in decoded_claims.items()
+    }
+    # Every card must carry these five lines. Missing one = unusable card.
     for required_claim in ("user_id", "role", "type", "exp", "iat"):
         if required_claim not in claims:
             raise ValueError(f"Token is missing required claim: {required_claim!r}")
 
+    # Prove the two enum-like lines carry KNOWN values before building
+    # the payload. (The casts below then only tell the type checker we
+    # checked — which is what makes them honest.) An unknown value is
+    # reported with a clear message here, and — like every ValueError in
+    # this function — the caller maps it to a 401.
+    role_value = str(claims["role"])
+    if role_value not in get_args(UserRole):
+        raise ValueError(f"Token carries an unknown role: {role_value!r}")
+    token_type_value = str(claims["type"])
+    if token_type_value not in get_args(TokenType):
+        raise ValueError(f"Token carries an unknown token type: {token_type_value!r}")
+
     return AuthTokenPayload(
         user_id=UUID(str(claims["user_id"])),
-        role=str(claims["role"]),  # type: ignore[arg-type]
-        token_type=str(claims["type"]),  # type: ignore[arg-type]
-        expires_at=datetime.fromtimestamp(int(claims["exp"]), tz=UTC),
-        issued_at=datetime.fromtimestamp(int(claims["iat"]), tz=UTC),
+        role=cast("UserRole", role_value),
+        token_type=cast("TokenType", token_type_value),
+        # The "exp"/"iat" values came from the token's JSON. The casts
+        # tell the type checker they are numbers; if one is NOT, int()
+        # raises ValueError, which the caller maps to a 401 — exactly as
+        # before the casts existed.
+        expires_at=datetime.fromtimestamp(int(cast("int", claims["exp"])), tz=UTC),
+        issued_at=datetime.fromtimestamp(int(cast("int", claims["iat"])), tz=UTC),
     )
 
 
-def verify_token_type(payload: AuthTokenPayload, expected_token_type: str) -> None:
-    """Assert that a decoded token is of the expected type.
+def verify_token_type(payload: AuthTokenPayload, expected_token_type: TokenType) -> None:
+    """Check the card is the right KIND for this use.
 
-    Prevents token confusion, where a token valid in one context (refresh)
-    is mistakenly accepted in another context (access).
+    This is what stops "token confusion": a renewal card being waved at a
+    door that demands an entry card (or the reverse). The signature alone
+    cannot tell the two apart — only the "type" line can.
 
     Args:
-        payload: Decoded token payload from ``decode_token``.
+        payload: The decoded card from ``decode_token``.
         expected_token_type: Either ``"access"`` or ``"refresh"``.
 
     Raises:
-        ValueError: If the token type does not match.
+        ValueError: The card's type line does not match what is expected.
     """
+    # Auth Stage 1 / Sub-stage 1.4: stop a leaked refresh token from being
+    # used as if it were an access token (or vice versa) -- the JWT
+    # signature alone can't tell the two apart, only this claim check can.
+    # What next: if this passes, Auth Stage 2 treats the payload as a
+    # fully trusted identity for the rest of the request.
     if payload.token_type != expected_token_type:
         raise ValueError(
             f"Token type mismatch: expected {expected_token_type!r}, got {payload.token_type!r}"

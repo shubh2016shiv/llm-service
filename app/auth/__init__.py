@@ -20,6 +20,26 @@ Step-by-step route relationship:
     4. Route handlers receive a typed ``AuthTokenPayload`` that downstream
        services can trust as authenticated identity input.
 
+Where this fits in the request pipeline (continues the "Stage N:M" labels
+already used on the API routers -- prefixed "Auth Stage" here so the two
+numbering schemes never collide):
+    ENTRY POINT: ``get_current_user`` in ``auth_dependencies.py``. FastAPI
+    calls it automatically for every route that declares it via ``Depends``
+    -- there is no other way into this package; nothing calls it manually.
+
+    Auth Stage 1 (jwt_token_service.py)   -- issue/read the JWT itself.
+    Auth Stage 2 (auth_dependencies.py)   -- per-request identity + role gate.
+    Auth Stage 3 (authorization/tenant_access.py)       -- tenant checks for
+        management APIs (users, tenants, deployments, entitlements).
+    Auth Stage 4 (authorization/tenant_inference_auth.py) -- tenant +
+        deployment + entitlement checks for inference APIs (chat/embed/rerank).
+    Auth Stage 5 (authorization/authorization_grant_cache.py) -- caches Stage 4's answer so
+        repeat inference calls skip the database round trip.
+
+    What next: once this package returns a validated ``AuthTokenPayload`` (or,
+    for inference routes, an ``InferenceAccessContext``), route handlers pass
+    it straight into the service layer -- no further auth checks happen there.
+
 Role hierarchy (ascending privilege):
     developer < operator < admin < owner
 
