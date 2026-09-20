@@ -16,7 +16,9 @@ from app.api.shared_dependencies import (
     CredentialWriterDependency,
     PostgresSessionProviderDependency,
     TenantAccessServiceDependency,
+    get_config_loader,
 )
+from app.core.settings.loader import ConfigLoader
 from app.database import (
     ModelCatalogPersistence,
     ProviderCatalogPersistence,
@@ -40,16 +42,22 @@ from app.services import (
 
 def get_provider_catalog_service(
     session_provider: PostgresSessionProviderDependency,
+    config_loader: Annotated[ConfigLoader, Depends(get_config_loader)],
 ) -> ProviderCatalogService:
     """Build provider-catalog operations over PostgreSQL."""
-    return ProviderCatalogService(ProviderCatalogPersistence(session_provider))
+    return ProviderCatalogService(ProviderCatalogPersistence(session_provider), config_loader)
 
 
 def get_model_catalog_service(
     session_provider: PostgresSessionProviderDependency,
+    config_loader: Annotated[ConfigLoader, Depends(get_config_loader)],
 ) -> ModelCatalogService:
     """Build model-catalog operations over PostgreSQL."""
-    return ModelCatalogService(ModelCatalogPersistence(session_provider))
+    return ModelCatalogService(
+        ModelCatalogPersistence(session_provider),
+        ProviderCatalogPersistence(session_provider),
+        config_loader,
+    )
 
 
 def get_management_reference_validation_service(
@@ -134,5 +142,5 @@ def get_user_entitlement_service(
         access_service,
         TenantDeploymentPersistence(session_provider),
         credential_writer,
-        authorization_cache,
+        authorization_cache=authorization_cache,
     )

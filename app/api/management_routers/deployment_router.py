@@ -115,7 +115,7 @@ async def list_deployments(
     try:
         filters = TenantDeploymentListFilters(provider_id=provider_id, active_only=active_only)
         rows = await service.list_deployments(tenant_id, current_user, filters, limit, offset)
-        total = await service.count_deployments(tenant_id, filters)
+        total = await service.count_deployments(tenant_id, current_user, filters)
         return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
     except LLMServiceError as exc:
         translate_management_error(exc)

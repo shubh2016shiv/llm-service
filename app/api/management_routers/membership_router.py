@@ -69,7 +69,7 @@ async def list_members(
         rows = await service.list_tenant_memberships(
             tenant_id, current_user, filters, limit, offset
         )
-        total = await service.count_tenant_members(tenant_id, filters)
+        total = await service.count_tenant_members(tenant_id, current_user, filters)
         return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
     except LLMServiceError as exc:
         translate_management_error(exc)
