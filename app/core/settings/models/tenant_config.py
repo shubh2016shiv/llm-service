@@ -1,8 +1,9 @@
 """
 Tenant & Deployment Configuration Models — Runtime, DB-sourced, per-org configs.
 
-Unlike provider/global configs (static YAML), these are loaded from PostgreSQL
-and cached in Redis. They can change at runtime without restart.
+Unlike provider/global configs (static YAML), these are loaded from PostgreSQL.
+Security-sensitive tenant and entitlement routing reads remain uncached so
+suspension and revocation apply to the next request.
 
 Architecture:
 -------------
@@ -243,10 +244,10 @@ class DeploymentConfig(BaseModel):
 
 
 class UserEntitlementConfig(BaseModel):
-    """Per-user personal LLM entitlement with an individual API key.
+    """Per-user LLM grant carrying the route's credential reference.
 
-    Users may bring their own API keys for providers their tenant allows.
-    Priority resolution: UserEntitlementConfig > DeploymentConfig (tenant shared).
+    This is the exact grant selected by authorization. Routing never searches
+    for another entitlement or falls back to a deployment credential.
 
     Example:
         >>> ue = UserEntitlementConfig(

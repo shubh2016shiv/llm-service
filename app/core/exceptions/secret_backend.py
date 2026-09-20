@@ -35,7 +35,7 @@ class SecretBackendUnavailableError(LLMServiceError):
             reason: Short description of the transport failure.
         """
         super().__init__(
-            f"Secret backend {backend_name!r} is unavailable while reading "
+            f"Secret backend {backend_name!r} is unavailable while accessing "
             f"{secret_reference!r}: {reason}",
             details={"backend_name": backend_name, "secret_reference": secret_reference},
         )

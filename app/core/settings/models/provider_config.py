@@ -214,8 +214,8 @@ class ProviderStaticConfig(BaseModel):
 
     Loaded from config/providers/<name>.yaml at startup. Shared by all tenants
     that use this provider — never duplicated per tenant. The provider's Python
-    class is referenced by implementation_class and dynamically imported by the
-    ProviderRegistry.
+    class is selected by the validated implementation_class enum and resolved
+    through ProviderRegistry's audited class map.
 
     Example:
         >>> static = ProviderStaticConfig(
