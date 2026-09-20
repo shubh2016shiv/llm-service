@@ -157,9 +157,7 @@ class LLMModelSpec(BaseModel):
         """
         return capability in self.capabilities
 
-    def estimate_cost_usd(
-        self, prompt_tokens: int, completion_tokens: int
-    ) -> Decimal | None:
+    def estimate_cost_usd(self, prompt_tokens: int, completion_tokens: int) -> Decimal | None:
         """Estimate the USD cost for a given token usage.
 
         Returns None when pricing data is not available for this model.
@@ -175,10 +173,7 @@ class LLMModelSpec(BaseModel):
             >>> spec.estimate_cost_usd(prompt_tokens=1000, completion_tokens=500)
             Decimal('0.01250')
         """
-        if (
-            self.price_per_1k_prompt_tokens is None
-            or self.price_per_1k_completion_tokens is None
-        ):
+        if self.price_per_1k_prompt_tokens is None or self.price_per_1k_completion_tokens is None:
             return None
 
         prompt_cost: Decimal = (

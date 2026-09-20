@@ -32,36 +32,23 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
-from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.settings.models.provider_config import validate_lowercase_provider_name
+from app.schemas.enums import (
+    TenantDeploymentStatus,
+    TenantLifecycleStatus,
+    TenantSubscriptionTier,
+)
+from app.schemas.model_constraints import MAX_TEMPERATURE, MIN_TEMPERATURE
 
-class TenantStatus(StrEnum):
-    """Lifecycle status of a tenant organisation."""
-
-    ACTIVE = "active"
-    SUSPENDED = "suspended"
-    TRIAL = "trial"
-    DELETED = "deleted"
-
-
-class TenantTier(StrEnum):
-    """Subscription tier controlling feature access and rate limits."""
-
-    FREE = "free"
-    STARTER = "starter"
-    PROFESSIONAL = "professional"
-    ENTERPRISE = "enterprise"
-
-
-class DeploymentStatus(StrEnum):
-    """Operational status of a tenant deployment."""
-
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    MAINTENANCE = "maintenance"
+# Backwards-compatible import name for existing settings consumers. The
+# canonical tenant vocabularies live in app.schemas.enums.
+DeploymentStatus = TenantDeploymentStatus
+TenantStatus = TenantLifecycleStatus
+TenantTier = TenantSubscriptionTier
 
 
 class TenantRateLimits(BaseModel):
@@ -102,8 +89,8 @@ class TenantConfig(BaseModel):
         >>> tc = TenantConfig(
         ...     tenant_id=UUID("..."),
         ...     tenant_name="Acme Corp",
-        ...     status=TenantStatus.ACTIVE,
-        ...     tier=TenantTier.ENTERPRISE,
+        ...     status=TenantLifecycleStatus.ACTIVE,
+        ...     tier=TenantSubscriptionTier.ENTERPRISE,
         ... )
         >>> tc.is_active
         True
@@ -114,9 +101,9 @@ class TenantConfig(BaseModel):
     tenant_id: UUID = Field(description="Unique tenant identifier (UUID v4).")
     tenant_name: str = Field(description="Display name for this organisation.")
     tenant_slug: str = Field(description="URL-friendly unique identifier, e.g. 'acme-corp'.")
-    status: TenantStatus = Field(description="Current lifecycle status.")
-    tier: TenantTier = Field(
-        default=TenantTier.FREE,
+    status: TenantLifecycleStatus = Field(description="Current lifecycle status.")
+    tier: TenantSubscriptionTier = Field(
+        default=TenantSubscriptionTier.FREE,
         description="Subscription tier.",
     )
     rate_limits: TenantRateLimits = Field(
@@ -137,7 +124,7 @@ class TenantConfig(BaseModel):
         Returns:
             True only when status is ACTIVE or TRIAL.
         """
-        return self.status in {TenantStatus.ACTIVE, TenantStatus.TRIAL}
+        return self.status in {TenantLifecycleStatus.ACTIVE, TenantLifecycleStatus.TRIAL}
 
     def allows_provider(self, provider_name: str) -> bool:
         """Check whether a provider is permitted for this tenant.
@@ -219,7 +206,7 @@ class DeploymentConfig(BaseModel):
         ge=0,
         description="Deployment-specific retry count. None = use provider default.",
     )
-    default_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    default_temperature: float = Field(default=0.7, ge=MIN_TEMPERATURE, le=MAX_TEMPERATURE)
     default_max_tokens: int | None = Field(default=None, gt=0)
 
     # ── Extra Config (provider-specific JSONB from DB) ────────────────────
@@ -244,23 +231,9 @@ class DeploymentConfig(BaseModel):
 
     @field_validator("provider_name")
     @classmethod
-    def validate_provider_name_lowercase(cls, value: str) -> str:
-        """Enforce lowercase provider names to prevent lookup mismatches.
-
-        Args:
-            value: Raw provider name.
-
-        Returns:
-            Lowercased provider name.
-
-        Raises:
-            ValueError: If the name is not already lowercase.
-        """
-        if value != value.lower():
-            raise ValueError(
-                f"provider_name must be lowercase, got {value!r}. Use {value.lower()!r} instead."
-            )
-        return value
+    def _validate_provider_name_lowercase(cls, value: str) -> str:
+        """Delegate to the shared lowercase check (see provider_config.py)."""
+        return validate_lowercase_provider_name(value)
 
     @property
     def is_active(self) -> bool:

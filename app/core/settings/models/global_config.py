@@ -28,7 +28,11 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.core.settings.models.circuit_breaker_config import ProviderCircuitBreakerConfig
 
 
 class LoggingConfig(BaseModel):
@@ -99,6 +103,7 @@ class HTTPPoolConfig(BaseModel):
     max_keepalive_connections: int = Field(
         default=20,
         ge=1,
+        le=10_000,
         description="Maximum idle keep-alive connections held open.",
     )
     keepalive_expiry_seconds: int = Field(
@@ -121,6 +126,23 @@ class HTTPPoolConfig(BaseModel):
         gt=0,
         description="Timeout for sending the full request body.",
     )
+    pool_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="Maximum wait for a free connection from the shared pool.",
+    )
+
+    @model_validator(mode="after")
+    def validate_pool_shape(self) -> Self:
+        """Reject an idle pool larger than the total connection pool.
+
+        Keep-alive connections are a subset of all open connections. Catching
+        an inverted pair during startup is clearer than silently passing a
+        contradictory limit to HTTPX.
+        """
+        if self.max_keepalive_connections > self.max_connections:
+            raise ValueError("max_keepalive_connections cannot exceed max_connections")
+        return self
 
 
 class RetryConfig(BaseModel):
@@ -187,7 +209,7 @@ class ServiceConfig(BaseModel):
 class GlobalConfig(BaseModel):
     """Root configuration model assembled from base.yaml + environment overlay.
 
-    Passed as a dependency to HTTPClientFactory, ProviderRegistry, and logging.
+    Passed to infrastructure factories, provider registries, and logging.
     Frozen — never mutated after construction.
 
     Example:
@@ -206,4 +228,7 @@ class GlobalConfig(BaseModel):
     service: ServiceConfig = Field(default_factory=ServiceConfig)
     http_pool: HTTPPoolConfig = Field(default_factory=HTTPPoolConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
+    provider_circuit_breakers: ProviderCircuitBreakerConfig = Field(
+        default_factory=ProviderCircuitBreakerConfig
+    )
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

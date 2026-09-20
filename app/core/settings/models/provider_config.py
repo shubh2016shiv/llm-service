@@ -40,6 +40,29 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # These are used in Pydantic field annotations and MUST be at runtime.
 from app.core.settings.models.model_config import LLMModelSpec, ModelCapability
+from app.schemas.model_constraints import MAX_TEMPERATURE, MIN_TEMPERATURE
+
+
+def validate_lowercase_provider_name(value: str) -> str:
+    """Enforce lowercase provider names so registry/lookup keys never mismatch by case.
+
+    Shared by ProviderStaticConfig (this module) and DeploymentConfig
+    (tenant_config.py), which both key provider lookups by this exact string.
+
+    Args:
+        value: Raw provider name string from YAML or the database.
+
+    Returns:
+        The unchanged provider name, once confirmed lowercase.
+
+    Raises:
+        ValueError: If the name contains uppercase characters.
+    """
+    if value != value.lower():
+        raise ValueError(
+            f"provider_name must be lowercase, got: {value!r}. Use {value.lower()!r} instead."
+        )
+    return value
 
 
 class AuthMode(StrEnum):
@@ -233,8 +256,8 @@ class ProviderStaticConfig(BaseModel):
     )
     default_temperature: float = Field(
         default=0.7,
-        ge=0.0,
-        le=2.0,
+        ge=MIN_TEMPERATURE,
+        le=MAX_TEMPERATURE,
         description="Provider-level default temperature.",
     )
 
@@ -252,23 +275,9 @@ class ProviderStaticConfig(BaseModel):
 
     @field_validator("provider_name")
     @classmethod
-    def validate_provider_name_lowercase(cls, value: str) -> str:
-        """Enforce lowercase-only provider names to prevent key mismatches.
-
-        Args:
-            value: Raw provider name string from YAML.
-
-        Returns:
-            Lowercase provider name.
-
-        Raises:
-            ValueError: If the name contains uppercase characters.
-        """
-        if value != value.lower():
-            raise ValueError(
-                f"provider_name must be lowercase, got: {value!r}. Use {value.lower()!r} instead."
-            )
-        return value
+    def _validate_provider_name_lowercase(cls, value: str) -> str:
+        """Delegate to the shared lowercase check (see module-level function)."""
+        return validate_lowercase_provider_name(value)
 
     def get_model_spec(self, model_name: str) -> LLMModelSpec | None:
         """Look up a model spec by its name.

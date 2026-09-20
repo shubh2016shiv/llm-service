@@ -12,13 +12,11 @@ Scope boundary:
 Step-by-step relationship flow:
     1. ``settings`` loads environment and YAML-backed configuration.
     2. ``logging`` configures structured log output using those settings.
-    3. ``request_context`` propagates request correlation identifiers.
-    4. ``exceptions`` provides typed error contracts used by all layers.
+    3. ``exceptions`` provides typed error contracts used by all layers.
 
 Package structure:
-    - ``exceptions.py``: typed domain/service exception hierarchy.
+    - ``exceptions/``: typed domain/service exceptions grouped by theme.
     - ``logging.py``: JSON/text logging formatters and startup configuration.
-    - ``request_context.py``: async-safe request ID storage via ``ContextVar``.
     - ``settings/``: configuration loading and immutable settings models.
 
 Author: Shubham Singh

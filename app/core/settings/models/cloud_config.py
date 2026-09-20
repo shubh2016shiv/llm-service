@@ -66,9 +66,7 @@ class AWSCloudConfig(BaseModel):
     # WHY: Per-deployment role assumption limits blast radius of a compromised key.
     default_role_arn: str | None = Field(
         default=None,
-        description=(
-            "IAM role ARN to assume. If None, uses ambient service credentials."
-        ),
+        description=("IAM role ARN to assume. If None, uses ambient service credentials."),
     )
     session_duration_seconds: int = Field(
         default=3600,

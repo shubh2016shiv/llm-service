@@ -1,288 +1,72 @@
-"""
-Application Settings — Secrets and infrastructure URLs from environment variables.
-
-This is the ONLY place where os.environ / .env values are read. All other
-settings (pool sizes, timeouts, provider defaults) comes from YAML via ConfigLoader.
-
-Why separate from YAML?
-    YAML is version-controlled and safe to commit.
-    Secrets and DB URLs are never committed — they come from the environment.
-
-Step-by-step startup relationship:
-    1. Process environment and optional ``.env`` are read once.
-    2. ``ApplicationSettings`` validates and normalizes raw values.
-    3. ``get_application_settings()`` memoizes the typed object.
-    4. Other modules consume this singleton rather than reading env vars
-       directly, which prevents drift and duplicate parsing logic.
+"""Application-settings composition root.
 
 Architecture:
--------------
     .env / environment variables
-          │
-          ▼
-    ApplicationSettings   (pydantic-settings, loaded once at startup)
-          │
-          ├──► database_url         → DB pool / SQLAlchemy engine
-          ├──► redis_url            → Redis client
-          ├──► encryption_master_key → SecretStore (AES-GCM key derivation)
-          └──► app_environment      → selects config/environments/<env>.yaml overlay
+                 |
+                 v
+    ApplicationSettings (BaseSettings composition root)
+       |          |          |          |          |
+       v          v          v          v          v
+    environment database    cache    security observability models
 
-Dependencies:
-    - pydantic-settings >= 2.0
-
-Author: Shubham Singh
+This module deliberately contains no field definitions. The focused Pydantic
+models in ``models/`` own validation and documentation; this composition root
+preserves the existing flat application-settings API for all callers.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.settings.models.environment_config import EnvironmentConfig
+from app.core.settings.models.infrastructure_config import (
+    CacheConfig,
+    DatabaseConfig,
+    StreamingConfig,
+    TokenManagerConfig,
+)
+from app.core.settings.models.observability_config import ObservabilityConfig
+from app.core.settings.models.security_config import SecurityConfig
+from app.core.settings.models.vault_config import VaultConfig
 
-class ApplicationSettings(BaseSettings):
-    """Centralised loader for environment-sourced settings.
 
-    All values come from environment variables or a .env file. Never scatter
-    ``os.environ`` reads across the codebase; use this typed settings contract.
+# Pyright compares BaseModel.model_config with BaseSettings.model_config even
+# though Pydantic supports this field-mixin composition at runtime.
+# pyright: ignore[reportIncompatibleVariableOverride]
+class ApplicationSettings(  # pyright: ignore[reportIncompatibleVariableOverride]
+    EnvironmentConfig,
+    DatabaseConfig,
+    CacheConfig,
+    TokenManagerConfig,
+    StreamingConfig,
+    SecurityConfig,
+    VaultConfig,
+    ObservabilityConfig,
+    BaseSettings,
+):
+    """Compose all environment-backed configuration contracts.
 
-    Sensitive fields use SecretStr so pydantic masks their value in repr/logs.
-
-    Example:
-        >>> settings = get_application_settings()
-        >>> settings.app_environment
-        'development'
-        >>> str(settings.encryption_master_key)   # masked
-        '**********'
+    Algorithm:
+        1. Read environment variables and the optional ``.env`` file once.
+        2. Validate each field through its concern-specific settings model.
+        3. Expose one flat, typed configuration object to application callers.
     """
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        # WHY: extra="ignore" prevents startup failure when the environment
-        # contains unrelated variables (e.g., PATH, HOME).
         extra="ignore",
     )
-
-    # ── Service Identity ──────────────────────────────────────────────────
-    app_environment: str = Field(
-        default="development",
-        description=(
-            "Active environment: development | staging | production. "
-            "Selects config/environments/<env>.yaml overlay."
-        ),
-    )
-    service_name: str = Field(
-        default="llm-provider-service",
-        description="Injected into every structured log record.",
-    )
-    service_version: str = Field(
-        default="0.1.0",
-        description="Semantic version emitted in logs and health endpoints.",
-    )
-
-    # ── Database ──────────────────────────────────────────────────────────
-    database_url: SecretStr = Field(
-        description=(
-            "Async PostgreSQL connection string. "
-            "Example: postgresql+asyncpg://user:pass@host:5432/dbname"
-        ),
-    )
-    database_pool_size: int = Field(
-        default=10,
-        ge=1,
-        le=200,
-        description="SQLAlchemy async engine pool size.",
-    )
-    database_max_overflow: int = Field(
-        default=20,
-        ge=0,
-        description="Extra connections beyond pool_size allowed to overflow.",
-    )
-
-    # ── Redis ─────────────────────────────────────────────────────────────
-    redis_url: str = Field(
-        default="redis://localhost:6379/0",
-        description="Redis connection URL (plain, no auth — use redis_password for auth).",
-    )
-    redis_password: SecretStr | None = Field(
-        default=None,
-        description="Redis AUTH password. None for unauthenticated local Redis.",
-    )
-    redis_max_connections: int = Field(
-        default=50,
-        ge=1,
-        description="Maximum Redis connection pool size.",
-    )
-    inference_authorization_cache_ttl_seconds: int = Field(
-        default=30,
-        ge=1,
-        le=300,
-        description="TTL for successful inference authorization cache entries.",
-    )
-
-    # ── Encryption ────────────────────────────────────────────────────────
-    # WHY: We derive per-tenant keys via HKDF(master_key + tenant_id) so that
-    # compromising one tenant's derived key does not expose other tenants.
-    encryption_master_key: SecretStr = Field(
-        description=(
-            "Base64-encoded 32-byte master key used for AES-GCM key derivation. "
-            "Generate with: python -c \"import secrets,base64; "
-            "print(base64.b64encode(secrets.token_bytes(32)).decode())\""
-        ),
-    )
-
-    # ── Secret Backend ────────────────────────────────────────────────────
-    # Selects which SecretStore implementation the app uses at runtime.
-    # 'environment' — EnvironmentSecretStore (dev/test only)
-    # 'vault'       — VaultSecretStore (staging/production)
-    secret_backend: str = Field(
-        default="environment",
-        description="Secret backend: 'environment' | 'vault'",
-    )
-
-    # ── HashiCorp Vault ───────────────────────────────────────────────────
-    vault_addr: str = Field(
-        default="http://localhost:8200",
-        description="Vault server address, e.g. http://vault:8200",
-    )
-    vault_username: str | None = Field(
-        default=None,
-        description="Vault userpass auth username for the LLM service account.",
-    )
-    vault_password: SecretStr | None = Field(
-        default=None,
-        description="Vault userpass auth password for the LLM service account.",
-    )
-    vault_mount_path: str = Field(
-        default="secret",
-        description="KV v2 mount path (matches 'path' in Vault policy).",
-    )
-    vault_kv_prefix: str = Field(
-        default="llm-provider-service",
-        description="Path prefix within the KV mount for all service secrets.",
-    )
-
-    # ── JWT Authentication ────────────────────────────────────────────────
-    jwt_secret_key: SecretStr = Field(
-        description=(
-            "Secret key used to sign and verify JWT tokens. "
-            "Generate with: python -c \"import secrets; print(secrets.token_hex(32))\""
-        ),
-    )
-    jwt_algorithm: str = Field(
-        default="HS256",
-        description="JWT signing algorithm. HS256 for single-service; RS256 for multi-service.",
-    )
-    jwt_access_token_expire_hours: int = Field(
-        default=24,
-        ge=1,
-        description="Access token lifetime in hours.",
-    )
-    jwt_refresh_token_expire_days: int = Field(
-        default=7,
-        ge=1,
-        description="Refresh token lifetime in days. Only used when jwt_refresh_enabled=true.",
-    )
-    jwt_refresh_enabled: bool = Field(
-        default=False,
-        description="Enable refresh token issuance and exchange.",
-    )
-
-    # ── Logging ───────────────────────────────────────────────────────────
-    log_level: str = Field(
-        default="INFO",
-        description="Overrides YAML logging.level. DEBUG | INFO | WARNING | ERROR",
-    )
-
-    # ── Config Paths ──────────────────────────────────────────────────────
-    config_dir: str = Field(
-        default="config",
-        description="Filesystem path to the YAML configuration root directory.",
-    )
-
-    @field_validator("secret_backend")
-    @classmethod
-    def validate_secret_backend(cls, value: str) -> str:
-        """Enforce known secret backend names.
-
-        Args:
-            value: Raw value from environment.
-
-        Returns:
-            Lowercased, validated backend name.
-
-        Raises:
-            ValueError: If not in the allowed set.
-        """
-        allowed = {"environment", "vault"}
-        lower = value.lower()
-        if lower not in allowed:
-            raise ValueError(
-                f"secret_backend {value!r} is not valid. Must be one of: {sorted(allowed)}"
-            )
-        return lower
-
-    @field_validator("app_environment")
-    @classmethod
-    def validate_environment(cls, value: str) -> str:
-        """Enforce known environment names to prevent silent misconfiguration.
-
-        Args:
-            value: Raw environment string from env var.
-
-        Returns:
-            Lowercased, validated environment name.
-
-        Raises:
-            ValueError: If the environment is not in the allowed set.
-        """
-        allowed = {"development", "staging", "production", "test"}
-        lower = value.lower()
-        if lower not in allowed:
-            raise ValueError(
-                f"app_environment {value!r} is not valid. "
-                f"Must be one of: {sorted(allowed)}"
-            )
-        return lower
-
-    @field_validator("log_level")
-    @classmethod
-    def validate_log_level(cls, value: str) -> str:
-        """Normalise and validate the log level string.
-
-        Args:
-            value: Raw log level from environment.
-
-        Returns:
-            Uppercased, validated log level.
-
-        Raises:
-            ValueError: If not a recognised stdlib logging level.
-        """
-        valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
-        upper = value.upper()
-        if upper not in valid:
-            raise ValueError(f"log_level {value!r} is invalid. Must be one of: {sorted(valid)}")
-        return upper
 
 
 @lru_cache(maxsize=1)
 def get_application_settings() -> ApplicationSettings:
-    """Return the singleton ApplicationSettings instance.
+    """Return the singleton environment-backed application configuration.
 
-    Cached via ``lru_cache`` so environment parsing happens only once per process.
-    Call this function wherever settings are needed instead of instantiating
-    ApplicationSettings directly.
-
-    Returns:
-        The singleton ApplicationSettings instance.
-
-    Example:
-        >>> settings = get_application_settings()
-        >>> settings.app_environment
-        'development'
+    Algorithm: construct the composed Pydantic settings model on first use and
+    reuse it for the process lifetime, unless tests explicitly clear the cache.
     """
-    return ApplicationSettings()  # type: ignore[call-arg]
+    return ApplicationSettings()

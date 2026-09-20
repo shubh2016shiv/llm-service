@@ -33,12 +33,21 @@ Design notes:
     - Uses pathlib.Path (never os.path) per Agents.md
     - All YAML loading uses yaml.safe_load() (never yaml.load())
     - Dict deep-merge: environment values override base values recursively
-    - Raises ConfigurationError (domain exception) on missing or malformed YAML
+
+Failure modes (what callers actually catch):
+    This module raises standard exceptions, not a domain-specific one:
+      - ``FileNotFoundError``  — a required YAML file is absent.
+      - ``yaml.YAMLError``     — the file exists but is not valid YAML.
+      - ``ValidationError``    — YAML parsed, but violates the Pydantic model.
+      - ``KeyError``           — a mandatory YAML key is missing (see builders).
+      - ``ValueError``         — unknown cloud vendor passed to load_cloud_config.
+    Missing-file handling deliberately differs per loader: ``base.yaml`` and a
+    named provider file are required, while the environment overlay, the
+    providers directory, and cloud files fall back to warn-and-default.
 
 Dependencies:
     - pyyaml          — YAML parsing
     - pydantic >= 2.0 — model validation
-    - app.core.exceptions — ConfigurationError
 
 Author: Shubham Singh
 """
@@ -73,7 +82,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Mapping from cloud vendor string to its settings model class.
-_CLOUD_CONFIG_MAP: dict[str, type] = {
+# Typed as the concrete union rather than bare ``type``: a bare ``type`` erases
+# the model identity, so the type checker cannot see ``.model_validate`` on the
+# looked-up class and treats every load_cloud_config() return as ``Any``.
+_CLOUD_CONFIG_MAP: dict[
+    str, type[AWSCloudConfig] | type[AzureCloudConfig] | type[GCPCloudConfig]
+] = {
     CloudVendor.AWS: AWSCloudConfig,
     CloudVendor.AZURE: AzureCloudConfig,
     CloudVendor.GCP: GCPCloudConfig,
@@ -129,6 +143,29 @@ def _load_yaml_file(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+# ── Raw-dict → frozen-model builders ─────────────────────────────────────────
+#
+# Everything below turns a parsed YAML dict into a validated, frozen settings
+# model. They are grouped here, as module-level functions, because that is the
+# one job they share: none of them touch the filesystem, hold state, or need a
+# ConfigLoader instance. Keeping them together (rather than scattering one on
+# the class and one at module scope) is what makes the shared default handling
+# below — _DEFAULT_CAPABILITIES, _parse_capabilities — obviously shared rather
+# than accidentally duplicated.
+
+_DEFAULT_CAPABILITIES: list[str] = ["chat"]
+
+
+def _parse_capabilities(raw: dict[str, Any]) -> frozenset[ModelCapability]:
+    """Read the optional ``capabilities`` list and coerce it to typed members.
+
+    Shared by the provider-level and model-level builders, which declare
+    capabilities with identical YAML shape and identical defaulting.
+    """
+    capabilities_raw: list[str] = raw.get("capabilities", _DEFAULT_CAPABILITIES)
+    return frozenset(ModelCapability(capability) for capability in capabilities_raw)
+
+
 def _build_model_spec(raw: dict[str, Any]) -> LLMModelSpec:
     """Construct an LLMModelSpec from a raw YAML model entry dict.
 
@@ -137,20 +174,78 @@ def _build_model_spec(raw: dict[str, Any]) -> LLMModelSpec:
 
     Returns:
         A validated, frozen LLMModelSpec instance.
+
+    Raises:
+        KeyError: If a mandatory key (``name``, ``max_output_tokens``,
+            ``context_window``) is absent from the entry.
     """
-    capabilities_raw: list[str] = raw.get("capabilities", ["chat"])
-    capabilities = frozenset(ModelCapability(c) for c in capabilities_raw)
     return LLMModelSpec(
         name=raw["name"],
         display_name=raw.get("display_name"),
         version=raw.get("version"),
         max_output_tokens=raw["max_output_tokens"],
         context_window=raw["context_window"],
-        capabilities=capabilities,
+        capabilities=_parse_capabilities(raw),
         price_per_1k_prompt_tokens=raw.get("price_per_1k_prompt_tokens"),
         price_per_1k_completion_tokens=raw.get("price_per_1k_completion_tokens"),
         is_active=raw.get("is_active", True),
         is_deprecated=raw.get("is_deprecated", False),
+    )
+
+
+def _build_auth_config(raw: dict[str, Any]) -> ProviderAuthConfig:
+    """Construct the auth block of a provider config from its YAML sub-dict."""
+    auth_raw: dict[str, Any] = raw.get("auth", {})
+    return ProviderAuthConfig(
+        mode=AuthMode(auth_raw["mode"]),
+        header_name=auth_raw.get("header_name"),
+        header_prefix=auth_raw.get("header_prefix"),
+        aws_service_name=auth_raw.get("aws_service_name"),
+    )
+
+
+def _build_endpoint_config(raw: dict[str, Any]) -> ProviderEndpointConfig:
+    """Construct the endpoint block of a provider config from its YAML sub-dict."""
+    endpoints_raw: dict[str, Any] = raw.get("endpoints", {})
+    return ProviderEndpointConfig(
+        base_url=endpoints_raw.get("base_url", ""),
+        base_url_template=endpoints_raw.get("base_url_template"),
+        chat=endpoints_raw.get("chat"),
+        embed=endpoints_raw.get("embed"),
+        rerank=endpoints_raw.get("rerank"),
+        health=endpoints_raw.get("health"),
+    )
+
+
+def _build_provider_static_config(raw: dict[str, Any]) -> ProviderStaticConfig:
+    """Construct a ProviderStaticConfig from a raw provider YAML dict.
+
+    Args:
+        raw: Parsed YAML dict from one file in ``config/providers/``.
+
+    Returns:
+        Validated, frozen ProviderStaticConfig.
+
+    Raises:
+        KeyError: If a mandatory key (``provider_name``, ``provider_type``,
+            ``implementation_class``, or ``auth.mode``) is absent.
+    """
+    # Read once: the same `defaults` sub-dict backs all three values below.
+    defaults_raw: dict[str, Any] = raw.get("defaults", {})
+    models_raw: list[dict[str, Any]] = raw.get("models", [])
+
+    return ProviderStaticConfig(
+        provider_name=raw["provider_name"],
+        provider_type=ProviderType(raw["provider_type"]),
+        implementation_class=raw["implementation_class"],
+        auth=_build_auth_config(raw),
+        endpoints=_build_endpoint_config(raw),
+        capabilities=_parse_capabilities(raw),
+        default_timeout_seconds=defaults_raw.get("timeout_seconds", 60.0),
+        default_max_retries=defaults_raw.get("max_retries", 3),
+        default_temperature=defaults_raw.get("temperature", 0.7),
+        models=tuple(_build_model_spec(model_raw) for model_raw in models_raw),
+        extra_default_headers=raw.get("extra_default_headers", {}),
     )
 
 
@@ -176,6 +271,14 @@ class ConfigLoader:
         """
         self._config_dir = config_dir
         self._environment = environment
+        # Provider YAML is static for the process lifetime, and this loader
+        # is itself a startup singleton (see class docstring). Without this
+        # cache, load_provider_config would re-read and re-parse the same
+        # file from disk on every inference request that resolves through
+        # it — synchronous, unbounded blocking I/O inside the async request
+        # path. Caching here makes the class actually match its own
+        # documented contract: "settings is read at startup, not per-request".
+        self._provider_config_cache: dict[str, ProviderStaticConfig] = {}
         logger.info(
             "ConfigLoader initialised",
             extra={"config_dir": str(config_dir), "environment": environment},
@@ -220,6 +323,13 @@ class ConfigLoader:
     def load_provider_config(self, provider_name: str) -> ProviderStaticConfig:
         """Load and validate a single provider's static settings from YAML.
 
+        Cached per provider name after the first successful load: this is
+        called from inference route resolution on every request, and the
+        underlying YAML does not change for the life of the process, so a
+        cache hit avoids re-reading and re-parsing the file on the request
+        path. A failed load (missing file, bad YAML) is never cached, so a
+        fix on disk takes effect on the very next call without a restart.
+
         Args:
             provider_name: Lowercase provider identifier (e.g., 'openai').
 
@@ -235,9 +345,16 @@ class ConfigLoader:
             >>> cfg.provider_name
             'openai'
         """
+        cached_config = self._provider_config_cache.get(provider_name)
+        if cached_config is not None:
+            return cached_config
+
         path = self._config_dir / "providers" / f"{provider_name}.yaml"
         raw: dict[str, Any] = _load_yaml_file(path)
-        config = self._build_provider_static_config(raw)
+        # _build_provider_static_config is a MODULE-level helper (not a
+        # method): calling it via self would fail at runtime.
+        config = _build_provider_static_config(raw)
+        self._provider_config_cache[provider_name] = config
         logger.info(
             "Provider settings loaded",
             extra={"provider_name": provider_name},
@@ -300,8 +417,7 @@ class ConfigLoader:
         config_class = _CLOUD_CONFIG_MAP.get(vendor)
         if config_class is None:
             raise ValueError(
-                f"Unknown cloud vendor {vendor!r}. "
-                f"Must be one of: {list(_CLOUD_CONFIG_MAP)}"
+                f"Unknown cloud vendor {vendor!r}. Must be one of: {list(_CLOUD_CONFIG_MAP)}"
             )
 
         path = self._config_dir / "cloud_providers" / f"{vendor}.yaml"
@@ -314,56 +430,3 @@ class ConfigLoader:
 
         raw: dict[str, Any] = _load_yaml_file(path)
         return config_class.model_validate(raw)
-
-    # ── Private Builders ──────────────────────────────────────────────────
-
-    def _build_provider_static_config(
-        self, raw: dict[str, Any]
-    ) -> ProviderStaticConfig:
-        """Construct a ProviderStaticConfig from a raw YAML dict.
-
-        Args:
-            raw: Parsed YAML dict from a provider settings file.
-
-        Returns:
-            Validated, frozen ProviderStaticConfig.
-        """
-        auth_raw: dict[str, Any] = raw.get("auth", {})
-        auth = ProviderAuthConfig(
-            mode=AuthMode(auth_raw["mode"]),
-            header_name=auth_raw.get("header_name"),
-            header_prefix=auth_raw.get("header_prefix"),
-            aws_service_name=auth_raw.get("aws_service_name"),
-        )
-
-        ep_raw: dict[str, Any] = raw.get("endpoints", {})
-        endpoints = ProviderEndpointConfig(
-            base_url=ep_raw.get("base_url", ""),
-            base_url_template=ep_raw.get("base_url_template"),
-            chat=ep_raw.get("chat"),
-            embed=ep_raw.get("embed"),
-            rerank=ep_raw.get("rerank"),
-            health=ep_raw.get("health"),
-        )
-
-        capabilities_raw: list[str] = raw.get("capabilities", ["chat"])
-        capabilities = frozenset(ModelCapability(c) for c in capabilities_raw)
-
-        models_raw: list[dict[str, Any]] = raw.get("models", [])
-        models: tuple[LLMModelSpec, ...] = tuple(
-            _build_model_spec(m) for m in models_raw
-        )
-
-        return ProviderStaticConfig(
-            provider_name=raw["provider_name"],
-            provider_type=ProviderType(raw["provider_type"]),
-            implementation_class=raw["implementation_class"],
-            auth=auth,
-            endpoints=endpoints,
-            capabilities=capabilities,
-            default_timeout_seconds=raw.get("defaults", {}).get("timeout_seconds", 60.0),
-            default_max_retries=raw.get("defaults", {}).get("max_retries", 3),
-            default_temperature=raw.get("defaults", {}).get("temperature", 0.7),
-            models=models,
-            extra_default_headers=raw.get("extra_default_headers", {}),
-        )
