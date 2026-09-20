@@ -19,9 +19,31 @@ http_pool:
   connect_timeout_seconds: 10.0
   read_timeout_seconds: 60.0
   write_timeout_seconds: 10.0
+  pool_timeout_seconds: 5.0
 
 retry:
   max_attempts: 3
   backoff_multiplier: 1.0
   backoff_max_seconds: 8.0
   retryable_status_codes: [429, 500, 502, 503, 504]
+
+provider_circuit_breakers:
+  default:
+    failure_threshold: 5
+    reset_timeout_seconds: 60
+  providers:
+    openai:
+      failure_threshold: 5
+      reset_timeout_seconds: 60
+    anthropic:
+      failure_threshold: 5
+      reset_timeout_seconds: 60
+    azure_openai:
+      failure_threshold: 3
+      reset_timeout_seconds: 30
+    gcp_vertex:
+      failure_threshold: 3
+      reset_timeout_seconds: 30
+    aws_bedrock:
+      failure_threshold: 3
+      reset_timeout_seconds: 45

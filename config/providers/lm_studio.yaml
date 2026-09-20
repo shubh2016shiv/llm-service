@@ -1,0 +1,68 @@
+# config/providers/lm_studio.yaml — LM Studio (self-hosted) static provider definition
+#
+# Why this file exists:
+#   Registering a provider through the dashboard only writes a row to the
+#   provider_catalog table (name, auth mode, default endpoint) — it does not
+#   create the runtime wiring that actually places the call. That wiring is
+#   this file: config_loader.load_provider_config(provider_name) reads
+#   config/providers/<provider_name>.yaml to find which Python class
+#   (implementation_class) knows how to speak this provider's wire format.
+#   Without a matching file here, every deployment under that provider fails
+#   at request time with "Provider config not found", regardless of how
+#   correctly it was configured in the dashboard.
+#
+# Why VLLMProvider, not a new LMStudioProvider:
+#   LM Studio's local server exposes the same OpenAI-compatible surface
+#   (/v1/chat/completions, /v1/embeddings) that VLLMProvider already speaks —
+#   see app/providers/direct/vllm_provider.py. Reusing it avoids a
+#   near-duplicate adapter for a second self-hosted OpenAI-compatible server.
+#   If LM Studio's response shape ever diverges from vLLM's in a way that
+#   surfaces as a real bug, that is the point to split off a dedicated
+#   LMStudioProvider — not before, since there's no known behavioral gap yet.
+#
+# Endpoint is per-tenant in DeploymentConfig (pointing to the LM Studio
+# server — typically host.docker.internal from inside this container, since
+# LM Studio itself isn't the thing running in Docker).
+
+provider_name: lm_studio
+provider_type: rest_api
+implementation_class: app.providers.direct.vllm_provider.VLLMProvider
+
+auth:
+  mode: bearer_token
+  header_name: Authorization
+  header_prefix: "Bearer"
+
+endpoints:
+  # base_url is overridden per-deployment with the actual LM Studio server URL.
+  base_url: http://localhost:1234/v1
+  chat: /chat/completions
+  embed: /embeddings
+  health: /health
+
+capabilities:
+  - chat
+  - embed
+
+defaults:
+  timeout_seconds: 180.0 # Local inference on CPU/consumer GPU can be slow.
+  max_retries: 2
+  temperature: 0.7
+
+# Unlike vllm.yaml's comment claims, an empty list here does NOT mean "any
+# model accepted" — route_resolution.py's Gate 4 (ensure_model_supported)
+# does a strict lookup against this exact list and rejects anything absent,
+# regardless of what's registered in the dashboard's model_catalog table.
+# That's a real gap for self-hosted providers with dynamically-loaded models
+# (see the chat message this file was added in for the full explanation) —
+# for now, each model actually deployed against this provider needs an entry
+# here too, duplicating its dashboard model_catalog entry.
+#
+# context_window/max_output_tokens below are placeholders, not verified specs
+# for this exact local build — check LM Studio's own model info panel (or its
+# /v1/models response) for the real numbers and correct these.
+models:
+  - name: google/gemma-4-e2b
+    max_output_tokens: 4096
+    context_window: 8192
+    capabilities: [chat]
