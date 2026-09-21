@@ -40,7 +40,6 @@ import httpx
 
 from app.core.exceptions import ManagementValidationError, SecretBackendUnavailableError
 from app.schemas.enums import ProviderCatalogAuthMode
-from app.schemas.management_schema import BearerCredential, OAuthCredential
 
 if TYPE_CHECKING:
     from app.schemas.management_schema import CredentialInput
@@ -145,19 +144,4 @@ def build_credential_path(*segments: str) -> str:
 
 def _credential_payload(credential: CredentialInput) -> dict[str, str | None]:
     """Convert typed input into the document stored by the secret backend."""
-    if isinstance(credential, BearerCredential):
-        return {"api_key": credential.api_key}
-    if isinstance(credential, OAuthCredential):
-        return _oauth_payload(credential)
-    return dict(credential.values)
-
-
-def _oauth_payload(credential: OAuthCredential) -> dict[str, str | None]:
-    """Build the OAuth client-credential document stored outside PostgreSQL."""
-    return {
-        "client_id": credential.client_id,
-        "client_secret": credential.client_secret,
-        "azure_tenant_id": credential.azure_tenant_id,
-        "token_url": credential.token_url,
-        "scope": credential.scope,
-    }
+    return {"api_key": credential.api_key.get_secret_value()}

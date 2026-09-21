@@ -34,7 +34,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.schemas.enums import AuthMode, ProviderCatalogType
+from app.core.settings.models.provider_config import AuthMode
+from app.schemas.enums import ProviderCatalogType
 from app.schemas.management_schema import ProviderTemplate, ProviderTemplateModel
 
 if TYPE_CHECKING:

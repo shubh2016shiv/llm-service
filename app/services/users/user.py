@@ -35,6 +35,7 @@ from app.services.management_helpers import Row, clean_row, clean_rows, raise_cl
 
 if TYPE_CHECKING:
     from app.database import UserPersistence
+    from app.schemas.management_filters import UserListFilters
     from app.schemas.management_schema import UserCreateRequest, UserUpdateRequest
 
 _PBKDF2_ITERATIONS = 390_000
@@ -63,7 +64,10 @@ class UserService:
                 last_name=request.last_name,
                 # PBKDF2 is deliberately CPU-expensive. A worker thread keeps
                 # one signup from pausing every coroutine on the event loop.
-                password_hash=await asyncio.to_thread(self._hash_password, request.password),
+                password_hash=await asyncio.to_thread(
+                    self._hash_password,
+                    request.password.get_secret_value(),
+                ),
                 platform_role=request.platform_role,
                 status=request.status,
             )
@@ -73,8 +77,7 @@ class UserService:
 
     async def list_users(
         self,
-        platform_role_filter: str | None,
-        status_filter: str | None,
+        filters: UserListFilters,
         limit: int,
         offset: int,
     ) -> list[Row]:
@@ -87,8 +90,8 @@ class UserService:
             offset: Number of rows skipped before retrieval.
         """
         rows = await self._users.get_all_users(
-            platform_role_filter=platform_role_filter,
-            status_filter=status_filter,
+            platform_role_filter=filters.platform_role,
+            status_filter=filters.status,
             limit=limit,
             offset=offset,
         )
@@ -96,11 +99,10 @@ class UserService:
 
     async def count_users(
         self,
-        platform_role_filter: str | None,
-        status_filter: str | None,
+        filters: UserListFilters,
     ) -> int:
         """Count users matching list filters for pagination metadata."""
-        return await self._users.count_users_filtered(platform_role_filter, status_filter)
+        return await self._users.count_users_filtered(filters.platform_role, filters.status)
 
     async def get_user(self, user_id: UUID) -> Row:
         """Retrieve one user by UUID or raise a typed not-found error."""
