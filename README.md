@@ -252,7 +252,7 @@ Stop the container so port 8000 is free, then run uvicorn from the project venv:
 
 ```powershell
 docker stop llm_app
-.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+.venv\Scripts\python.exe -m uvicorn app.main:create_app --factory --reload --port 8000
 ```
 
 Host mode reads only `.env`, so it needs values the container gets from `docker-compose.yml`:
