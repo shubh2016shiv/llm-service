@@ -1,9 +1,24 @@
-# Python Enterprise Clean Code — Agent Instruction File
+﻿# Python Enterprise Clean Code — Agent Instruction File
 
 **Version:** 2.0  
 **Scope:** All Python source code, tests, and configuration in this repository  
 **Tools:** Claude Code, Cursor, GitHub Copilot, Codex CLI  
 **Last Updated:** 2026-04-28
+
+---
+
+## Instruction Scope and Precedence (2026)
+
+This repository uses layered governance with nearest-file precedence:
+
+1. Root [`AGENTS.md`](./AGENTS.md) provides global defaults.
+2. Subtree `AGENTS.md` files (for example `app/api/AGENTS.md`, `tests/AGENTS.md`) override global rules inside their subtree only.
+3. On conflicts, the nearest applicable `AGENTS.md` wins.
+
+Cross-agent adapters:
+
+- Claude Code reads `CLAUDE.md` natively in this repo, and each `CLAUDE.md` imports its local `AGENTS.md` via `@./AGENTS.md`.
+- Other coding agents should treat this `AGENTS.md` hierarchy as canonical governance.
 
 ---
 
@@ -190,6 +205,7 @@ class OrderService:
 - **Format:** Google-style docstrings (see example below).
 - **Content:** Intent + one usage example for complex functions.
 - **Comments explain WHY, not WHAT.** If you need to explain what, rename the variable instead.
+- **Comment style:** follow `documents/code-commenting-style-guide.md` — the "Tired Beginner" standard. Where the guide calls for it, line comments may gloss *what* a line does in plain words; docstrings still lead with intent.
 - **Agents must preserve** human-written comments during refactor. They carry intent and provenance.
 
 ```python
