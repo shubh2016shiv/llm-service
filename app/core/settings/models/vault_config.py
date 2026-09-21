@@ -96,4 +96,8 @@ class VaultConfig(BaseModel):
             raise ValueError(
                 "vault_retry_base_delay_seconds cannot exceed vault_retry_max_delay_seconds"
             )
+        if (self.vault_admin_username is None) != (self.vault_admin_password is None):
+            raise ValueError(
+                "vault_admin_username and vault_admin_password must both be set or both omitted"
+            )
         return self

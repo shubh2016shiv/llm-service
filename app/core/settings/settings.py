@@ -81,6 +81,18 @@ class ApplicationSettings(  # pyright: ignore[reportIncompatibleVariableOverride
             )
         if self.jwt_secret_key.get_secret_value().startswith("change-me"):
             raise ValueError("production jwt_secret_key cannot use the example placeholder")
+        if (
+            self.jwt_secret_key.get_secret_value()
+            == "local-jwt-signing-key-replace-outside-development"
+        ):
+            raise ValueError("production jwt_secret_key cannot use the compose development default")
+        if (
+            self.encryption_master_key.get_secret_value()
+            == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        ):
+            raise ValueError(
+                "production encryption_master_key cannot use the compose development default"
+            )
         return self
 
 
@@ -91,4 +103,7 @@ def get_application_settings() -> ApplicationSettings:
     Algorithm: construct the composed Pydantic settings model on first use and
     reuse it for the process lifetime, unless tests explicitly clear the cache.
     """
-    return ApplicationSettings()
+    # BaseSettings loads required fields from the environment at runtime.
+    # Pyright only sees the composed BaseModel constructor and incorrectly
+    # requires callers to pass those environment fields explicitly.
+    return ApplicationSettings()  # pyright: ignore[reportCallIssue]
