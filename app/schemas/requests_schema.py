@@ -13,6 +13,7 @@ Author: Shubham Singh
 from __future__ import annotations
 
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -62,6 +63,13 @@ class ChatRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
+    thread_id: UUID = Field(
+        ...,
+        description=(
+            "Stable conversation identifier supplied by the client. Reuse it across turns "
+            "in the same conversation; every streamed data event echoes this value."
+        ),
+    )
     messages: list[ChatMessage] = Field(
         ...,
         min_length=1,

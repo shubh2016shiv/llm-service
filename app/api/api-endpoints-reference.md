@@ -301,18 +301,18 @@ The caller never specifies provider, model, or credentials directly. Those are r
 
 **SSE wire format** (`/chat` with `stream: true`):
 ```
-data: {"content": "The", "finish_reason": null, "index": 0}
+event: text_delta
+data: {"thread_id":"550e8400-e29b-41d4-a716-446655440000","sequence":1,"request_id":"req-1","data":{"content":"The","index":0}}
 
-data: {"content": " answer", "finish_reason": null, "index": 0}
+event: text_delta
+data: {"thread_id":"550e8400-e29b-41d4-a716-446655440000","sequence":2,"request_id":"req-1","data":{"content":" answer","index":0}}
 
-data: {"content": " is 42.", "finish_reason": "stop", "index": 0}
-
-data: [DONE]
+event: complete
+data: {"thread_id":"550e8400-e29b-41d4-a716-446655440000","sequence":3,"request_id":"req-1","data":{"status":"completed"}}
 
 # On mid-stream provider error:
-data: {"error": {"code": "RATE_LIMIT_ERROR", "message": "..."}}
-
-data: [DONE]
+event: error
+data: {"thread_id":"550e8400-e29b-41d4-a716-446655440000","sequence":3,"request_id":"req-1","data":{"code":"RATE_LIMIT_ERROR","message":"The stream ended before completion."}}
 ```
 
 #### Rationale

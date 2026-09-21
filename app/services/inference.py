@@ -37,7 +37,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from app.services.stream_session import StreamingInferenceSession
+from app.services.streaming_session import StreamingInferenceSession
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -57,7 +57,7 @@ if TYPE_CHECKING:
         EmbedResponse,
         RerankResponse,
     )
-    from app.streaming.admission import StreamAdmissionController
+    from app.streaming.stream_capacity import WorkerStreamCapacityLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class InferenceService:
         self,
         token_manager_client: TokenManagerClient,
         provider_registry: ProviderRegistry,
-        stream_admission: StreamAdmissionController,
+        stream_admission: WorkerStreamCapacityLimiter,
         stream_cleanup_timeout_seconds: float = 5.0,
     ) -> None:
         if stream_cleanup_timeout_seconds <= 0:

@@ -68,7 +68,8 @@ from app.schemas.responses_schema import (
     RerankResponse,
 )
 from app.services import InferenceService
-from app.streaming import encode_sse_stream
+from app.streaming.chat_chunk_adapter import adapt_chat_chunks, map_llm_stream_error
+from app.streaming.sse_delivery import SSEStreamDelivery
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ router = APIRouter(prefix="/api/v1/llm", tags=["LLM Inference"])
 # the `stream` flag in the request body:
 #
 #   stream=false (default) -> application/json -> ChatResponse
-#   stream=true            -> text/event-stream -> stream of ChatStreamChunk
+#   stream=true            -> text/event-stream -> thread-scoped event envelopes
 #
 # FastAPI generates JSON schema automatically from response_model.
 # SSE schema is added manually because it is a streaming wire contract.
@@ -94,19 +95,19 @@ _CHAT_SSE_RESPONSE_CONTENT: dict[str, object] = {
         "type": "string",
         "description": (
             "Server-sent event stream. "
-            "Named `chunk` events contain JSON-encoded `ChatStreamChunk` data; "
-            "comment heartbeats keep quiet connections alive. A `complete` "
-            "event and `data: [DONE]` terminate successful streams. Provider "
-            "failures after headers are represented by a named `error` event."
+            "Named `text_delta` and `stream_metadata` events contain a thread ID, "
+            "monotonic sequence, optional request ID, and event data. Comment "
+            "heartbeats keep quiet connections alive. One named `complete` event "
+            "terminates the stream; post-header failures use a named `error` event."
         ),
     },
     "example": (
-        "id: req-1:1\n"
-        "event: chunk\n"
-        'data: {"content":"The","index":0}\n\n'
+        "event: text_delta\n"
+        'data: {"thread_id":"550e8400-e29b-41d4-a716-446655440000",'
+        '"sequence":1,"request_id":"req-1","data":{"content":"The","index":0}}\n\n'
         "event: complete\n"
-        'data: {"status":"completed"}\n\n'
-        "data: [DONE]\n\n"
+        'data: {"thread_id":"550e8400-e29b-41d4-a716-446655440000",'
+        '"sequence":2,"request_id":"req-1","data":{"status":"completed"}}\n\n'
     ),
 }
 
@@ -151,15 +152,15 @@ def _get_inference_service(request: Request) -> InferenceService:
     description=(
         "Submit a conversation and receive a completion from the resolved deployment.\n\n"
         "JSON mode (`stream=false`, default): returns one `ChatResponse`.\n\n"
-        "Stream mode (`stream=true`): returns `text/event-stream`; each `data:` line "
-        "contains a `ChatStreamChunk` JSON object, and the stream ends with `[DONE]`."
+        "Stream mode (`stream=true`): returns thread-scoped `text/event-stream` "
+        "messages and ends with one named `complete` event."
     ),
     responses={
         200: {
             "description": (
                 "Response format depends on request field `stream`.\n\n"
                 "- `stream=false` -> JSON body (`ChatResponse`).\n"
-                "- `stream=true` -> SSE event stream with `[DONE]` terminator."
+                "- `stream=true` -> thread-scoped SSE events ending in `complete`."
             ),
             "content": {
                 "text/event-stream": _CHAT_SSE_RESPONSE_CONTENT,
@@ -204,10 +205,14 @@ async def chat_completion(
                 float,
                 hint="Initialize streaming settings during application startup.",
             )
+            delivery = SSEStreamDelivery(
+                heartbeat_interval_seconds=heartbeat_interval,
+                error_mapper=map_llm_stream_error,
+            )
             return StreamingResponse(
-                encode_sse_stream(
-                    chunks,
-                    heartbeat_interval_seconds=heartbeat_interval,
+                delivery.stream(
+                    adapt_chat_chunks(chunks),
+                    thread_id=body.thread_id,
                     request_id=request_id,
                 ),
                 media_type="text/event-stream",

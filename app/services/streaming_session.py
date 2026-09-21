@@ -1,4 +1,14 @@
-"""Business lifecycle for one reserved provider-stream execution."""
+"""Own the business lifecycle of one reserved provider stream.
+
+Architecture:
+    InferenceService
+        -> StreamingInferenceSession
+        -> provider iterator + quota finalizer + capacity lease
+
+This service-layer iterator is deliberately transport-independent. SSE,
+WebSocket, or gRPC consumers receive the same exact-once usage reconciliation
+and cleanup behavior.
+"""
 
 from __future__ import annotations
 
@@ -8,10 +18,10 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Literal
 
 from app.schemas.responses_schema import ChatStreamChunk
-from app.streaming.usage import StreamUsageAccumulator
+from app.services.stream_usage import StreamUsageAccumulator
 
 if TYPE_CHECKING:
-    from app.streaming.admission import StreamLease
+    from app.streaming.stream_capacity import StreamCapacityLease
 
 logger = logging.getLogger(__name__)
 
@@ -20,21 +30,22 @@ FinalizeCallback = Callable[[StreamTerminalStatus, int | None, int | None], Awai
 
 
 class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
-    """Own provider iteration, usage collection, and exact-once cleanup.
+    """Collect usage and finalize provider, quota, and capacity exactly once.
 
-    The explicit iterator object is intentional. Unlike an async generator,
-    ``aclose`` can finalize a reservation even if the response is disconnected
-    before the provider yields its first chunk.
+    An explicit iterator object is important here. Its ``aclose`` method can
+    finalize resources even when a client disconnects before the first provider
+    chunk—an edge case that a never-started async generator cannot clean up.
     """
 
     def __init__(
         self,
         *,
         provider_chunks: AsyncIterator[ChatStreamChunk],
-        lease: StreamLease,
+        lease: StreamCapacityLease,
         finalize: FinalizeCallback,
         cleanup_timeout_seconds: float,
     ) -> None:
+        """Capture the resources whose lifetime equals the client stream."""
         self._provider_chunks = provider_chunks.__aiter__()
         self._lease = lease
         self._finalize_callback = finalize
@@ -44,9 +55,11 @@ class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
         self._finish_lock = asyncio.Lock()
 
     def __aiter__(self) -> StreamingInferenceSession:
+        """Return this stateful object as its own async iterator."""
         return self
 
     async def __anext__(self) -> ChatStreamChunk:
+        """Read one provider chunk and classify every terminal path."""
         if self._closed:
             raise StopAsyncIteration
         try:
@@ -68,7 +81,7 @@ class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
         await self._finish("disconnected")
 
     async def _finish(self, status: StreamTerminalStatus) -> None:
-        """Close the provider, finalize quota, and release admission once."""
+        """Run cleanup once, shielding it from the disconnect cancellation."""
         async with self._finish_lock:
             if self._closed:
                 return
@@ -77,21 +90,12 @@ class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
             try:
                 await asyncio.shield(cleanup_task)
             except asyncio.CancelledError:
-                # A second cancellation must not orphan quota or admission state.
                 await cleanup_task
                 raise
 
     async def _cleanup(self, status: StreamTerminalStatus) -> None:
-        """Run bounded provider cleanup before quota and admission cleanup."""
-        try:
-            close = getattr(self._provider_chunks, "aclose", None)
-            if close is not None:
-                async with asyncio.timeout(self._cleanup_timeout_seconds):
-                    await close()
-        except TimeoutError:
-            logger.warning("Provider stream cleanup timed out")
-        except Exception:
-            logger.exception("Provider stream cleanup failed")
+        """Close the provider before reconciling quota and releasing capacity."""
+        await self._close_provider()
         try:
             await self._finalize_callback(
                 status,
@@ -100,3 +104,16 @@ class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
             )
         finally:
             await self._lease.release()
+
+    async def _close_provider(self) -> None:
+        """Bound provider cleanup so one broken iterator cannot retain a slot."""
+        close = getattr(self._provider_chunks, "aclose", None)
+        if close is None:
+            return
+        try:
+            async with asyncio.timeout(self._cleanup_timeout_seconds):
+                await close()
+        except TimeoutError:
+            logger.warning("Provider stream cleanup timed out")
+        except Exception:
+            logger.exception("Provider stream cleanup failed")
