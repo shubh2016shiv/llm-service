@@ -12,7 +12,9 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Shared
@@ -26,7 +28,7 @@ class Usage(BaseModel):
     their native usage fields into this schema.
     """
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     prompt_tokens: int = Field(
         default=0,
@@ -44,6 +46,16 @@ class Usage(BaseModel):
         description="Sum of prompt_tokens + completion_tokens.",
     )
 
+    @model_validator(mode="after")
+    def validate_total(self) -> Usage:
+        """Ensure accounting fields cannot contradict one another."""
+        expected_total = self.prompt_tokens + self.completion_tokens
+        if self.total_tokens != expected_total:
+            raise ValueError(
+                "total_tokens must equal prompt_tokens plus completion_tokens"
+            )
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Chat
@@ -58,13 +70,13 @@ class ChatResponse(BaseModel):
     by default.
     """
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     content: str = Field(
         ...,
         description="The assistant's response text.",
     )
-    role: str = Field(
+    role: Literal["assistant"] = Field(
         default="assistant",
         description="Author role (almost always 'assistant').",
     )
@@ -83,6 +95,7 @@ class ChatResponse(BaseModel):
     raw_response: dict[str, object] = Field(
         default_factory=dict,
         description="Provider-native response payload (excluded from API responses).",
+        exclude=True,
         repr=False,
     )
 
@@ -94,7 +107,7 @@ class ChatStreamChunk(BaseModel):
     provider's stream_generate() method.
     """
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     content: str = Field(
         default="",
@@ -109,9 +122,14 @@ class ChatStreamChunk(BaseModel):
         ge=0,
         description="Choice index (0 for single-choice streams).",
     )
+    usage: Usage | None = Field(
+        default=None,
+        description="Cumulative token usage when reported by a streaming provider.",
+    )
     raw_chunk: dict[str, object] = Field(
         default_factory=dict,
         description="Provider-native chunk payload (excluded from API responses).",
+        exclude=True,
         repr=False,
     )
 
@@ -124,10 +142,11 @@ class ChatStreamChunk(BaseModel):
 class EmbedResponse(BaseModel):
     """An embedding response containing one or more embedding vectors."""
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     embeddings: list[list[float]] = Field(
         ...,
+        min_length=1,
         description="List of embedding vectors. Each vector is a list of floats.",
     )
     model: str = Field(
@@ -139,6 +158,16 @@ class EmbedResponse(BaseModel):
         description="Token usage for the embedding request. None if not reported.",
     )
 
+    @model_validator(mode="after")
+    def validate_vector_dimensions(self) -> EmbedResponse:
+        """Require non-empty vectors with one stable dimensionality."""
+        dimensions = {len(vector) for vector in self.embeddings}
+        if 0 in dimensions:
+            raise ValueError("embedding vectors must not be empty")
+        if len(dimensions) != 1:
+            raise ValueError("all embedding vectors must have the same dimensions")
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Rerank
@@ -148,7 +177,7 @@ class EmbedResponse(BaseModel):
 class RerankResult(BaseModel):
     """A single ranked document with its relevance score."""
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     index: int = Field(
         ...,
@@ -168,7 +197,7 @@ class RerankResult(BaseModel):
 class RerankResponse(BaseModel):
     """A re-rank response containing ordered results."""
 
-    model_config = ConfigDict(extra="allow", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     results: list[RerankResult] = Field(
         ...,
@@ -220,4 +249,3 @@ class HealthStatus(BaseModel):
 # Union type for all possible responses — used in type signatures where a
 # single code path may return one of several response types.
 ResponseUnion = ChatResponse | EmbedResponse | RerankResponse | HealthStatus
-

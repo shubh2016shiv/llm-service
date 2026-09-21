@@ -45,9 +45,11 @@ from app.api.management_dependencies import (
 )
 from app.auth import AuthTokenPayload, require_admin, require_developer
 from app.core.exceptions import LLMServiceError
+from app.schemas.auth_schema import UserRole
+from app.schemas.enums import UserAccountStatus
+from app.schemas.management_filters import UserListFilters
+from app.schemas.management_responses import MembershipResponse, PaginatedResponse, UserResponse
 from app.schemas.management_schema import (
-    PaginatedResponse,
-    ResourceResponse,
     UserCreateRequest,
     UserUpdateRequest,
 )
@@ -57,12 +59,12 @@ router = APIRouter(prefix="/api/v1/users", tags=["User Management"])
 
 
 # Stage 8:1 - Check administrator access, hash the password, save the user, and return safe fields.
-@router.post("", response_model=ResourceResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     body: UserCreateRequest,
     service: Annotated[UserService, Depends(get_user_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> UserResponse:
     """Create a platform user record.
 
     Args:
@@ -71,24 +73,24 @@ async def create_user(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Created user envelope.
+        UserResponse: Created user projection.
     """
     try:
-        return ResourceResponse.model_validate(await service.create_user(body))
+        return UserResponse.model_validate(await service.create_user(body))
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 8:2 - Check administrator access, list matching users, and return safe fields and totals.
-@router.get("", response_model=PaginatedResponse)
+@router.get("", response_model=PaginatedResponse[UserResponse])
 async def list_users(
     service: Annotated[UserService, Depends(get_user_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-    platform_role_filter: str | None = Query(default=None),
-    status_filter: str | None = Query(default=None),
+    platform_role_filter: Annotated[UserRole | None, Query()] = None,
+    status_filter: Annotated[UserAccountStatus | None, Query()] = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-) -> PaginatedResponse:
+) -> PaginatedResponse[UserResponse]:
     """List users with optional role/status filters.
 
     Args:
@@ -102,18 +104,24 @@ async def list_users(
     Returns:
         PaginatedResponse: User rows and pagination metadata.
     """
-    rows = await service.list_users(platform_role_filter, status_filter, limit, offset)
-    total = await service.count_users(platform_role_filter, status_filter)
-    return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
+    filters = UserListFilters(platform_role=platform_role_filter, status=status_filter)
+    rows = await service.list_users(filters, limit, offset)
+    total = await service.count_users(filters)
+    return PaginatedResponse[UserResponse](
+        items=[UserResponse.model_validate(row) for row in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 # Stage 8:3 - Check caller access, find a user by email, and return safe fields or not-found.
-@router.get("/email/{email}", response_model=ResourceResponse)
+@router.get("/email/{email}", response_model=UserResponse)
 async def get_user_by_email(
     email: str,
     service: Annotated[UserService, Depends(get_user_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
-) -> ResourceResponse:
+) -> UserResponse:
     """Fetch one user by email address.
 
     Args:
@@ -122,21 +130,21 @@ async def get_user_by_email(
         current_user: Authenticated developer-or-higher caller.
 
     Returns:
-        ResourceResponse: Requested user envelope.
+        UserResponse: Requested user projection.
     """
     try:
-        return ResourceResponse.model_validate(await service.get_user_by_email(email))
+        return UserResponse.model_validate(await service.get_user_by_email(email))
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 8:4 - Check caller access, find a user by ID, and return safe fields or not-found.
-@router.get("/{user_id}", response_model=ResourceResponse)
+@router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: UUID,
     service: Annotated[UserService, Depends(get_user_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
-) -> ResourceResponse:
+) -> UserResponse:
     """Fetch one user by UUID.
 
     Args:
@@ -145,22 +153,22 @@ async def get_user(
         current_user: Authenticated developer-or-higher caller.
 
     Returns:
-        ResourceResponse: Requested user envelope.
+        UserResponse: Requested user projection.
     """
     try:
-        return ResourceResponse.model_validate(await service.get_user(user_id))
+        return UserResponse.model_validate(await service.get_user(user_id))
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 8:5 - Check administrator access, update supplied user fields, and return safe fields.
-@router.patch("/{user_id}", response_model=ResourceResponse)
+@router.patch("/{user_id}", response_model=UserResponse)
 async def update_user(
     user_id: UUID,
     body: UserUpdateRequest,
     service: Annotated[UserService, Depends(get_user_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> UserResponse:
     """Apply partial updates to one user.
 
     Args:
@@ -170,21 +178,21 @@ async def update_user(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Updated user envelope.
+        UserResponse: Updated user projection.
     """
     try:
-        return ResourceResponse.model_validate(await service.update_user(user_id, body))
+        return UserResponse.model_validate(await service.update_user(user_id, body))
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 8:6 - Check administrator access, suspend the account, and return its new state.
-@router.patch("/{user_id}/suspend", response_model=ResourceResponse)
+@router.patch("/{user_id}/suspend", response_model=UserResponse)
 async def suspend_user(
     user_id: UUID,
     service: Annotated[UserService, Depends(get_user_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> UserResponse:
     """Suspend a user account.
 
     Args:
@@ -193,21 +201,21 @@ async def suspend_user(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Suspended user envelope.
+        UserResponse: Suspended user projection.
     """
     try:
-        return ResourceResponse.model_validate(await service.suspend_user(user_id))
+        return UserResponse.model_validate(await service.suspend_user(user_id))
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 8:7 - Check administrator access, activate the account, and return its new state.
-@router.patch("/{user_id}/activate", response_model=ResourceResponse)
+@router.patch("/{user_id}/activate", response_model=UserResponse)
 async def activate_user(
     user_id: UUID,
     service: Annotated[UserService, Depends(get_user_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> UserResponse:
     """Activate a suspended/inactive user account.
 
     Args:
@@ -216,10 +224,10 @@ async def activate_user(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Activated user envelope.
+        UserResponse: Activated user projection.
     """
     try:
-        return ResourceResponse.model_validate(await service.activate_user(user_id))
+        return UserResponse.model_validate(await service.activate_user(user_id))
     except LLMServiceError as exc:
         translate_management_error(exc)
 
@@ -249,14 +257,14 @@ async def delete_user(
 
 
 # Stage 8:9 - Check user-or-administrator access and list the tenants that user belongs to.
-@router.get("/{user_id}/memberships", response_model=PaginatedResponse)
+@router.get("/{user_id}/memberships", response_model=PaginatedResponse[MembershipResponse])
 async def list_user_memberships(
     user_id: UUID,
     service: Annotated[TenantMembershipService, Depends(get_tenant_membership_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-) -> PaginatedResponse:
+) -> PaginatedResponse[MembershipResponse]:
     """List tenant memberships for one user.
 
     Args:
@@ -272,6 +280,11 @@ async def list_user_memberships(
     try:
         rows = await service.list_user_memberships(user_id, current_user, limit, offset)
         total = await service.count_user_tenants(user_id, current_user)
-        return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
+        return PaginatedResponse[MembershipResponse](
+            items=[MembershipResponse.model_validate(row) for row in rows],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
     except LLMServiceError as exc:
         translate_management_error(exc)

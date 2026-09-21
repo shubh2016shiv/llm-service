@@ -1,52 +1,95 @@
 """
-Management List Filters
-=======================
+Management list filters — the filter objects for list endpoints
+=================================================================
 
-Typed filter objects shared by management list and count operations.
+What this file is for
+---------------------
+Management endpoints that return LISTS (e.g. "list all tenants") accept
+optional filters — "only tenants with status active", "only members on
+the enterprise tier", "only active deployments". Instead of passing a
+handful of loose query-string values down through every layer, the route
+handler bundles them into one small typed object here. The service and
+persistence layers then receive ONE argument with a name, a type, and a
+single place to live.
 
-Why explicit filter objects instead of just passing raw query parameters?
-    Each management endpoint accepts optional filters (status, tier, provider,
-    active-only, etc.). Wrapping them in a frozen dataclass gives the filter
-    a name, a type, and a single place to live. The route handler parses query
-    strings into a filter object; the service and persistence layers receive
-    one typed argument instead of a handful of loose strings and booleans.
-    This keeps the query-parsing concern out of the business logic.
-
-Enterprise Pattern: Query Filter Object Pattern
-    Route handlers produce filter objects from HTTP query strings. Services
-    consume filter objects without knowing where the values came from.
+Every filter object is a frozen dataclass (explained below), so it is
+cheap, readable, and cannot be accidentally changed mid-request.
 
 Author: Shubham Singh
 """
 
+# This line makes every type hint below a lazy string, so a hint can
+# mention a class (like UUID) before it is imported. (Boilerplate.)
 from __future__ import annotations
 
+# The @dataclass decorator and its two switches, explained in plain words:
+#
+#   @dataclass               -> "Python, please write the boring methods
+#                               for me": it auto-generates __init__ (the
+#                               constructor), __eq__ (== comparison), and
+#                               __repr__ (readable print), all from the
+#                               field list below. No hand-written
+#                               boilerplate.
+#
+#   frozen=True              -> "once built, do not let anyone change it".
+#                               The object is immutable. Good for filter
+#                               objects handed between layers, because no
+#                               caller can silently mutate them.
+#
+#   slots=True               -> a memory optimization. Normally every
+#                               object carries a small dict of attributes;
+#                               slots stores the fields in compact fixed
+#                               slots instead, so thousands of small
+#                               filter objects cost less memory. (The
+#                               trade-off: you can no longer attach a new
+#                               attribute at runtime.)
 from dataclasses import dataclass
+
+# TYPE_CHECKING is only True while a type checker (mypy/pyright) reads the
+# file, never at runtime — imports under it exist purely for type hints.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from app.schemas.auth_schema import TenantRole, UserRole
+    from app.schemas.enums import (
+        TenantLifecycleStatus,
+        TenantSubscriptionTier,
+        UserAccountStatus,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class TenantListFilters:
-    """Filter contract for tenant list and count operations."""
+    """The filters for "list tenants" / "count tenants".
 
-    status_filter: str | None = None
-    tier_filter: str | None = None
+    Both are optional; None means "no filtering on this dimension".
+    """
+
+    status_filter: TenantLifecycleStatus | None = None
+    tier_filter: TenantSubscriptionTier | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class TenantMembershipListFilters:
-    """Filter contract for tenant membership list and count operations."""
+    """The filters for "list memberships" / "count memberships"."""
 
-    tenant_role_filter: str | None = None
-    active_only: bool = False
+    tenant_role_filter: TenantRole | None = None
+    active_only: bool = False  # True = keep only active memberships
 
 
 @dataclass(frozen=True, slots=True)
 class TenantDeploymentListFilters:
-    """Filter contract for tenant deployment list and count operations."""
+    """The filters for "list deployments" / "count deployments"."""
 
-    provider_id: UUID | None = None
-    active_only: bool = False
+    provider_id: UUID | None = None  # keep only deployments on this provider
+    active_only: bool = False  # True = keep only active deployments
+
+
+@dataclass(frozen=True, slots=True)
+class UserListFilters:
+    """Validated platform-role and lifecycle filters for user pages."""
+
+    platform_role: UserRole | None = None
+    status: UserAccountStatus | None = None

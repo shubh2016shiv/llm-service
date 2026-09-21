@@ -15,12 +15,12 @@ from app.api.exception_handlers import translate_management_error
 from app.api.management_dependencies import get_tenant_membership_service
 from app.auth import AuthTokenPayload, require_admin, require_developer
 from app.core.exceptions import LLMServiceError
+from app.schemas.auth_schema import TenantRole
 from app.schemas.management_filters import TenantMembershipListFilters
+from app.schemas.management_responses import MembershipResponse, PaginatedResponse
 from app.schemas.management_schema import (
     MembershipCreateRequest,
     MembershipUpdateRequest,
-    PaginatedResponse,
-    ResourceResponse,
 )
 from app.services import TenantMembershipService
 
@@ -33,7 +33,7 @@ MembershipServiceDependency = Annotated[
 
 @router.post(
     "/{tenant_id}/members",
-    response_model=ResourceResponse,
+    response_model=MembershipResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_member(
@@ -41,25 +41,25 @@ async def create_member(
     body: MembershipCreateRequest,
     service: MembershipServiceDependency,
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> MembershipResponse:
     """Add one user to a tenant with a validated tenant role."""
     try:
         result = await service.create_membership(tenant_id, body, current_user)
-        return ResourceResponse.model_validate(result)
+        return MembershipResponse.model_validate(result)
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
-@router.get("/{tenant_id}/members", response_model=PaginatedResponse)
+@router.get("/{tenant_id}/members", response_model=PaginatedResponse[MembershipResponse])
 async def list_members(
     tenant_id: UUID,
     service: MembershipServiceDependency,
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
-    tenant_role_filter: str | None = Query(default=None),
+    tenant_role_filter: Annotated[TenantRole | None, Query()] = None,
     active_only: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-) -> PaginatedResponse:
+) -> PaginatedResponse[MembershipResponse]:
     """Return a filtered, bounded membership page for one tenant."""
     try:
         filters = TenantMembershipListFilters(
@@ -70,40 +70,45 @@ async def list_members(
             tenant_id, current_user, filters, limit, offset
         )
         total = await service.count_tenant_members(tenant_id, current_user, filters)
-        return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
+        return PaginatedResponse[MembershipResponse](
+            items=[MembershipResponse.model_validate(row) for row in rows],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
-@router.get("/{tenant_id}/members/{membership_id}", response_model=ResourceResponse)
+@router.get("/{tenant_id}/members/{membership_id}", response_model=MembershipResponse)
 async def get_member(
     tenant_id: UUID,
     membership_id: UUID,
     service: MembershipServiceDependency,
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
-) -> ResourceResponse:
+) -> MembershipResponse:
     """Return one membership within its tenant scope."""
     try:
         result = await service.get_tenant_membership(tenant_id, membership_id, current_user)
-        return ResourceResponse.model_validate(result)
+        return MembershipResponse.model_validate(result)
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
-@router.patch("/{tenant_id}/members/{membership_id}", response_model=ResourceResponse)
+@router.patch("/{tenant_id}/members/{membership_id}", response_model=MembershipResponse)
 async def update_member(
     tenant_id: UUID,
     membership_id: UUID,
     body: MembershipUpdateRequest,
     service: MembershipServiceDependency,
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> MembershipResponse:
     """Update one membership and revoke its cached access decisions."""
     try:
         result = await service.update_membership(
             tenant_id, membership_id, body, current_user
         )
-        return ResourceResponse.model_validate(result)
+        return MembershipResponse.model_validate(result)
     except LLMServiceError as exc:
         translate_management_error(exc)
 

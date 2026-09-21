@@ -228,7 +228,7 @@ HTTP Client
     MRO-walk maps exception → HTTP status. Logs structured WARNING with request_id.
     │
     ▼
-HTTP Response  (ResourceResponse | PaginatedResponse | 204 No Content)
+HTTP Response  (typed resource response | PaginatedResponse[T] | 204 No Content)
 ```
 
 ---
@@ -557,7 +557,11 @@ All list endpoints support cursor-free pagination via two query parameters:
 | `limit` | int | 100 | 1000 | Number of records to return. |
 | `offset` | int | 0 | — | Number of records to skip before returning results. |
 
-All list responses use `PaginatedResponse`:
+All list responses use a concrete generic page such as
+`PaginatedResponse[TenantResponse]`. The item type is not cosmetic: each
+resource response is an explicit allow-list, so an internal database column
+cannot appear in the API merely because it was added to a query.
+
 ```json
 {
   "items": [...],

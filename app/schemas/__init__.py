@@ -1,78 +1,19 @@
+"""Validated data contracts shared across application boundaries.
+
+Import schemas from the module that owns them, for example::
+
+    from app.schemas.requests_schema import ChatRequest
+    from app.schemas.responses_schema import ChatResponse
+    from app.schemas.management_schema import TenantCreateRequest
+    from app.schemas.management_responses import TenantResponse
+
+Why this package has no barrel re-exports
+-----------------------------------------
+Schema modules sit low in the dependency graph. Eagerly importing every model
+here makes an innocent import such as ``app.schemas.model_constraints`` load
+management, authentication, and provider configuration too. Besides slowing
+startup, that creates circular imports between configuration and schemas.
+
+Direct imports show ownership at the call site, keep startup deterministic,
+and ensure editing one contract does not initialize unrelated subsystems.
 """
-Schemas Package
-===============
-
-This package contains the typed data contracts used at API boundaries.
-These models define exactly what requests we accept and what responses we return.
-
-Enterprise Pattern: Contract-First Schema Layer
-    Routers, services, and clients share one canonical schema vocabulary so
-    behavior stays consistent across the system.
-
-High-level flow:
-    API request -> request schema validation -> service execution
-    -> response schema serialization -> API response
-
-Author: Shubham Singh
-"""
-
-from app.schemas.enums import AuthMode, OperationType, ProviderType
-from app.schemas.management_schema import (
-    DeploymentCreateRequest,
-    DeploymentUpdateRequest,
-    EntitlementCreateRequest,
-    EntitlementUpdateRequest,
-    MembershipCreateRequest,
-    MembershipUpdateRequest,
-    ModelCreateRequest,
-    ModelUpdateRequest,
-    PaginatedResponse,
-    ProviderCreateRequest,
-    ProviderUpdateRequest,
-    ResourceResponse,
-    TenantCreateRequest,
-    TenantUpdateRequest,
-    UserCreateRequest,
-    UserUpdateRequest,
-)
-from app.schemas.requests_schema import ChatMessage, ChatRequest, EmbedRequest, RerankRequest
-from app.schemas.responses_schema import (
-    ChatResponse,
-    ChatStreamChunk,
-    EmbedResponse,
-    HealthStatus,
-    RerankResponse,
-    Usage,
-)
-
-__all__ = [
-    "AuthMode",
-    "ChatMessage",
-    "ChatRequest",
-    "ChatResponse",
-    "ChatStreamChunk",
-    "DeploymentCreateRequest",
-    "DeploymentUpdateRequest",
-    "EmbedRequest",
-    "EmbedResponse",
-    "EntitlementCreateRequest",
-    "EntitlementUpdateRequest",
-    "HealthStatus",
-    "MembershipCreateRequest",
-    "MembershipUpdateRequest",
-    "ModelCreateRequest",
-    "ModelUpdateRequest",
-    "OperationType",
-    "PaginatedResponse",
-    "ProviderCreateRequest",
-    "ProviderType",
-    "ProviderUpdateRequest",
-    "RerankRequest",
-    "RerankResponse",
-    "ResourceResponse",
-    "TenantCreateRequest",
-    "TenantUpdateRequest",
-    "Usage",
-    "UserCreateRequest",
-    "UserUpdateRequest",
-]

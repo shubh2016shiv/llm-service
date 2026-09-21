@@ -45,11 +45,10 @@ from app.api.management_dependencies import get_tenant_deployment_service
 from app.auth import AuthTokenPayload, require_admin, require_developer
 from app.core.exceptions import LLMServiceError
 from app.schemas.management_filters import TenantDeploymentListFilters
+from app.schemas.management_responses import DeploymentResponse, PaginatedResponse
 from app.schemas.management_schema import (
     DeploymentCreateRequest,
     DeploymentUpdateRequest,
-    PaginatedResponse,
-    ResourceResponse,
 )
 from app.services import TenantDeploymentService
 
@@ -60,7 +59,7 @@ ProviderIdQuery = Annotated[UUID | None, Query()]
 # Stage 4:1 - Check tenant administrator access, validate provider and model IDs, and save the route.
 @router.post(
     "/{tenant_id}/deployments",
-    response_model=ResourceResponse,
+    response_model=DeploymentResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_deployment(
@@ -68,7 +67,7 @@ async def create_deployment(
     body: DeploymentCreateRequest,
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> DeploymentResponse:
     """Create a deployment under one tenant.
 
     Args:
@@ -78,17 +77,17 @@ async def create_deployment(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Created deployment envelope.
+        DeploymentResponse: Created deployment envelope.
     """
     try:
         row = await service.create_deployment(tenant_id, body, current_user)
-        return ResourceResponse.model_validate(row)
+        return DeploymentResponse.model_validate(row)
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 4:2 - Check tenant access, list matching routes, and return the page and total count.
-@router.get("/{tenant_id}/deployments", response_model=PaginatedResponse)
+@router.get("/{tenant_id}/deployments", response_model=PaginatedResponse[DeploymentResponse])
 async def list_deployments(
     tenant_id: UUID,
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
@@ -97,7 +96,7 @@ async def list_deployments(
     active_only: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-) -> PaginatedResponse:
+) -> PaginatedResponse[DeploymentResponse]:
     """List deployments for one tenant with filtering and pagination.
 
     Args:
@@ -116,19 +115,24 @@ async def list_deployments(
         filters = TenantDeploymentListFilters(provider_id=provider_id, active_only=active_only)
         rows = await service.list_deployments(tenant_id, current_user, filters, limit, offset)
         total = await service.count_deployments(tenant_id, current_user, filters)
-        return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
+        return PaginatedResponse[DeploymentResponse](
+            items=[DeploymentResponse.model_validate(row) for row in rows],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 4:3 - Check tenant access, find one route inside that tenant, and return it or not-found.
-@router.get("/{tenant_id}/deployments/{deployment_id}", response_model=ResourceResponse)
+@router.get("/{tenant_id}/deployments/{deployment_id}", response_model=DeploymentResponse)
 async def get_deployment(
     tenant_id: UUID,
     deployment_id: UUID,
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
-) -> ResourceResponse:
+) -> DeploymentResponse:
     """Fetch one deployment by id within tenant scope.
 
     Args:
@@ -138,24 +142,24 @@ async def get_deployment(
         current_user: Authenticated developer-or-higher caller.
 
     Returns:
-        ResourceResponse: Requested deployment envelope.
+        DeploymentResponse: Requested deployment projection.
     """
     try:
         row = await service.get_deployment(tenant_id, deployment_id, current_user)
-        return ResourceResponse.model_validate(row)
+        return DeploymentResponse.model_validate(row)
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 4:4 - Check tenant administrator access, update supplied route fields, and clear stale cache.
-@router.patch("/{tenant_id}/deployments/{deployment_id}", response_model=ResourceResponse)
+@router.patch("/{tenant_id}/deployments/{deployment_id}", response_model=DeploymentResponse)
 async def update_deployment(
     tenant_id: UUID,
     deployment_id: UUID,
     body: DeploymentUpdateRequest,
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> DeploymentResponse:
     """Apply partial updates to one deployment.
 
     Args:
@@ -166,23 +170,23 @@ async def update_deployment(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Updated deployment envelope.
+        DeploymentResponse: Updated deployment projection.
     """
     try:
         row = await service.update_deployment(tenant_id, deployment_id, body, current_user)
-        return ResourceResponse.model_validate(row)
+        return DeploymentResponse.model_validate(row)
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 4:5 - Check tenant administrator access, activate the route, and clear stale access decisions.
-@router.patch("/{tenant_id}/deployments/{deployment_id}/activate", response_model=ResourceResponse)
+@router.patch("/{tenant_id}/deployments/{deployment_id}/activate", response_model=DeploymentResponse)
 async def activate_deployment(
     tenant_id: UUID,
     deployment_id: UUID,
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> DeploymentResponse:
     """Move one deployment into active serving state.
 
     Args:
@@ -192,25 +196,26 @@ async def activate_deployment(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Activated deployment envelope.
+        DeploymentResponse: Activated deployment projection.
     """
     try:
         row = await service.activate_deployment(tenant_id, deployment_id, current_user)
-        return ResourceResponse.model_validate(row)
+        return DeploymentResponse.model_validate(row)
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 4:6 - Check tenant administrator access, pause the route for maintenance, and clear cache.
 @router.patch(
-    "/{tenant_id}/deployments/{deployment_id}/maintenance", response_model=ResourceResponse
+    "/{tenant_id}/deployments/{deployment_id}/maintenance",
+    response_model=DeploymentResponse,
 )
 async def maintain_deployment(
     tenant_id: UUID,
     deployment_id: UUID,
     service: Annotated[TenantDeploymentService, Depends(get_tenant_deployment_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> DeploymentResponse:
     """Move one deployment to maintenance state.
 
     Maintenance mode is useful when provider credentials, model routing, or
@@ -223,11 +228,11 @@ async def maintain_deployment(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Deployment envelope in maintenance state.
+        DeploymentResponse: Deployment projection in maintenance state.
     """
     try:
         row = await service.set_maintenance(tenant_id, deployment_id, current_user)
-        return ResourceResponse.model_validate(row)
+        return DeploymentResponse.model_validate(row)
     except LLMServiceError as exc:
         translate_management_error(exc)
 

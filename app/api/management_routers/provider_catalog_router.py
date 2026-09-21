@@ -19,12 +19,11 @@ from app.api.shared_dependencies import get_config_loader
 from app.auth import AuthTokenPayload, require_admin, require_developer, require_owner
 from app.core.exceptions import LLMServiceError
 from app.core.settings.loader import ConfigLoader
+from app.schemas.management_responses import PaginatedResponse, ProviderResponse
 from app.schemas.management_schema import (
-    PaginatedResponse,
     ProviderCreateRequest,
     ProviderTemplateListResponse,
     ProviderUpdateRequest,
-    ResourceResponse,
 )
 from app.services import ProviderCatalogService
 from app.services.catalog.provider_templates import build_provider_templates
@@ -47,57 +46,62 @@ async def list_provider_runtime_templates(
     return ProviderTemplateListResponse(items=build_provider_templates(config_loader))
 
 
-@router.post("", response_model=ResourceResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ProviderResponse, status_code=status.HTTP_201_CREATED)
 async def create_provider(
     body: ProviderCreateRequest,
     service: ProviderServiceDependency,
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> ProviderResponse:
     """Create one provider catalog record."""
     try:
-        return ResourceResponse.model_validate(await service.create_provider(body))
+        return ProviderResponse.model_validate(await service.create_provider(body))
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
-@router.get("", response_model=PaginatedResponse)
+@router.get("", response_model=PaginatedResponse[ProviderResponse])
 async def list_providers(
     service: ProviderServiceDependency,
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
     include_inactive: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-) -> PaginatedResponse:
+) -> PaginatedResponse[ProviderResponse]:
     """Return one bounded provider page."""
     rows = await service.list_providers(include_inactive, limit, offset)
     total = await service.count_providers(include_inactive)
-    return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
+    return PaginatedResponse[ProviderResponse](
+        items=[ProviderResponse.model_validate(row) for row in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
-@router.get("/{provider_id}", response_model=ResourceResponse)
+@router.get("/{provider_id}", response_model=ProviderResponse)
 async def get_provider(
     provider_id: UUID,
     service: ProviderServiceDependency,
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
-) -> ResourceResponse:
+) -> ProviderResponse:
     """Return one provider catalog record."""
     try:
-        return ResourceResponse.model_validate(await service.get_provider(provider_id))
+        return ProviderResponse.model_validate(await service.get_provider(provider_id))
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
-@router.patch("/{provider_id}", response_model=ResourceResponse)
+@router.patch("/{provider_id}", response_model=ProviderResponse)
 async def update_provider(
     provider_id: UUID,
     body: ProviderUpdateRequest,
     service: ProviderServiceDependency,
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> ProviderResponse:
     """Apply supplied fields to one provider record."""
     try:
         result = await service.update_provider(provider_id, body)
-        return ResourceResponse.model_validate(result)
+        return ProviderResponse.model_validate(result)
     except LLMServiceError as exc:
         translate_management_error(exc)
 

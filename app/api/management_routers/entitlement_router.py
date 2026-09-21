@@ -42,11 +42,10 @@ from app.api.exception_handlers import translate_management_error
 from app.api.management_dependencies import get_user_entitlement_service
 from app.auth import AuthTokenPayload, require_admin, require_developer
 from app.core.exceptions import LLMServiceError
+from app.schemas.management_responses import EntitlementResponse, PaginatedResponse
 from app.schemas.management_schema import (
     EntitlementCreateRequest,
     EntitlementUpdateRequest,
-    PaginatedResponse,
-    ResourceResponse,
 )
 from app.services import UserEntitlementService
 
@@ -57,7 +56,7 @@ TenantIdQuery = Annotated[UUID, Query(description="Tenant scope for entitlement 
 # Stage 5:1 - Check administrator access, validate the user and route, and save the user's permission.
 @router.post(
     "/{user_id}/entitlements",
-    response_model=ResourceResponse,
+    response_model=EntitlementResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_entitlement(
@@ -65,7 +64,7 @@ async def create_entitlement(
     body: EntitlementCreateRequest,
     service: Annotated[UserEntitlementService, Depends(get_user_entitlement_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> EntitlementResponse:
     """Create a deployment entitlement for one user.
 
     Args:
@@ -75,17 +74,17 @@ async def create_entitlement(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Created entitlement envelope.
+        EntitlementResponse: Created entitlement projection.
     """
     try:
         row = await service.create_entitlement(user_id, body, current_user)
-        return ResourceResponse.model_validate(row)
+        return EntitlementResponse.model_validate(row)
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 5:2 - Check user-or-administrator access and list that user's permissions in one tenant.
-@router.get("/{user_id}/entitlements", response_model=PaginatedResponse)
+@router.get("/{user_id}/entitlements", response_model=PaginatedResponse[EntitlementResponse])
 async def list_entitlements(
     user_id: UUID,
     service: Annotated[UserEntitlementService, Depends(get_user_entitlement_service)],
@@ -93,7 +92,7 @@ async def list_entitlements(
     tenant_id: TenantIdQuery,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-) -> PaginatedResponse:
+) -> PaginatedResponse[EntitlementResponse]:
     """List a user's entitlements inside one tenant.
 
     Args:
@@ -110,19 +109,24 @@ async def list_entitlements(
     try:
         rows = await service.list_user_entitlements(tenant_id, user_id, current_user, limit, offset)
         total = await service.count_user_entitlements(tenant_id, user_id, current_user)
-        return PaginatedResponse(items=rows, total=total, limit=limit, offset=offset)
+        return PaginatedResponse[EntitlementResponse](
+            items=[EntitlementResponse.model_validate(row) for row in rows],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 5:3 - Check user-or-administrator access and return one permission or a not-found error.
-@router.get("/{user_id}/entitlements/{entitlement_id}", response_model=ResourceResponse)
+@router.get("/{user_id}/entitlements/{entitlement_id}", response_model=EntitlementResponse)
 async def get_entitlement(
     user_id: UUID,
     entitlement_id: UUID,
     service: Annotated[UserEntitlementService, Depends(get_user_entitlement_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_developer)],
-) -> ResourceResponse:
+) -> EntitlementResponse:
     """Fetch one entitlement by id for a user.
 
     Args:
@@ -132,24 +136,24 @@ async def get_entitlement(
         current_user: Authenticated developer-or-higher caller.
 
     Returns:
-        ResourceResponse: Requested entitlement envelope.
+        EntitlementResponse: Requested entitlement projection.
     """
     try:
         row = await service.get_entitlement(user_id, entitlement_id, current_user)
-        return ResourceResponse.model_validate(row)
+        return EntitlementResponse.model_validate(row)
     except LLMServiceError as exc:
         translate_management_error(exc)
 
 
 # Stage 5:4 - Check administrator access, update the permission, and clear stale access decisions.
-@router.patch("/{user_id}/entitlements/{entitlement_id}", response_model=ResourceResponse)
+@router.patch("/{user_id}/entitlements/{entitlement_id}", response_model=EntitlementResponse)
 async def update_entitlement(
     user_id: UUID,
     entitlement_id: UUID,
     body: EntitlementUpdateRequest,
     service: Annotated[UserEntitlementService, Depends(get_user_entitlement_service)],
     current_user: Annotated[AuthTokenPayload, Depends(require_admin)],
-) -> ResourceResponse:
+) -> EntitlementResponse:
     """Apply partial updates to one entitlement.
 
     Args:
@@ -160,11 +164,11 @@ async def update_entitlement(
         current_user: Authenticated admin caller.
 
     Returns:
-        ResourceResponse: Updated entitlement envelope.
+        EntitlementResponse: Updated entitlement projection.
     """
     try:
         row = await service.update_entitlement(user_id, entitlement_id, body, current_user)
-        return ResourceResponse.model_validate(row)
+        return EntitlementResponse.model_validate(row)
     except LLMServiceError as exc:
         translate_management_error(exc)
 

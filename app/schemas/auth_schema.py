@@ -24,34 +24,44 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-# Canonical set of roles in ascending privilege order.
-# Higher roles inherit all permissions of lower roles.
+# The two role vocabularies. The ORDER here is just a list of allowed
+# words — the actual "who outranks whom" ranking lives in
+# role_hierarchy.py, which is the single source of truth for privilege.
+#
+# UserRole = platform-wide roles (listed ascending privilege for
+# readability): a developer is the lowest rung, owner the highest.
 UserRole = Literal["developer", "operator", "admin", "owner"]
+# TenantRole = roles INSIDE one tenant. It adds "viewer" (read-only) and
+# has no meaningful order in this Literal — role_hierarchy.py ranks it.
 TenantRole = Literal["owner", "admin", "operator", "developer", "viewer"]
 
 
 class AuthTokenPayload(BaseModel):
-    """Decoded JWT access or refresh token payload.
+    """Identity extracted from a fully validated JWT access token.
 
-    Produced by ``decode_token`` and injected into route handlers
+    Produced by ``validate_access_token`` and injected into route handlers
     via ``get_current_user``. Never construct this manually.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     user_id: UUID = Field(description="Unique identifier of the authenticated user.")
     role: UserRole = Field(description="Role that determines endpoint access level.")
-    token_type: Literal["access", "refresh"] = Field(
-        description="Token kind — prevents refresh tokens from authorising API calls."
-    )
-    expires_at: datetime = Field(description="UTC datetime at which the token expires.")
-    issued_at: datetime = Field(description="UTC datetime at which the token was issued.")
+    token_id: UUID = Field(description="Unique JWT identifier used for audit correlation.")
+    expires_at: AwareDatetime = Field(description="UTC datetime at which the token expires.")
+    issued_at: AwareDatetime = Field(description="UTC datetime at which the token was issued.")
+
+    @model_validator(mode="after")
+    def validate_token_time_window(self) -> AuthTokenPayload:
+        """Reject impossible tokens before authorization code can see them."""
+        if self.expires_at <= self.issued_at:
+            raise ValueError("expires_at must be later than issued_at")
+        return self
 
 
 class InferenceAccessContext(BaseModel):
@@ -61,11 +71,15 @@ class InferenceAccessContext(BaseModel):
     secret references and plaintext credentials so it is safe to cache.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     tenant_id: UUID = Field(description="Tenant the caller is authorized to invoke under.")
     user_id: UUID = Field(description="Authenticated user receiving inference access.")
-    deployment_key: str = Field(description="Tenant-scoped deployment route key.")
+    deployment_key: str = Field(
+        min_length=1,
+        pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$",
+        description="Tenant-scoped deployment route key.",
+    )
     deployment_id: UUID = Field(description="Resolved tenant deployment identifier.")
     provider_id: UUID = Field(description="Provider catalog identifier from the deployment.")
     model_id: UUID = Field(description="Model catalog identifier from the deployment.")
@@ -73,14 +87,41 @@ class InferenceAccessContext(BaseModel):
     entitlement_id: UUID = Field(description="Active entitlement granting this route.")
 
 
-class AuthTokenResponse(BaseModel):
-    """Response body returned after successful login.
+class AuthorizationGrantVersions(BaseModel):
+    """Version snapshot used to reject stale cached authorization grants."""
 
-    Follows the OAuth 2.0 bearer token response convention.
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # These sentinels preserve the existing cache protocol for scopes that have
+    # never been invalidated and therefore do not yet have a Redis marker.
+    tenant_version: str = Field(default="tenant:0", pattern=r"^tenant:\d+$")
+    membership_version: str = Field(default="membership:0", pattern=r"^membership:\d+$")
+    deployment_version: str = Field(default="deployment:0", pattern=r"^deployment:\d+$")
+    route_version: str = Field(default="route:0", pattern=r"^route:\d+$")
+
+
+class CachedAuthorizationGrant(BaseModel):
+    """A saved authorization "yes" and the counter values it was decided against.
+
+    Written by the grant cache (authorization_grant_cache.py) after a
+    successful inference authorization, and read back on later requests.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
-    access_token: str = Field(description="Signed JWT access token.")
-    token_type: str = Field(default="bearer", description="Always 'bearer'.")
-    expires_in_seconds: int = Field(description="Number of seconds until the access token expires.")
+    context: InferenceAccessContext  # the "yes" itself
+    versions: AuthorizationGrantVersions  # the counters it was checked against
+
+
+class AuthorizationGrantLookup(BaseModel):
+    """The result of one grant-cache read: a possible answer + the counters seen.
+
+    ``context`` is the saved answer when one was valid, else None.
+    ``observed_versions`` is what the reader saw this time (used to guard
+    a later save), or None when no cache backend was configured.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    context: InferenceAccessContext | None
+    observed_versions: AuthorizationGrantVersions | None
