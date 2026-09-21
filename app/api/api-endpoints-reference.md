@@ -278,7 +278,7 @@ Mutation endpoint (deployment/membership/entitlement change)
 
 `/health` — liveness probe. No I/O. Returns `{"status": "ok"}`. Safe to poll at high frequency.
 
-`/health/ready` — readiness probe. Checks every runtime dependency (currently: Redis). Returns `{"status": "ready", "dependencies": {...}}` on 200 or `{"status": "degraded", "dependencies": {...}}` on 503. Orchestrators (Kubernetes) use this to gate traffic.
+`/health/ready` probes PostgreSQL and Redis, which authorization uses for source-of-truth data and invalidation. It returns 200 (`ready`) or 503 (`degraded`). In production the unauthenticated body contains only `status`; structured logs identify failed dependencies. In other environments the response includes dependency names and statuses. Vault and token manager are not claimed as probed: they have no side-effect-free health contract in this service, so their request-path failures remain visible through inference errors and logs.
 
 ---
 

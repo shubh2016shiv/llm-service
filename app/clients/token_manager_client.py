@@ -123,6 +123,9 @@ class TokenManagerClient:
                 "deployment_name": context.deployment_key,
                 "request_context": {
                     "request_id": correlation_id,
+                    "thread_id": (
+                        str(request.thread_id) if isinstance(request, ChatRequest) else None
+                    ),
                     "route_fingerprint": context.route_fingerprint,
                     "quota_key": context.quota_key,
                     "operation": _operation_name(request),
