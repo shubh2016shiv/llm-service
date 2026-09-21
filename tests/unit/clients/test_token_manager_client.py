@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import httpx
 import pytest
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from app.inference_routing.models import ResolvedRoute
 
 SECRET = "a-production-length-test-secret-that-is-at-least-32-bytes"
+THREAD_ID = UUID("70000000-0000-0000-0000-000000000001")
 
 
 async def _route() -> ResolvedRoute:
@@ -73,7 +75,10 @@ async def test_acquire_and_finalize_follow_token_manager_contract() -> None:
 
     client = _client(httpx.MockTransport(handle))
     route = await _route()
-    request = ChatRequest(messages=[ChatMessage(role="user", content="hello")])
+    request = ChatRequest(
+        thread_id=THREAD_ID,
+        messages=[ChatMessage(role="user", content="hello")],
+    )
 
     reservation = await client.acquire_reservation(
         user_id=USER_ID,
@@ -122,7 +127,10 @@ async def test_waiting_allocation_is_rejected_with_retry_hint() -> None:
         await client.acquire_reservation(
             user_id=USER_ID,
             context=await _route(),
-            request=ChatRequest(messages=[ChatMessage(role="user", content="hello")]),
+            request=ChatRequest(
+                thread_id=THREAD_ID,
+                messages=[ChatMessage(role="user", content="hello")],
+            ),
         )
 
     assert exc_info.value.retry_after_seconds == 7
@@ -148,5 +156,8 @@ async def test_reserved_endpoint_must_match_authorized_route() -> None:
         await client.acquire_reservation(
             user_id=USER_ID,
             context=await _route(),
-            request=ChatRequest(messages=[ChatMessage(role="user", content="hello")]),
+            request=ChatRequest(
+                thread_id=THREAD_ID,
+                messages=[ChatMessage(role="user", content="hello")],
+            ),
         )

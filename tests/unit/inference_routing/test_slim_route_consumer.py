@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, cast
+from uuid import UUID
 
 import pytest
 
 from app.schemas.requests_schema import ChatMessage, ChatRequest
 from app.schemas.responses_schema import ChatResponse, ChatStreamChunk, Usage
 from app.services.inference import InferenceService
-from app.streaming.admission import StreamAdmissionController
+from app.streaming.stream_capacity import WorkerStreamCapacityLimiter
 from tests.unit.inference_routing.conftest import (
     USER_ID,
     build_tenant_config,
@@ -32,6 +33,8 @@ if TYPE_CHECKING:
     )
     from app.inference_routing.models import ResolvedRoute
     from app.providers.registry import ProviderRegistry
+
+THREAD_ID = UUID("70000000-0000-0000-0000-000000000001")
 
 
 class RecordingTokenManager:
@@ -142,9 +145,12 @@ async def test_execute_chat_with_slim_route_uses_flat_tenant_identity() -> None:
     service = InferenceService(
         cast("TokenManagerClient", token_manager),
         cast("ProviderRegistry", registry),
-        StreamAdmissionController(max_concurrent=2, retry_after_seconds=1),
+        WorkerStreamCapacityLimiter(max_concurrent=2, retry_after_seconds=1),
     )
-    request = ChatRequest(messages=[ChatMessage(role="user", content="hello")])
+    request = ChatRequest(
+        thread_id=THREAD_ID,
+        messages=[ChatMessage(role="user", content="hello")],
+    )
 
     response = await service.execute_chat(route, request, user_id=USER_ID)
 
@@ -167,9 +173,10 @@ async def test_execute_stream_chat_reconciles_usage_after_last_chunk() -> None:
     service = InferenceService(
         cast("TokenManagerClient", token_manager),
         cast("ProviderRegistry", registry),
-        StreamAdmissionController(max_concurrent=2, retry_after_seconds=1),
+        WorkerStreamCapacityLimiter(max_concurrent=2, retry_after_seconds=1),
     )
     request = ChatRequest(
+        thread_id=THREAD_ID,
         messages=[ChatMessage(role="user", content="hello")],
         stream=True,
     )
@@ -197,9 +204,12 @@ async def test_execute_chat_cancelled_task_finalizes_as_cancelled() -> None:
     service = InferenceService(
         cast("TokenManagerClient", token_manager),
         cast("ProviderRegistry", CancellingProviderRegistry()),
-        StreamAdmissionController(max_concurrent=2, retry_after_seconds=1),
+        WorkerStreamCapacityLimiter(max_concurrent=2, retry_after_seconds=1),
     )
-    request = ChatRequest(messages=[ChatMessage(role="user", content="hello")])
+    request = ChatRequest(
+        thread_id=THREAD_ID,
+        messages=[ChatMessage(role="user", content="hello")],
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await service.execute_chat(route, request, user_id=USER_ID)
@@ -218,9 +228,12 @@ async def test_execute_chat_accounting_failure_does_not_report_success() -> None
     service = InferenceService(
         cast("TokenManagerClient", FailingFinalizationTokenManager()),
         cast("ProviderRegistry", FakeProviderRegistry()),
-        StreamAdmissionController(max_concurrent=2, retry_after_seconds=1),
+        WorkerStreamCapacityLimiter(max_concurrent=2, retry_after_seconds=1),
     )
-    request = ChatRequest(messages=[ChatMessage(role="user", content="hello")])
+    request = ChatRequest(
+        thread_id=THREAD_ID,
+        messages=[ChatMessage(role="user", content="hello")],
+    )
 
     with pytest.raises(RuntimeError, match="accounting unavailable"):
         await service.execute_chat(route, request, user_id=USER_ID)

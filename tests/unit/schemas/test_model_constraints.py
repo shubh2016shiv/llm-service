@@ -183,10 +183,12 @@ def test_provider_create_request_uses_catalog_enums() -> None:
 @pytest.mark.parametrize("temperature", [float(MIN_TEMPERATURE), float(MAX_TEMPERATURE)])
 def test_model_schema_accepts_temperature_at_shared_bounds(temperature: float) -> None:
     """REQ: inclusive temperature bounds are accepted at the API boundary."""
-    request = ModelCreateRequest(
-        model_name="example-model",
-        supported_operations=["chat"],
-        default_temperature=temperature,
+    request = ModelCreateRequest.model_validate(
+        {
+            "model_name": "example-model",
+            "supported_operations": ["chat"],
+            "default_temperature": temperature,
+        }
     )
 
     assert request.default_temperature == temperature
@@ -195,10 +197,12 @@ def test_model_schema_accepts_temperature_at_shared_bounds(temperature: float) -
 @pytest.mark.parametrize("top_p", [float(MIN_TOP_P), float(MAX_TOP_P)])
 def test_model_schema_accepts_top_p_at_shared_bounds(top_p: float) -> None:
     """REQ: inclusive top-p bounds are accepted at the API boundary."""
-    request = ModelCreateRequest(
-        model_name="example-model",
-        supported_operations=["chat"],
-        default_top_p=top_p,
+    request = ModelCreateRequest.model_validate(
+        {
+            "model_name": "example-model",
+            "supported_operations": ["chat"],
+            "default_top_p": top_p,
+        }
     )
 
     assert request.default_top_p == top_p
@@ -207,8 +211,10 @@ def test_model_schema_accepts_top_p_at_shared_bounds(top_p: float) -> None:
 def test_model_schema_rejects_temperature_outside_shared_bounds() -> None:
     """REQ: API validation rejects a value beyond the fixed safety limit."""
     with pytest.raises(ValidationError):
-        ModelCreateRequest(
-            model_name="example-model",
-            supported_operations=["chat"],
-            default_temperature=float(MAX_TEMPERATURE) + 0.01,
+        ModelCreateRequest.model_validate(
+            {
+                "model_name": "example-model",
+                "supported_operations": ["chat"],
+                "default_temperature": float(MAX_TEMPERATURE) + 0.01,
+            }
         )

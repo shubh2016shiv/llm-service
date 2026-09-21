@@ -1,27 +1,35 @@
-"""Concurrency, cancellation, and wire-contract tests for SSE streaming."""
+"""Lifecycle, backpressure, and wire-contract tests for reusable SSE streaming."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import aclosing
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
 
+from app.core.exceptions import StreamCapacityExceededError
 from app.schemas.responses_schema import ChatStreamChunk, Usage
-from app.services.stream_session import StreamingInferenceSession
-from app.streaming.admission import (
-    StreamAdmissionController,
-    StreamCapacityExceededError,
+from app.services.streaming_session import StreamingInferenceSession
+from app.streaming.sse_delivery import SSEStreamDelivery
+from app.streaming.sse_encoder import encode_sse_message
+from app.streaming.sse_message import SSEMessage
+from app.streaming.stream_capacity import WorkerStreamCapacityLimiter
+from app.streaming.stream_event import (
+    StreamEventPayload,
+    StructuredOutputDelta,
+    structured_delta_event,
+    text_delta_event,
 )
-from app.streaming.encoder import encode_event
-from app.streaming.events import SSEEvent
-from app.streaming.transport import encode_sse_stream
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from app.services.stream_session import StreamTerminalStatus
+    from app.services.streaming_session import StreamTerminalStatus
+
+THREAD_ID = UUID("70000000-0000-0000-0000-000000000001")
 
 
 class RecordingFinalizer:
@@ -58,11 +66,22 @@ async def _failed_provider() -> AsyncIterator[ChatStreamChunk]:
     raise RuntimeError("provider connection failed")
 
 
+def _json_data(message: str) -> dict[str, object]:
+    data = "\n".join(
+        line.removeprefix("data: ")
+        for line in message.splitlines()
+        if line.startswith("data: ")
+    )
+    payload = json.loads(data)
+    assert isinstance(payload, dict)
+    return payload
+
+
 @pytest.mark.asyncio
 async def test_session_finalizes_completed_usage_exactly_once() -> None:
-    """Normal exhaustion reconciles usage and returns its admission slot."""
-    admission = StreamAdmissionController(max_concurrent=1, retry_after_seconds=1)
-    lease = await admission.acquire()
+    """REQ: normal exhaustion reconciles usage and returns its worker slot."""
+    limiter = WorkerStreamCapacityLimiter(max_concurrent=1, retry_after_seconds=1)
+    lease = await limiter.acquire()
     finalizer = RecordingFinalizer()
     session = StreamingInferenceSession(
         provider_chunks=_completed_provider(),
@@ -76,14 +95,14 @@ async def test_session_finalizes_completed_usage_exactly_once() -> None:
 
     assert [chunk.content for chunk in chunks] == ["hello", ""]
     assert finalizer.calls == [("completed", 4, 2)]
-    assert admission.active == 0
+    assert limiter.active_stream_count == 0
 
 
 @pytest.mark.asyncio
-async def test_cancellation_finalizes_disconnected_and_releases_capacity() -> None:
-    """Client cancellation cannot leak provider work or stream capacity."""
-    admission = StreamAdmissionController(max_concurrent=1, retry_after_seconds=1)
-    lease = await admission.acquire()
+async def test_session_cancellation_releases_every_owned_resource() -> None:
+    """REQ: a disconnected client cannot leak quota or worker capacity."""
+    limiter = WorkerStreamCapacityLimiter(max_concurrent=1, retry_after_seconds=1)
+    lease = await limiter.acquire()
     finalizer = RecordingFinalizer()
     started = asyncio.Event()
     session = StreamingInferenceSession(
@@ -100,14 +119,14 @@ async def test_cancellation_finalizes_disconnected_and_releases_capacity() -> No
         await pending_chunk
 
     assert finalizer.calls == [("disconnected", None, None)]
-    assert admission.active == 0
+    assert limiter.active_stream_count == 0
 
 
 @pytest.mark.asyncio
-async def test_close_before_first_chunk_still_finalizes_and_releases_capacity() -> None:
-    """A disconnect in the pre-first-token window cannot leak a reservation."""
-    admission = StreamAdmissionController(max_concurrent=1, retry_after_seconds=1)
-    lease = await admission.acquire()
+async def test_session_close_before_first_chunk_still_finalizes() -> None:
+    """REQ: closure in the pre-first-token window releases the reservation."""
+    limiter = WorkerStreamCapacityLimiter(max_concurrent=1, retry_after_seconds=1)
+    lease = await limiter.acquire()
     finalizer = RecordingFinalizer()
     session = StreamingInferenceSession(
         provider_chunks=_completed_provider(),
@@ -119,14 +138,14 @@ async def test_close_before_first_chunk_still_finalizes_and_releases_capacity() 
     await session.aclose()
 
     assert finalizer.calls == [("disconnected", None, None)]
-    assert admission.active == 0
+    assert limiter.active_stream_count == 0
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_finalizes_failed_exactly_once() -> None:
-    """A mid-stream provider error records failure and returns capacity."""
-    admission = StreamAdmissionController(max_concurrent=1, retry_after_seconds=1)
-    lease = await admission.acquire()
+async def test_session_provider_failure_finalizes_failed_once() -> None:
+    """REQ: a mid-stream upstream error has one failed finalization."""
+    limiter = WorkerStreamCapacityLimiter(max_concurrent=1, retry_after_seconds=1)
+    lease = await limiter.acquire()
     finalizer = RecordingFinalizer()
     session = StreamingInferenceSession(
         provider_chunks=_failed_provider(),
@@ -142,84 +161,147 @@ async def test_provider_failure_finalizes_failed_exactly_once() -> None:
 
     assert first.content == "partial"
     assert finalizer.calls == [("failed", None, None)]
-    assert admission.active == 0
+    assert limiter.active_stream_count == 0
 
 
 @pytest.mark.asyncio
-async def test_admission_fails_fast_at_worker_limit() -> None:
-    """A saturated worker rejects instead of accumulating waiting sockets."""
-    admission = StreamAdmissionController(max_concurrent=1, retry_after_seconds=3)
-    lease = await admission.acquire()
+async def test_capacity_limiter_fails_fast_at_worker_limit() -> None:
+    """REQ: saturated workers reject instead of accumulating waiting sockets."""
+    limiter = WorkerStreamCapacityLimiter(max_concurrent=1, retry_after_seconds=3)
+    lease = await limiter.acquire()
 
     with pytest.raises(StreamCapacityExceededError) as exc_info:
-        await admission.acquire()
+        await limiter.acquire()
 
     assert exc_info.value.retry_after_seconds == 3
     await lease.release()
-    assert admission.active == 0
+    assert limiter.active_stream_count == 0
 
 
 @pytest.mark.asyncio
-async def test_admission_accounting_is_safe_for_thousands_of_leases() -> None:
-    """Concurrent acquisition and release retain exact accounting at scale."""
+async def test_capacity_accounting_is_exact_for_thousands_of_leases() -> None:
+    """REQ: concurrent acquisition and release retain exact accounting."""
     connection_count = 2_000
-    admission = StreamAdmissionController(
+    limiter = WorkerStreamCapacityLimiter(
         max_concurrent=connection_count,
         retry_after_seconds=1,
     )
 
-    leases = await asyncio.gather(
-        *(admission.acquire() for _ in range(connection_count))
-    )
-    assert admission.active == connection_count
+    leases = await asyncio.gather(*(limiter.acquire() for _ in range(connection_count)))
+    assert limiter.active_stream_count == connection_count
 
     await asyncio.gather(*(lease.release() for lease in leases))
-    assert admission.active == 0
+    assert limiter.active_stream_count == 0
 
 
 @pytest.mark.asyncio
-async def test_transport_emits_heartbeats_chunks_and_terminal_events() -> None:
-    """Quiet providers receive heartbeats without cancelling their pending read."""
+async def test_delivery_associates_every_data_event_with_thread() -> None:
+    """REQ: chunks and completion share one stable thread and increasing sequence."""
 
-    async def delayed_provider() -> AsyncIterator[ChatStreamChunk]:
+    async def events() -> AsyncIterator[StreamEventPayload]:
         await asyncio.sleep(0.03)
-        yield ChatStreamChunk(content="hello")
+        yield text_delta_event("hello")
 
-    wire_events = [
-        event
-        async for event in encode_sse_stream(
-            delayed_provider(),
-            heartbeat_interval_seconds=0.01,
+    delivery = SSEStreamDelivery(heartbeat_interval_seconds=0.01)
+    messages = [
+        message
+        async for message in delivery.stream(
+            events(),
+            thread_id=THREAD_ID,
             request_id="request-1",
         )
     ]
 
-    assert any(event == ": heartbeat\n\n" for event in wire_events)
-    assert any("id: request-1:1" in event and "event: chunk" in event for event in wire_events)
-    assert wire_events[-2].startswith("event: complete")
-    assert wire_events[-1] == "data: [DONE]\n\n"
+    assert any(message == ": heartbeat\n\n" for message in messages)
+    data_messages = [message for message in messages if "data: " in message]
+    payloads = [_json_data(message) for message in data_messages]
+    assert [payload["thread_id"] for payload in payloads] == [str(THREAD_ID)] * 2
+    assert [payload["sequence"] for payload in payloads] == [1, 2]
+    assert "event: text_delta" in data_messages[0]
+    assert "event: complete" in data_messages[1]
+    assert all("[DONE]" not in message for message in messages)
 
 
 @pytest.mark.asyncio
-async def test_transport_reports_failed_terminal_state_after_provider_error() -> None:
-    """Once headers are sent, failures remain machine-readable SSE events."""
-    wire_events = [
-        event
-        async for event in encode_sse_stream(
-            _failed_provider(),
-            heartbeat_interval_seconds=1,
+async def test_delivery_supports_parsed_structured_output_deltas() -> None:
+    """REQ: structured fields can be assembled without sending invalid JSON fragments."""
+
+    async def events() -> AsyncIterator[StreamEventPayload]:
+        yield structured_delta_event(
+            StructuredOutputDelta(
+                operation="replace",
+                path="/customer/name",
+                value="Ada",
+            )
         )
+
+    delivery = SSEStreamDelivery(heartbeat_interval_seconds=1)
+    messages = [
+        message async for message in delivery.stream(events(), thread_id=THREAD_ID)
     ]
 
-    assert any("event: error" in event for event in wire_events)
-    assert 'data: {"status":"failed"}' in wire_events[-2]
-    assert wire_events[-1] == "data: [DONE]\n\n"
+    payload = _json_data(messages[0])
+    assert "event: structured_delta" in messages[0]
+    assert payload["thread_id"] == str(THREAD_ID)
+    assert payload["data"] == {
+        "operation": "replace",
+        "path": "/customer/name",
+        "value": "Ada",
+    }
 
 
-def test_encoder_supports_multiline_data_without_invalid_frames() -> None:
-    """Every data line receives its own SSE field prefix."""
-    encoded = encode_event(SSEEvent(event="message", data="one\ntwo", event_id="7"))
+@pytest.mark.asyncio
+async def test_delivery_applies_backpressure_without_read_ahead_queue() -> None:
+    """REQ: pausing the consumer prevents the producer from advancing."""
+    producer_reads = 0
+
+    async def events() -> AsyncIterator[StreamEventPayload]:
+        nonlocal producer_reads
+        producer_reads += 1
+        yield text_delta_event("one")
+        producer_reads += 1
+        yield text_delta_event("two")
+
+    delivery = SSEStreamDelivery(heartbeat_interval_seconds=1)
+    async with aclosing(delivery.stream(events(), thread_id=THREAD_ID)) as stream:
+        first = await anext(stream)
+
+        assert "event: text_delta" in first
+        assert producer_reads == 1
+
+
+@pytest.mark.asyncio
+async def test_delivery_hides_unexpected_exception_text() -> None:
+    """REQ: post-header failures never expose raw upstream exception details."""
+
+    async def events() -> AsyncIterator[StreamEventPayload]:
+        yield text_delta_event("partial")
+        raise RuntimeError("secret provider diagnostic")
+
+    delivery = SSEStreamDelivery(heartbeat_interval_seconds=1)
+    messages = [
+        message async for message in delivery.stream(events(), thread_id=THREAD_ID)
+    ]
+
+    assert any("event: error" in message for message in messages)
+    assert all("secret provider diagnostic" not in message for message in messages)
+    assert _json_data(messages[-1])["data"] == {"status": "failed"}
+
+
+def test_encoder_supports_multiline_data() -> None:
+    """REQ: every logical data line receives its own SSE field prefix."""
+    message = SSEMessage(event_name="message", data="one\ntwo", event_id="7")
+
+    encoded = encode_sse_message(message)
 
     assert encoded == "id: 7\nevent: message\ndata: one\ndata: two\n\n"
-    payload = json.dumps({"encoded": encoded})
-    assert "data: one" in payload
+
+
+@pytest.mark.parametrize("field_name", ["event_name", "event_id"])
+def test_message_rejects_newline_field_injection(field_name: str) -> None:
+    """REQ: caller-controlled names and IDs cannot inject extra SSE fields."""
+    with pytest.raises(ValueError, match="must not contain CR or LF"):
+        if field_name == "event_name":
+            SSEMessage(event_name="safe\nevent: injected")
+        else:
+            SSEMessage(event_id="safe\nevent: injected")
