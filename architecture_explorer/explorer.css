@@ -1,0 +1,265 @@
+/* ============================================================
+   llm_services — explorer overrides
+   ============================================================
+   styles.css is the shared design system and is not edited. This
+   file adapts it to this explorer: eight rail stages instead of
+   seven, no illustrated sprite (a CSS motif per stage instead),
+   one extra diagram colour family, and the cross-cutting strip
+   that has no equivalent in the base sheet.
+   ============================================================ */
+
+/* ---------- hero: no stat-card column ---------- */
+/* The base sheet's .hero-zone2 is a two-column grid (copy left, an
+   eval-card aside right). This explorer's hero has no stat cards — "4/4
+   gates" and "0 TTL" have no measured benchmark behind them, so they were
+   dropped rather than presented as if they were metrics — leaving the
+   second column empty. Collapsing to one column stops that from reading
+   as a layout bug, and widening .lede below (the base sheet caps it at
+   68ch, sized for that narrower two-column track) lets the paragraph
+   actually use the width the collapse freed up, rather than leaving the
+   same dead gap one level down. */
+
+.hero-zone2 { grid-template-columns: minmax(0, 1fr); }
+.lede { max-width: 100%; }
+
+/* ---------- rail: eight cards, two rows ---------- */
+
+.rail {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 1180px) {
+  .rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 680px) {
+  .rail { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The base card height was sized around an illustrated sprite. Without one
+   the copy is the whole card, so it shrinks to fit the copy instead. */
+.stage {
+  min-height: 176px;
+  border-left-width: 3px;
+  border-left-style: solid;
+  border-left-color: var(--stage-accent, var(--line-2));
+}
+.stage::before { inset: 62% 0 0; }
+
+/* ---------- stage motif ---------- */
+/* Replaces the sprite: a tint drawn from the stage's own accent plus one
+   large watermark glyph. Pure CSS, so there is no image to ship and the
+   motif recolours with the accent rather than being baked into a bitmap. */
+
+.stage-art {
+  background-image:
+    radial-gradient(120% 90% at 88% 6%, color-mix(in srgb, var(--stage-accent, var(--ink-3)) 16%, transparent) 0%, transparent 62%),
+    linear-gradient(180deg, color-mix(in srgb, var(--stage-accent, var(--ink-3)) 7%, transparent) 0%, transparent 58%);
+  background-size: auto;
+  background-position: 0 0;
+  mix-blend-mode: normal;
+  filter: none;
+  opacity: 1;
+}
+.stage-art::after {
+  content: var(--stage-glyph, "·");
+  position: absolute;
+  top: 44px;
+  right: 10px;
+  font-family: var(--serif);
+  font-size: 62px;
+  line-height: 1;
+  color: var(--stage-accent, var(--ink-3));
+  opacity: 0.13;
+  transition: opacity 0.3s var(--ease), transform 0.3s var(--ease);
+}
+.stage:is(:hover, :focus-visible, .is-active) .stage-art { opacity: 1; transform: none; }
+.stage:is(:hover, :focus-visible, .is-active) .stage-art::after {
+  opacity: 0.2;
+  transform: translateY(-2px);
+}
+
+/* ---------- per-stage accents ---------- */
+/* The order walks the palette once rather than repeating a colour, so two
+   adjacent cards on the rail are never the same family. */
+
+.stage[data-stage="bootstrap"]     { --stage-accent: #67736d; --stage-glyph: "⚙"; }
+.stage[data-stage="admission"]     { --stage-accent: var(--ink-2); --stage-glyph: "⊞"; }
+.stage[data-stage="identity"]      { --stage-accent: var(--blue); --stage-glyph: "⊙"; }
+.stage[data-stage="authorization"] { --stage-accent: var(--plum); --stage-glyph: "⊠"; }
+.stage[data-stage="routing"]       { --stage-accent: var(--green); --stage-glyph: "⤳"; }
+.stage[data-stage="quota"]         { --stage-accent: var(--amber); --stage-glyph: "◷"; }
+.stage[data-stage="execution"]     { --stage-accent: #96516f; --stage-glyph: "◈"; }
+.stage[data-stage="delivery"]      { --stage-accent: var(--green-deep); --stage-glyph: "≋"; }
+
+.stage[data-stage] .stage-mode-inline::before { content: "⚙"; }
+.stage[data-stage="execution"] .stage-mode-inline::before,
+.stage[data-stage="delivery"] .stage-mode-inline::before { content: "◆"; }
+
+.stage[data-stage] .stage-texture { color: var(--stage-accent); opacity: 0.5; }
+.stage[data-stage="bootstrap"] .stage-texture::before     { content: "┃ · · ·"; letter-spacing: 1px; }
+.stage[data-stage="admission"] .stage-texture::before     { content: "▸ ▸ ▸"; letter-spacing: 1px; }
+.stage[data-stage="identity"] .stage-texture::before      { content: "• • •"; letter-spacing: 1px; }
+.stage[data-stage="authorization"] .stage-texture::before { content: "▪ ▪ ▪ ▪"; letter-spacing: 1px; }
+.stage[data-stage="routing"] .stage-texture::before       { content: "→ → →"; letter-spacing: 1px; }
+.stage[data-stage="quota"] .stage-texture::before         { content: "◷ · ·"; letter-spacing: 1px; }
+.stage[data-stage="execution"] .stage-texture::before     { content: "◈ ◈ ◈"; letter-spacing: 1px; }
+.stage[data-stage="delivery"] .stage-texture::before      { content: "≈ ≈ ≈"; letter-spacing: 1px; }
+
+/* ---------- cross-cutting strip ---------- */
+/* Four concerns that are not a step in the request: they are the ground the
+   eight stages stand on. Given their own row so the rail stays a sequence. */
+
+.foundations {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 26px var(--gutter) 6px;
+}
+.foundation-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+@media (max-width: 1180px) { .foundation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 680px)  { .foundation-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.foundation {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 15px 13px;
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--stage-accent, var(--ink-3));
+  border-radius: var(--radius);
+  background: var(--card);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.22s var(--ease), box-shadow 0.22s var(--ease), border-color 0.22s var(--ease);
+}
+.foundation:hover,
+.foundation:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+  border-color: color-mix(in srgb, var(--stage-accent, var(--ink-3)) 40%, var(--line));
+  border-top-color: var(--stage-accent, var(--ink-3));
+}
+.foundation-tag {
+  font-family: var(--mono);
+  font-size: var(--f-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--stage-accent, var(--ink-3));
+}
+.foundation-name {
+  font-family: var(--serif);
+  font-size: 16.5px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.foundation-desc {
+  font-size: var(--f-sm);
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.foundation-go {
+  margin-top: 2px;
+  font-size: var(--f-xs);
+  color: var(--stage-accent, var(--ink-3));
+  opacity: 0;
+  transition: opacity 0.22s var(--ease);
+}
+.foundation:hover .foundation-go,
+.foundation:focus-visible .foundation-go { opacity: 1; }
+
+.foundation[data-open-stage="controlplane"] { --stage-accent: var(--plum); }
+.foundation[data-open-stage="secrets"]      { --stage-accent: var(--amber); }
+.foundation[data-open-stage="persistence"]  { --stage-accent: var(--blue); }
+.foundation[data-open-stage="topology"]     { --stage-accent: var(--green); }
+
+/* ---------- extra HLD colour families ---------- */
+/* The base sheet ships seven phase families, six of which are already
+   claimed by the six sub-phases inside the "Run Inference" lane. The
+   canvas has three more lanes above and below it — Sign In, Manage The
+   Platform, and Health Check — each a request shape with its own path
+   through the infrastructure, not a sub-step of inference. "boot" (the
+   precondition note) and "manage" reuse the sheet's spare "critique"
+   tone via a fresh selector; "authn" and "health" are new. */
+
+.hld-phase--boot, .hld-node--boot { --hld-accent: #5c6a63; --hld-wash: #eceae3; }
+.fl-swatch-boot { background: #eceae3; border-color: #5c6a63; }
+
+.hld-phase--authn, .hld-node--authn { --hld-accent: #2f7a8c; --hld-wash: #e1eef1; }
+.fl-swatch-authn { background: #e1eef1; border-color: #2f7a8c; }
+
+.hld-phase--manage, .hld-node--manage { --hld-accent: #96516f; --hld-wash: #f3e7ed; }
+.fl-swatch-manage { background: #f3e7ed; border-color: #96516f; }
+
+.hld-phase--health, .hld-node--health { --hld-accent: #6f7d3f; --hld-wash: #eef0e0; }
+.fl-swatch-health { background: #eef0e0; border-color: #6f7d3f; }
+
+/* ---------- infrastructure hops, inline in the flow ---------- */
+/* A step that leaves this process for another system (PostgreSQL, Redis,
+   Vault, the sibling Token Manager service, or the AI provider itself)
+   gets a dashed border — the same visual cue .hld-node--gate already uses
+   for "a decision point" — plus a small "→ System Name" chip above the
+   icon, so the crossing is visible without opening the hover detail. */
+
+.hld-node--hop { border-style: dashed; }
+.hld-hop-chip {
+  position: absolute;
+  top: -10px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--hld-accent);
+  background: var(--ink);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--hld-accent) 55%, white);
+  white-space: nowrap;
+  z-index: 1;
+}
+
+/* ---------- legend: "how to read this" ---------- */
+/* The canvas is four lanes and thirteen numbered steps. A first-time reader
+   needs the shape of the long lane before the colour key is any use, so the
+   grouping sits above the swatches rather than after them. */
+
+.flow-legend-how {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+  font-size: var(--f-sm);
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.flow-legend-how b { color: var(--ink-2); font-weight: 650; }
+
+/* ---------- legend: arrow styles ---------- */
+/* The canvas already encodes four edge meanings in colour and dash pattern;
+   nothing named them. These swatches mirror the exact values in the flowEdge
+   palette in full-flow.js, so the legend and the canvas cannot drift apart
+   silently — change one and this comment is the pointer to the other. */
+
+.fl-line {
+  display: inline-block;
+  width: 26px;
+  height: 0;
+  margin-right: 9px;
+  vertical-align: middle;
+  border-top-width: 2.4px;
+  border-top-style: solid;
+  flex: 0 0 auto;
+}
+.fl-line-main     { border-top-color: #50615a; }
+.fl-line-blocked  { border-top-color: #9d4b41; border-top-style: dashed; border-top-width: 1.7px; }
+.fl-line-evidence { border-top-color: #55758a; border-top-style: dashed; border-top-width: 1.45px; }
+.fl-line-loop     { border-top-color: #8a5574; border-top-style: dashed; border-top-width: 2px; }

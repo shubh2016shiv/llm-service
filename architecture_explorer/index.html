@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Interactive walkthrough of a multi-tenant LLM gateway: one authenticated request passes four authorization gates, resolves to one entitled route, reserves capacity against a shared ceiling, and streams a provider's answer back with usage settled exactly once."
+    />
+    <title>llm_services — Architecture Explorer</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="explorer.css" />
+
+    <!-- React Flow (end-to-end HLD canvas): loaded from a CDN as ES modules via
+         an import map — no npm, no bundler, no build step. The rest of the site
+         stays plain HTML/CSS/JS. esm.sh resolves react/react-dom as shared
+         singletons so there is one copy of each across every entry. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@18.3.1",
+          "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1",
+          "@xyflow/react": "https://esm.sh/@xyflow/react@12?deps=react@18.3.1,react-dom@18.3.1"
+        }
+      }
+    </script>
+    <link rel="stylesheet" href="https://esm.sh/@xyflow/react@12/dist/style.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a" aria-hidden="true"></div>
+    <div class="ambient ambient-b" aria-hidden="true"></div>
+    <div class="grain" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <a class="brand" href="#overview">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="brand-text">
+          <b>llm_services — a multi-tenant gateway between many customers and many model providers</b>
+        </span>
+      </a>
+
+      <nav class="topbar-center" aria-label="Architecture navigation">
+        <button class="btn btn-flow-nav" id="flowBtn" type="button">
+          <span aria-hidden="true">↗</span> Full flow
+        </button>
+      </nav>
+
+      <nav class="topbar-actions" aria-label="Presentation controls">
+        <button class="btn btn-present" id="presentBtn" type="button">Present</button>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" id="overview">
+        <!-- Zone 1 — the problem, then the system that answers it -->
+        <div class="hero-zone1">
+          <div class="hero-zone1-text">
+            <p class="eyebrow">Multi-tenant inference gateway · provider abstraction · streaming execution</p>
+            <h1 id="heroTitle" tabindex="-1">
+              <em>Platform Engineering Problem</em>
+              <span>— Many customers, each with their own credentials, models and limits, need to reach many model providers through one API that never lets one tenant spend, read or break another tenant's anything</span>
+            </h1>
+          </div>
+        </div>
+
+        <hr class="hero-rule" />
+
+        <!-- Zone 2 — the argument -->
+        <div class="hero-zone2">
+          <div class="hero-copy">
+            <p class="lede">
+              A client sends a chat, embedding or rerank request naming only a tenant and a deployment
+              key — never a provider, a model, an endpoint or a key. Everything that decides what
+              actually happens is resolved server-side: who the caller is, whether this tenant may use
+              this deployment, which entitlement grants it, which provider and model that entitlement
+              points at, which credential sits behind it in the vault, and whether there is capacity
+              left against a ceiling that is shared by every replica. Only then is a provider dialled,
+              behind one internal contract that five vendor adapters implement identically. The client
+              API therefore stays still while provider choices move underneath it.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <hr class="section-rule" />
+
+      <section class="map" id="map" aria-labelledby="mapTitle">
+        <div class="section-head">
+          <div>
+            <p class="section-em">The request pipeline</p>
+            <h2 id="mapTitle">Compose → Admit → Identify → Authorize → Route → Reserve → Execute → Stream</h2>
+          </div>
+          <p class="section-hint">Click any stage to zoom in</p>
+        </div>
+
+        <div class="rail" id="rail" role="list" aria-label="Architecture stages"></div>
+
+        <div class="map-nav">
+          <button class="chip" id="mapPrev" type="button" aria-label="Highlight previous stage">← Previous</button>
+          <button class="chip" id="mapNext" type="button" aria-label="Highlight next stage">Next →</button>
+        </div>
+      </section>
+
+      <section class="foundations" aria-labelledby="foundTitle">
+        <div class="section-head">
+          <div>
+            <p class="section-em">Cross-cutting</p>
+            <h2 id="foundTitle">Four concerns that are not a step in the request</h2>
+          </div>
+          <p class="section-hint">The ground the eight stages stand on</p>
+        </div>
+
+        <div class="foundation-grid">
+          <button class="foundation" type="button" data-open-stage="controlplane">
+            <span class="foundation-tag">Management API</span>
+            <span class="foundation-name">Control Plane</span>
+            <span class="foundation-desc">Authorize, validate references, write the credential to the vault, then invalidate exactly what changed.</span>
+            <span class="foundation-go" aria-hidden="true">Zoom in ↗</span>
+          </button>
+
+          <button class="foundation" type="button" data-open-stage="secrets">
+            <span class="foundation-tag">Credentials</span>
+            <span class="foundation-name">Secret Management</span>
+            <span class="foundation-desc">Two vault identities that cannot do each other's job — the request path reads, the management path writes.</span>
+            <span class="foundation-go" aria-hidden="true">Zoom in ↗</span>
+          </button>
+
+          <button class="foundation" type="button" data-open-stage="persistence">
+            <span class="foundation-tag">Data</span>
+            <span class="foundation-name">Persistence &amp; Schema</span>
+            <span class="foundation-desc">Named parameterised statements, explicit projections, and invariants the database itself refuses to break.</span>
+            <span class="foundation-go" aria-hidden="true">Zoom in ↗</span>
+          </button>
+
+          <button class="foundation" type="button" data-open-stage="topology">
+            <span class="foundation-tag">Service boundary</span>
+            <span class="foundation-name">Why Two Services</span>
+            <span class="foundation-desc">Exactly one responsibility was moved out of process, and the argument for it is a shared ceiling nobody can count locally.</span>
+            <span class="foundation-go" aria-hidden="true">Zoom in ↗</span>
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="pagefoot">
+      <span class="keys">
+        <kbd>←</kbd><kbd>→</kbd> navigate · <kbd>Enter</kbd> zoom in · <kbd>Esc</kbd> back one level
+      </span>
+    </footer>
+
+    <!-- Consolidated end-to-end HLD -->
+    <div class="flowview" id="flowview" role="dialog" aria-modal="true" aria-labelledby="flowTitle" aria-hidden="true">
+      <header class="flow-head">
+        <div>
+          <p class="eyebrow">Four request shapes, not one — each takes a genuinely different path</p>
+          <h2 id="flowTitle">Sign In. Run Inference. Manage The Platform. Health Check.</h2>
+        </div>
+        <div class="flow-head-actions">
+          <button class="icon-x" id="flowClose" type="button" aria-label="Close diagram">×</button>
+        </div>
+      </header>
+      <div class="full-flow-shell" id="fullFlowShell">
+        <div class="full-flow-canvas" id="fullFlowReactFlow" aria-live="polite"></div>
+        <aside class="full-flow-bubble" id="fullFlowBubble" aria-live="polite" hidden></aside>
+      </div>
+
+      <details class="flow-legend">
+        <summary class="flow-legend-toggle">
+          <span class="flow-legend-closed">Legend <small>(Click to Expand)</small></span>
+          <span class="flow-legend-open">Legend <small>(Click to Contract)</small></span>
+          <i aria-hidden="true"></i>
+        </summary>
+        <div class="flow-legend-content" aria-label="Diagram legend">
+          <p class="flow-legend-title">How to read the Run Inference lane</p>
+          <ol class="flow-legend-how">
+            <li><b>Steps 1-5</b> &mdash; Security. Who are you, and are you allowed?</li>
+            <li><b>Steps 6-9</b> &mdash; Logistics. What should run, and is there room to run it?</li>
+            <li><b>Steps 10-11</b> &mdash; Execution. Get the key, call the AI.</li>
+            <li><b>Steps 12-13</b> &mdash; Cleanup. Return the answer, record the cost, free the space.</li>
+          </ol>
+
+          <p class="flow-legend-title">Who owns what</p>
+          <ul class="flow-legend-how">
+            <li><b>Tenant</b> &mdash; a customer organisation. It owns its Deployments.</li>
+            <li><b>User</b> &mdash; global, not owned by a Tenant. One User can belong to several Tenants, one membership row each.</li>
+            <li><b>Deployment</b> &mdash; one saved AI configuration belonging to one Tenant, e.g. <code>gpt4-prod</code>. It names a provider, a model and an endpoint.</li>
+            <li><b>Entitlement</b> &mdash; grants one User one Deployment. Belonging to a Tenant does <b>not</b> grant its Deployments &mdash; that is why step 5 checks membership and entitlement separately.</li>
+          </ul>
+
+          <p class="flow-legend-title">Lanes</p>
+          <ul class="flow-legend-list">
+            <li><i class="fl-swatch fl-swatch-boot" aria-hidden="true"></i>Precondition — the service is already running</li>
+            <li><i class="fl-swatch fl-swatch-authn" aria-hidden="true"></i>Lane A · Sign In</li>
+            <li><i class="fl-swatch fl-swatch-manage" aria-hidden="true"></i>Lane C · Manage The Platform</li>
+            <li><i class="fl-swatch fl-swatch-health" aria-hidden="true"></i>Lane D · Health Check</li>
+          </ul>
+          <p class="flow-legend-title">Lane 01–06 · Run Inference (the one lane with internal sub-phases)</p>
+          <ul class="flow-legend-list">
+            <li><i class="fl-swatch fl-swatch-inputs" aria-hidden="true"></i>Request In</li>
+            <li><i class="fl-swatch fl-swatch-knowledge" aria-hidden="true"></i>Access Control</li>
+            <li><i class="fl-swatch fl-swatch-context" aria-hidden="true"></i>Resolve Deployment</li>
+            <li><i class="fl-swatch fl-swatch-plan" aria-hidden="true"></i>Capacity Check</li>
+            <li><i class="fl-swatch fl-swatch-execute" aria-hidden="true"></i>AI Provider Call</li>
+            <li><i class="fl-swatch fl-swatch-post" aria-hidden="true"></i>Response &amp; Wrap-Up</li>
+          </ul>
+          <p class="flow-legend-title">Arrows</p>
+          <ul class="flow-legend-list">
+            <li><i class="fl-line fl-line-main" aria-hidden="true"></i>Solid, thick &mdash; the main path, step to step</li>
+            <li><i class="fl-line fl-line-blocked" aria-hidden="true"></i>Red dashed &mdash; the request ends here</li>
+            <li><i class="fl-line fl-line-evidence" aria-hidden="true"></i>Blue dashed &mdash; a cached answer, skipping work</li>
+            <li><i class="fl-line fl-line-loop" aria-hidden="true"></i>Plum dashed &mdash; writing a result back into the cache</li>
+          </ul>
+
+          <p class="flow-legend-title">Node style</p>
+          <ul class="flow-legend-list">
+            <li><i class="fl-swatch" style="background:var(--card);border-color:var(--ink-3);border-style:solid" aria-hidden="true"></i>Solid border — this service's own logic, in process</li>
+            <li><i class="fl-swatch" style="background:var(--card);border-color:var(--ink-3);border-style:dashed" aria-hidden="true"></i>Dashed border + <code>→ System</code> chip — leaves this process</li>
+            <li><i class="fl-swatch" style="background:var(--red-wash);border-color:var(--red);border-style:solid" aria-hidden="true"></i>Red tag — this step ends the request</li>
+          </ul>
+        </div>
+      </details>
+
+      <footer class="flow-foot">
+        <p>Pause over a component for detail · Keyboard focus opens immediately · Scroll or use a trackpad to pan in any direction · Drag empty space to move.</p>
+      </footer>
+    </div>
+
+    <!-- Zoom caption -->
+    <p class="caption" id="caption" aria-live="polite" aria-atomic="true"></p>
+
+    <!-- Level 2 / Level 3 panel -->
+    <div class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="panelTitle" aria-hidden="true">
+      <header class="panel-head">
+        <nav class="crumbs" id="crumbs" aria-label="Zoom path"></nav>
+        <span class="panel-index" id="panelIndex"></span>
+        <button class="icon-x" id="panelClose" type="button" aria-label="Close detail view">×</button>
+      </header>
+
+      <div class="panel-body" id="panelBody">
+        <div class="panel-inner" id="panelInner"></div>
+      </div>
+
+      <footer class="panel-foot">
+        <button class="btn btn-quiet" id="panelPrev" type="button"><span aria-hidden="true">←</span> <b id="panelPrevLabel">Previous</b></button>
+        <button class="btn btn-tertiary" id="panelOut" type="button">Zoom out to the whole system <span aria-hidden="true">↙</span></button>
+        <button class="btn btn-solid" id="panelNext" type="button"><b id="panelNextLabel">Next</b> <span aria-hidden="true">→</span></button>
+      </footer>
+    </div>
+
+    <script src="content.js"></script>
+    <script src="app.js"></script>
+    <script type="module" src="full-flow.js"></script>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "architecture-explorer-llm-services",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Interviewer-facing walkthrough of a multi-tenant LLM gateway: authorization, routing, quota, provider execution and streaming delivery. Static site, no build step, no dependencies.",
+  "scripts": {
+    "dev": "python serve.py 4182",
+    "start": "python serve.py 4182"
+  }
+}
