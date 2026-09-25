@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import llm_inference_router, management_router
+from app.api import auth_router, llm_inference_router, management_router
 from app.api.exception_handlers import register_exception_handlers
 from app.api.health_router import router as health_router
 from app.api.request_context import (
@@ -71,6 +71,7 @@ def create_app(settings: ApplicationSettings | None = None) -> FastAPI:
     app = _build_fastapi(resolved)
     app.state.settings = resolved
     _register_middleware(app, resolved)
+    app.include_router(auth_router)
     app.include_router(llm_inference_router)
     app.include_router(management_router)
     app.include_router(health_router)
