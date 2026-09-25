@@ -25,21 +25,17 @@ Author: Shubham Singh
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import secrets
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from app.core.exceptions import ResourceNotFoundError
 from app.services.management_helpers import Row, clean_row, clean_rows, raise_clean_validation_error
+from app.services.users.password_hashing import hash_password
 
 if TYPE_CHECKING:
     from app.database import UserPersistence
     from app.schemas.management_filters import UserListFilters
     from app.schemas.management_schema import UserCreateRequest, UserUpdateRequest
-
-_PBKDF2_ITERATIONS = 390_000
-_SALT_BYTES = 16
 
 
 class UserService:
@@ -65,7 +61,7 @@ class UserService:
                 # PBKDF2 is deliberately CPU-expensive. A worker thread keeps
                 # one signup from pausing every coroutine on the event loop.
                 password_hash=await asyncio.to_thread(
-                    self._hash_password,
+                    hash_password,
                     request.password.get_secret_value(),
                 ),
                 platform_role=request.platform_role,
@@ -161,20 +157,5 @@ class UserService:
         if not deleted:
             raise ResourceNotFoundError("User", str(user_id))
 
-    @staticmethod
-    def _hash_password(password: str) -> str:
-        """Hash a plaintext password using PBKDF2-HMAC-SHA256.
-
-        PBKDF2 is a key-derivation function designed to make brute-force
-        attacks expensive by requiring many hash iterations per attempt.
-        The returned value embeds algorithm parameters so verification logic
-        can evolve without separate schema fields.
-        """
-        salt = secrets.token_bytes(_SALT_BYTES)
-        password_hash = hashlib.pbkdf2_hmac(
-            "sha256",
-            password.encode("utf-8"),
-            salt,
-            _PBKDF2_ITERATIONS,
-        )
-        return f"pbkdf2_sha256${_PBKDF2_ITERATIONS}${salt.hex()}${password_hash.hex()}"
+        # Hashing moved to users/password_hashing.py when sign-in arrived and
+        # needed to verify what this service writes. See that module's header.

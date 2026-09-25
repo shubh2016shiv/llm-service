@@ -7,9 +7,11 @@ Schema column of note:
   platform_role — stores the platform-wide role ('owner' | 'admin' | 'operator' | 'developer').
   This is distinct from tenant_role which lives in tenant_memberships.
 
-password_hash is never returned by any read method. It is accepted only by
-create_user() because the caller already holds the bcrypt hash and would otherwise
-need a redundant read-back to confirm the write succeeded.
+password_hash is returned by exactly one read method,
+get_sign_in_credentials_by_username(), which exists so the sign-in flow can
+verify a password. Every other read omits it. It is accepted by create_user()
+because the caller already holds the hash and would otherwise need a redundant
+read-back to confirm the write succeeded.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from app.database.queries.user_queries import (
     GET_USER_BY_EMAIL_SQL,
     GET_USER_BY_ID_SQL,
     GET_USER_BY_USERNAME_SQL,
+    GET_USER_CREDENTIALS_BY_USERNAME_SQL,
     USER_SAFE_COLUMN_NAMES,
     build_user_count_query,
     build_user_list_query,
@@ -55,7 +58,8 @@ class UserPersistence(BasePersistence):
     receive ValueError with a clear message rather than a database-level
     constraint violation.
 
-    password_hash is accepted for create but never returned from reads.
+    password_hash is accepted for create and returned by exactly one read,
+    get_sign_in_credentials_by_username(). No other read exposes it.
     """
 
     # =========================================================================
@@ -240,6 +244,36 @@ class UserPersistence(BasePersistence):
                 return dict(row) if row else None
         except Exception:
             logger.error("UserPersistence: get_user_by_username failed", exc_info=True)
+            raise
+
+    async def get_sign_in_credentials_by_username(self, username: str) -> dict[str, Any] | None:
+        """Return user_id, password_hash, role, and status for a sign-in attempt.
+
+        The only read in this class that returns ``password_hash``. Callers must
+        treat the result as a secret: never log it, never place it in a
+        response model, and discard it once verification has run.
+
+        Args:
+            username: Exact username supplied by the sign-in caller.
+
+        Returns:
+            Row dict including password_hash, or None when no user matches.
+
+        Raises:
+            ValueError: If username is empty.
+        """
+        self.validate_string_not_empty(username, "username")
+        try:
+            async with self.get_session() as session:
+                result = await session.execute(
+                    text(GET_USER_CREDENTIALS_BY_USERNAME_SQL), {"username": username}
+                )
+                row = result.mappings().one_or_none()
+                return dict(row) if row else None
+        except Exception:
+            # No username in this log line: failed sign-ins are attacker-supplied
+            # input, and logging them verbatim writes that input into the log.
+            logger.error("UserPersistence: sign-in credential lookup failed", exc_info=True)
             raise
 
     async def get_all_users(

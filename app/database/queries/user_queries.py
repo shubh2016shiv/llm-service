@@ -13,8 +13,12 @@ Table: users
   created_at      TIMESTAMPTZ
   updated_at      TIMESTAMPTZ
 
-``password_hash`` is accepted only as an INSERT parameter. No SELECT or
-RETURNING projection exposes it.
+``password_hash`` is accepted as an INSERT parameter and is exposed by exactly
+one SELECT: ``GET_USER_CREDENTIALS_BY_USERNAME_SQL``, which exists so sign-in
+can verify a password. Every other projection uses ``USER_SAFE_COLUMN_NAMES``
+and omits it. Keeping the exception to a single, explicitly named query is what
+makes an accidental leak visible in review: any other query returning the hash
+is wrong by definition.
 """
 
 USER_SAFE_COLUMN_NAMES: tuple[str, ...] = (
@@ -132,6 +136,25 @@ GET_USER_BY_USERNAME_SQL = """
         status,
         created_at,
         updated_at
+    FROM users
+    WHERE username = :username
+"""
+
+# The only query in this file that returns password_hash. Sign-in needs the
+# stored hash to compare against, and `status` in the same row so an account
+# that is suspended or deleted is rejected in the same round trip rather than
+# authenticating first and checking afterwards.
+#
+# The projection is deliberately narrow: no email, no names. A sign-in attempt
+# should not be able to read profile data out of an account it has not yet
+# proved it owns.
+GET_USER_CREDENTIALS_BY_USERNAME_SQL = """
+    SELECT
+        user_id,
+        username,
+        password_hash,
+        platform_role,
+        status
     FROM users
     WHERE username = :username
 """
