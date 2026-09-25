@@ -40,11 +40,14 @@ from app.adapters.cache.channels import CONFIG_CHANGES_CHANNEL
 from app.adapters.cache.redis_cache import RedisCache
 from app.adapters.cache.redis_connection import RedisConnectionManager
 from app.adapters.cache.redis_pubsub import RedisPubSub
+from app.adapters.cache.sign_in_attempt_limiter import AttemptBudget, SignInAttemptLimiter
 
 # Tell tools (and human readers) which names this package is meant to offer.
 __all__ = [
     "CONFIG_CHANGES_CHANNEL",
+    "AttemptBudget",
     "RedisCache",
     "RedisConnectionManager",
     "RedisPubSub",
+    "SignInAttemptLimiter",
 ]
