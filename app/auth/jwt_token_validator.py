@@ -1,11 +1,21 @@
 """JWT access-token validation for this resource server.
 
 Architecture:
-    identity service -> signed bearer token -> JwtTokenValidator -> trusted identity
+    token_issuer.py (or an external identity service)
+            |
+            v
+    signed bearer token -> validate_access_token -> trusted identity
 
-This service consumes identity; it does not authenticate passwords or issue
-tokens. Keeping issuance out of the resource server prevents two authorities
-from quietly inventing different token contracts.
+This module originally documented that the service never issues tokens, on the
+premise that a separate identity service would. That premise did not survive
+contact with the product: the admin dashboard needs a sign-in, and no identity
+service exists in this repository. Issuance now lives in ``token_issuer.py``.
+
+The concern behind the original rule — two authorities quietly inventing
+different token contracts — still applies, and is now addressed by keeping both
+halves in this package, reading the same settings object, and checking at
+startup that the issued lifetime fits inside ``jwt_max_token_age_seconds``.
+Externally issued tokens remain valid here provided they carry the same claims.
 """
 
 from __future__ import annotations
