@@ -13,6 +13,12 @@ while definitions remain separated by operational ownership.
 from __future__ import annotations
 
 from app.core.exceptions.application_configuration import ConfigurationError
+from app.core.exceptions.authentication import (
+    GuestSessionDisabledError,
+    InvalidCredentialsError,
+    SignInError,
+    TooManySignInAttemptsError,
+)
 from app.core.exceptions.authorization import AuthorizationGrantCacheUnavailableError
 from app.core.exceptions.base import LLMServiceError
 from app.core.exceptions.llm_provider import (
@@ -63,7 +69,9 @@ __all__ = [
     "DeploymentInactiveError",
     "DeploymentNotFoundError",
     "ExpiredTokenError",
+    "GuestSessionDisabledError",
     "InvalidAPIKeyError",
+    "InvalidCredentialsError",
     "InvalidRequestError",
     "InvalidStateTransitionError",
     "LLMServiceError",
@@ -84,10 +92,12 @@ __all__ = [
     "ResourceNotFoundError",
     "SecretBackendUnavailableError",
     "ServiceDownError",
+    "SignInError",
     "StreamCapacityExceededError",
     "TenantAccessDeniedError",
     "TenantError",
     "TenantNotFoundError",
     "TenantSuspendedError",
     "TokensPerMinuteExceededError",
+    "TooManySignInAttemptsError",
 ]

@@ -20,6 +20,7 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
+from app.core.settings.models.auth_session_config import AuthSessionConfig
 from app.core.settings.models.circuit_breaker_config import (
     CircuitBreakerPolicyConfig,
     ProviderCircuitBreakerConfig,
@@ -67,6 +68,7 @@ __all__: list[str] = [
     "AWSCloudConfig",
     "AnyCloudConfig",
     "AuthMode",
+    "AuthSessionConfig",
     "AzureCloudConfig",
     "CacheConfig",
     "CircuitBreakerPolicyConfig",

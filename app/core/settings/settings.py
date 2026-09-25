@@ -21,6 +21,7 @@ from functools import lru_cache
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.settings.models.auth_session_config import AuthSessionConfig
 from app.core.settings.models.environment_config import EnvironmentConfig
 from app.core.settings.models.infrastructure_config import (
     CacheConfig,
@@ -45,6 +46,7 @@ class ApplicationSettings(  # pyright: ignore[reportIncompatibleVariableOverride
     StreamingConfig,
     ProviderRuntimeConfig,
     SecurityConfig,
+    AuthSessionConfig,
     VaultConfig,
     ObservabilityConfig,
     BaseSettings,
@@ -65,10 +67,36 @@ class ApplicationSettings(  # pyright: ignore[reportIncompatibleVariableOverride
     )
 
     @model_validator(mode="after")
+    def validate_issued_token_lifetime(self) -> ApplicationSettings:
+        """Refuse to mint tokens this service's own validator would reject.
+
+        ``access_token_ttl_seconds`` (issuance) and ``jwt_max_token_age_seconds``
+        (verification) are set independently and live in different settings
+        models. If issuance outgrows verification, every sign-in appears to
+        succeed and every subsequent request fails with an opaque 401 — a
+        failure that costs hours to trace back to configuration.
+        """
+        if self.access_token_ttl_seconds > self.jwt_max_token_age_seconds:
+            raise ValueError(
+                f"access_token_ttl_seconds ({self.access_token_ttl_seconds}) cannot exceed "
+                f"jwt_max_token_age_seconds ({self.jwt_max_token_age_seconds}); this service "
+                "would issue tokens its own validator rejects"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_production_safety(self) -> ApplicationSettings:
         """Reject development-only values when the process declares production."""
         if self.app_environment != "production":
             return self
+        # The guest door skips authentication entirely, so a misconfigured
+        # production deploy would publish an unauthenticated superuser. Failing
+        # the launch is the only response that cannot be missed in a log.
+        if self.guest_superuser_enabled:
+            raise ValueError(
+                "production cannot enable guest_superuser_enabled: it grants "
+                "unauthenticated superuser access"
+            )
         local_origins = {
             origin
             for origin in self.get_cors_allowed_origins()
