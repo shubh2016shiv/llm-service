@@ -33,6 +33,8 @@ from app.core.exceptions import (
     ConcurrentRequestLimitError,
     DeploymentInactiveError,
     DeploymentNotFoundError,
+    GuestSessionDisabledError,
+    InvalidCredentialsError,
     InvalidStateTransitionError,
     LLMServiceError,
     ManagementError,
@@ -46,9 +48,11 @@ from app.core.exceptions import (
     ResourceConflictError,
     ResourceNotFoundError,
     SecretBackendUnavailableError,
+    SignInError,
     TenantAccessDeniedError,
     TenantNotFoundError,
     TenantSuspendedError,
+    TooManySignInAttemptsError,
 )
 from app.inference_routing.exceptions import (
     AuthorizedEntitlementUnavailableError,
@@ -80,6 +84,17 @@ _INFERENCE_EXCEPTION_STATUS: dict[type[LLMServiceError], int] = {
     ProviderError: status.HTTP_502_BAD_GATEWAY,
 }
 
+# Sign-in outcomes. 401 is the honest answer for a rejected credential; the
+# limiter's 429 carries Retry-After via the shared _retry_after_headers helper.
+# Guest refusal is 403 rather than 404: the route exists, the deployment simply
+# does not offer that door.
+_SIGN_IN_EXCEPTION_STATUS: dict[type[LLMServiceError], int] = {
+    InvalidCredentialsError: status.HTTP_401_UNAUTHORIZED,
+    GuestSessionDisabledError: status.HTTP_403_FORBIDDEN,
+    TooManySignInAttemptsError: status.HTTP_429_TOO_MANY_REQUESTS,
+    SignInError: status.HTTP_401_UNAUTHORIZED,
+}
+
 _MANAGEMENT_EXCEPTION_STATUS: dict[type[LLMServiceError], int] = {
     AuthorizationGrantCacheUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
     SecretBackendUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -96,6 +111,7 @@ _MANAGEMENT_EXCEPTION_STATUS: dict[type[LLMServiceError], int] = {
 _FALLBACK_EXCEPTION_STATUS: dict[type[LLMServiceError], int] = {
     **_MANAGEMENT_EXCEPTION_STATUS,
     **_INFERENCE_EXCEPTION_STATUS,
+    **_SIGN_IN_EXCEPTION_STATUS,
 }
 
 
@@ -153,9 +169,27 @@ def translate_management_error(exc: LLMServiceError) -> NoReturn:
     ) from exc
 
 
-def _error_content(
-    *, detail: object, error_code: str, request_id: str | None
-) -> dict[str, object]:
+def translate_sign_in_error(exc: LLMServiceError) -> NoReturn:
+    """Raise the HTTP form of a failed sign-in attempt.
+
+    Separate from ``translate_management_error`` because the management map
+    would resolve an unrecognized sign-in failure to 400. A credential problem
+    is 401, and answering 400 would tell a client to fix its request body when
+    the request was well-formed and simply not authorized.
+    """
+    raise DomainHTTPException(
+        status_code=_resolve_status(
+            exc,
+            _SIGN_IN_EXCEPTION_STATUS,
+            fallback_status=status.HTTP_401_UNAUTHORIZED,
+        ),
+        detail=str(exc),
+        error_code=exc.error_code,
+        headers=_retry_after_headers(exc) or None,
+    ) from exc
+
+
+def _error_content(*, detail: object, error_code: str, request_id: str | None) -> dict[str, object]:
     """Build the backward-compatible JSON envelope shared by all handlers."""
     return {"detail": detail, "error_code": error_code, "request_id": request_id}
 
@@ -216,9 +250,7 @@ async def _on_unhandled_llm_service_error(
     )
     return JSONResponse(
         status_code=resolved_status,
-        content=_error_content(
-            detail=str(exc), error_code=exc.error_code, request_id=request_id
-        ),
+        content=_error_content(detail=str(exc), error_code=exc.error_code, request_id=request_id),
         headers=_retry_after_headers(exc) or None,
     )
 

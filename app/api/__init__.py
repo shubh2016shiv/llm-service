@@ -49,7 +49,8 @@ Dependencies:
 Author: Shubham Singh
 """
 
+from app.api.auth_router import router as auth_router
 from app.api.llm_inference_router import router as llm_inference_router
 from app.api.management_routers import router as management_router
 
-__all__ = ["llm_inference_router", "management_router"]
+__all__ = ["auth_router", "llm_inference_router", "management_router"]
