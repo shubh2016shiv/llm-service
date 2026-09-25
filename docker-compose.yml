@@ -203,6 +203,18 @@ services:
       STREAM_CAPACITY_RETRY_AFTER_SECONDS: ${STREAM_CAPACITY_RETRY_AFTER_SECONDS:-1}
       STREAM_CLEANUP_TIMEOUT_SECONDS: ${STREAM_CLEANUP_TIMEOUT_SECONDS:-5}
       APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      # Guest superuser: an unauthenticated session for local development, so a
+      # fresh stack can be administered before any password exists. Defaults to
+      # the same user the local .env already seeds for the dashboard JWT.
+      # ApplicationSettings refuses to start if this is on with
+      # APP_ENVIRONMENT=production, so a promoted compose file fails loudly
+      # rather than publishing an open admin door.
+      GUEST_SUPERUSER_ENABLED: ${GUEST_SUPERUSER_ENABLED:-true}
+      GUEST_SUPERUSER_USER_ID: ${LOCAL_DASHBOARD_JWT_USER_ID:-}
+      GUEST_SUPERUSER_ROLE: ${LOCAL_DASHBOARD_JWT_ROLE:-owner}
+      ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-3600}
+      SIGN_IN_MAX_ATTEMPTS: ${SIGN_IN_MAX_ATTEMPTS:-5}
+      SIGN_IN_ATTEMPT_WINDOW_SECONDS: ${SIGN_IN_ATTEMPT_WINDOW_SECONDS:-300}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-llm_user}:${POSTGRES_PASSWORD:-local-postgres-password}@postgres:5432/${POSTGRES_DB:-llm_services}
       DATABASE_CONNECT_TIMEOUT_SECONDS: ${DATABASE_CONNECT_TIMEOUT_SECONDS:-5}

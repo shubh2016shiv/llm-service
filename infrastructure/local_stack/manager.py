@@ -292,6 +292,12 @@ class LocalInfrastructureManager:
         already validated upstream (a UUID, and a role checked against
         DASHBOARD_JWT_ROLES) — this is the second layer, not the only one.
         """
+        # The email must pass the same validation the API applies when it reads
+        # users back (pydantic EmailStr, which rejects reserved TLDs such as
+        # `.test` and `.local`). This row is inserted with raw SQL and so
+        # bypasses that check; a `@local.test` address here made GET /users
+        # fail with a 500 and the dashboard show "Could not load the control
+        # plane". example.com is reserved for documentation and is accepted.
         seed_sql = """
             INSERT INTO users (
                 user_id, username, email, first_name, last_name,
@@ -299,7 +305,7 @@ class LocalInfrastructureManager:
             )
             VALUES (
                 :'dashboard_user_id', 'dashboard-owner',
-                'dashboard-owner@local.test', 'Dashboard', 'Owner',
+                'dashboard-owner@example.com', 'Dashboard', 'Owner',
                 'not-used-for-login', :'dashboard_role', 'active'
             )
             ON CONFLICT (user_id) DO NOTHING;
