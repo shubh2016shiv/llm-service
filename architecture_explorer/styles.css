@@ -1213,6 +1213,14 @@ main { display: block; }
   position: relative;
   width: 100%;
   min-height: 102px;
+  /* Fill the node wrapper when full-flow.js pins a row to one height. The
+     connection handles are children of this box and sit at 50% of ITS height,
+     so without this the handles track each card's own text length: two cards
+     drawn side by side on the same row get handles at different heights, and
+     every connector between them renders as a small S-bend instead of a
+     straight line. Against an auto-height wrapper (a card with no pinned
+     height) this resolves to auto, so it changes nothing there. */
+  height: 100%;
   padding: 15px 16px 16px;
   border: 1px solid color-mix(in srgb, var(--hld-accent) 46%, transparent);
   border-radius: 14px;

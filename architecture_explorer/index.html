@@ -221,7 +221,10 @@
       </details>
 
       <footer class="flow-foot">
-        <p>Pause over a component for detail · Keyboard focus opens immediately · Scroll or use a trackpad to pan in any direction · Drag empty space to move.</p>
+        <!-- Zoom is named first and explicitly: scrolling pans rather than
+             zooms on this canvas, so without being told, a visitor on a mouse
+             has no way to discover zoom except by finding the +/- control. -->
+        <p>Zoom with Ctrl/⌘ + scroll, pinch, or the + − buttons; the ⛶ button fits the whole canvas · Pause over a component for detail · Keyboard focus opens immediately · Scroll or use a trackpad to pan in any direction · Drag empty space to move.</p>
       </footer>
     </div>
 

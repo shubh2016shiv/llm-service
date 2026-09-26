@@ -219,7 +219,12 @@
   border: 1px solid var(--hld-accent);
   background: var(--ink);
   font-family: var(--mono);
-  font-size: 9.5px;
+  /* 11px, not 9.5px. This chip carries the only naming of the concrete
+     infrastructure on the canvas — PostgreSQL, Redis, Vault, the AI provider —
+     so it is the element a reader is most likely to be hunting for, and at
+     9.5px it fell below reading size as soon as the canvas was zoomed out at
+     all. It is a label to be read, not a decoration. */
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   color: color-mix(in srgb, var(--hld-accent) 55%, white);
