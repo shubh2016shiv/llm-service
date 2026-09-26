@@ -68,17 +68,17 @@ const PHASES = {
   authn:  { index: "A", title: "Sign In", note: "HOW DOES A CALLER GET A TOKEN? Every other lane below needs a token already. This is the only lane that creates one. Two separate doors lead to it.", x: 0, y: 170, w: 2440, h: 900 },
 
   inputs:    { index: "01", title: "Request In", note: "STEP 1 · WHO ARE YOU? Show a sign-in token and the server checks it is genuine. The tenant and deployment headers are only what you are asking for — not proof.", x: 0,    y: 1110, w: 300, h: 900 },
-  knowledge: { index: "02", title: "Access Control", note: "STEP 2 · ARE YOU ALLOWED? You are who you say you are — now, are you allowed to use this deployment for this customer? Answered from a brief memory of a past yes, or checked fresh in the database.", x: 340,  y: 1110, w: 610, h: 1010 },
-  context:   { index: "03", title: "Resolve Deployment", note: "STEP 3 · WHAT DOES THAT DEPLOYMENT KEY MEAN? Step 2 proved you may use the name. Resolving turns that name into one concrete plan — provider, model, URL, key, limits — allowed for this customer and able to do this job, then frozen.", x: 990,  y: 1110, w: 420, h: 1010 },
+  knowledge: { index: "02", title: "Access Control", note: "STEP 2 · ARE YOU ALLOWED? Your identity is proven; your access is not. May this USER use this DEPLOYMENT, inside this TENANT? Answered from a brief memory of a past yes, or checked fresh in the database.", x: 340,  y: 1110, w: 610, h: 1010 },
+  context:   { index: "03", title: "Resolve Deployment", note: "STEP 3 · WHAT DOES THAT DEPLOYMENT KEY MEAN? Step 2 proved you may use the name. Resolving turns that name into one concrete plan — provider, model, URL, key, limits — allowed for this tenant and able to do this job, then frozen.", x: 990,  y: 1110, w: 420, h: 1010 },
   /* "Capacity Check" never said capacity OF WHAT, which made this the hardest
      phase to read cold: two unrelated limits share one word. The title now
      names both limits instead of the word they get mistaken for, and the two
      cards below answer to it in identical shape — Counts / Kept by / Asked by
      / When full — so the differences are the only thing that varies between
      them. */
-  plan:      { index: "04", title: "Connections & Tokens", note: "STEP 4 · TWO LIMITS, NOT ONE. Both get called capacity, and they have nothing to do with each other. 8a counts open connections on THIS one server. 8b counts the TEXT this call will use, shared across every server. Neither is about money. Last on purpose — the model picked in step 3 is what sets the text limit.", x: 1450, y: 1110, w: 540, h: 1010 },
+  plan:      { index: "04", title: "Connections & Tokens", note: "STEP 4 · TWO LIMITS, NOT ONE — and they guard different resources. 8a is CONCURRENCY: can this one process take another live connection? Counted in its own memory, shared with nobody. 8b is WORKLOAD: can the platform reserve enough tokens? Counted fleet-wide by Token Manager. Passing one says nothing about the other. Neither is about money.", x: 1450, y: 1110, w: 540, h: 1010 },
   execute:   { index: "05", title: "AI Provider Call", note: "RUN IT. Fetch the API key from Vault, then call the vendor named in the Execution Plan.", x: 2010, y: 1110, w: 420, h: 1010 },
-  post:      { index: "06", title: "Response & Wrap-Up", note: "Send the response. Always release the streaming slot on this server (if we took one) and report how many LLM tokens were really used — even if the stream failed halfway.", x: 2450, y: 1110, w: 560, h: 1010 },
+  post:      { index: "06", title: "Response & Wrap-Up", note: "Send the response. Always release the streaming slot in this process (if we took one) and report how many LLM tokens were really used — even if the stream failed halfway.", x: 2450, y: 1110, w: 560, h: 1010 },
 
   manage: { index: "C", title: "Manage The Platform", note: "GET · POST · PATCH · DELETE across tenants, users, providers, models, deployments and entitlements", x: 0, y: 2120, w: 3010, h: 280 },
 
@@ -89,7 +89,28 @@ const PHASES = {
    rendered with a dashed border and a "→ System" chip by StepCard.
    Everything without `hop` is this service's own in-process logic. */
 const LAYOUT = {
-  START:   { phase: "boot", icon: "repository", tag: "BEFORE ANY REQUEST", x: 40,   y: 20,  w: 280 },
+  /* y=8, not 20: the glossary cards to the right are four lines tall and at
+     y=20 their bottom edge landed 1px inside Lane A. All four top-margin
+     cards move up together so their top edges still line up. */
+  START:   { phase: "boot", icon: "repository", tag: "BEFORE ANY REQUEST", x: 40,   y: 8,  w: 280 },
+
+  /* Glossary. Three reference cards sharing the top margin with START —
+     same "boot" phase, so no panel sits behind them, and no edge touches
+     them: they are not a step and must never read as one, which is what
+     the NOT A STEP tag says out loud. They sit here because the canvas
+     opens at its top-left, so the nouns are on screen before the numbered
+     flow below uses them. Definitions only — no mechanism, no file names,
+     no status codes; every one of those lives on the step that owns it. */
+  GLOSSWHO:  { phase: "boot", icon: "documents", tag: "GLOSSARY · NOT A STEP", x: 360,  y: 8, w: 660 },
+  GLOSSWHAT: { phase: "boot", icon: "documents", tag: "GLOSSARY · NOT A STEP", x: 1060, y: 8, w: 660 },
+  GLOSSRUN:  { phase: "boot", icon: "documents", tag: "GLOSSARY · NOT A STEP", x: 1760, y: 8, w: 660 },
+
+  /* The key -> entitlement -> plan chain, in the same reference row and for the
+     same reason: a reader has otherwise to infer it from four separate
+     cards spread across phases 02 and 03. Four lines only — the correction
+     that matters (the dialled values come from the entitlement, NOT from
+     the deployment row) is too long for a card and lives in the hover. */
+  CHAIN:     { phase: "boot", icon: "assembly", tag: "RELATIONSHIP · NOT A STEP", x: 2450, y: 8, w: 540 },
 
   /* Lane A — Sign In. Three bands, and the band a box sits in is what it
      means, so a reader can read the shape before reading a word:
@@ -174,9 +195,9 @@ const LAYOUT = {
      different refusals, so it gets two boxes stacked beneath one another —
      they used to overlap by 39px, and the lower one escaped the panel
      entirely (bottom 2020 against a panel ending at 1960). */
-  SLOT:    { phase: "plan", icon: "queue", tag: "LIVE REPLIES · THIS SERVER", x: 1485, y: 1280, w: 250, h: 216 },
+  SLOT:    { phase: "plan", icon: "queue", tag: "CONCURRENCY · THIS PROCESS", x: 1485, y: 1280, w: 250, h: 216 },
   DENYSLOT:{ phase: "plan", icon: "gap", tag: "503", x: 1770, y: 1280, w: 200, h: 182, blocked: true },
-  RESV:    { phase: "plan", icon: "external", tag: "TEXT SIZE · ALL SERVERS", x: 1485, y: 1580, w: 250, h: 238, gate: true, hop: "Token Manager" },
+  RESV:    { phase: "plan", icon: "external", tag: "WORKLOAD · FLEET-WIDE", x: 1485, y: 1580, w: 250, h: 238, gate: true, hop: "Token Manager" },
   DENYRESV:{ phase: "plan", icon: "gap", tag: "429", x: 1770, y: 1580, w: 200, h: 202, blocked: true },
   RESVDOWN:{ phase: "plan", icon: "gap", tag: "503", x: 1770, y: 1852, w: 200, h: 202, blocked: true },
 
@@ -220,14 +241,39 @@ const DETAILS = {
     ],
   },
 
+  GLOSSWHO: {
+    title: "Key Concepts · Who Is Asking",
+    sub: "User — a person's login identity, proven by the sign-in token.\nTenant — one customer organisation; the isolation boundary everything is scoped to.\nCustomer — the same thing as Tenant. There is no separate customer entity.\nEntitlement — the record granting one user one provider + model route in a tenant.",
+  },
+  GLOSSWHAT: {
+    title: "Key Concepts · What They Ask For",
+    sub: "Deployment — a tenant's saved AI setup: one provider, one model, its settings.\nDeployment Key — the short name a caller sends to choose one Deployment.\nProvider — an AI vendor this service can call, such as OpenAI or Bedrock.\nModel — one model a provider offers, such as gpt-4o.",
+  },
+  GLOSSRUN: {
+    title: "Key Concepts · What Runs It",
+    sub: "Execution Plan — the frozen settings one request runs on, decided before any call.\nStreaming Slot — one live connection slot, counted per process; only so many exist.\nToken Quota — an allowance of LLM tokens, reserved before a call and settled after.\nToken Manager — a separate service that grants and tracks token quota fleet-wide.",
+  },
+
+  CHAIN: {
+    title: "How A Key Becomes A Plan",
+    sub: "Request: tenant id + deployment key. The token supplies the user.\nDeployment (tenant+key): must be active; fixes the provider + model that key means.\nEntitlement (tenant+user+key+that provider/model): endpoint URL, credential ref, region.\nExecution Plan: those + catalog defaults, frozen once and read by every later step.",
+    paragraphs: [
+      "Read the four lines as one sentence: the caller names a key, the key names a deployment, the deployment pins which provider and model that key means, and the entitlement for that exact combination supplies what is actually dialled. Each step narrows the question; none of them re-opens an earlier one. (Not \"grant\" — that word is already taken in this codebase by the Access Control cache, a different thing: the remembered yes from step 4, not this permission record.)",
+      "One thing worth being exact about, because the obvious assumption is wrong: the endpoint URL and the credential reference come from the entitlement, not from the deployment row — even though a deployment carries its own copy of both. The routing read joins user_entitlements to the provider and model catalogs and never touches the deployments table at all, and it deliberately never falls back to a deployment credential. The deployment's job is narrower than it looks: prove the key exists and is switched on for this tenant, and fix the provider and model the selected entitlement must agree with.",
+      "Why everything downstream reads the plan instead of resolving again: the plan is built once and frozen, carrying one already-decided value per question — which timeout, which temperature, which token ceiling. Capacity, Vault and the provider call all read that same sheet, so no two steps can disagree about what this request is. It also carries a fingerprint of itself, which is what lets the provider layer reuse one cached connection per exact route.",
+    ],
+  },
+
   REQIN: {
     title: "1 · Request Arrives",
     /* Three lines, each short enough to survive the card width without
        wrapping — a wrapped fourth line breaks the one-header-per-row
        reading that makes this block scannable at all. */
-    sub: "Authorization: Bearer eyJ… ← who you are\nX-Tenant-ID: <customer id> ← which customer\nX-Deployment-Key: support-gpt ← the AI setup",
+    sub: "Authorization: Bearer eyJ… ← who you are\nX-Tenant-ID: <tenant id> ← which tenant\nX-Deployment-Key: support-gpt ← the AI setup",
     paragraphs: [
-      "Think of it as arriving at a building with a badge and a destination. Authorization: Bearer <token> is the badge — a sign-in token from Lane A. X-Tenant-ID is the customer organisation you want to act for (a UUID). X-Deployment-Key is the saved AI setup you want to use inside that tenant — a short name like customer-support-gpt or invoice-summariser. A deployment is a named provider + model + settings bundle, never a software release.",
+      "One naming note, stated once and then dropped: this canvas uses \"tenant\" as its only word for this from here on — see Key Concepts above. A tenant is the customer boundary; there is no separate customer entity anywhere in the code.",
+      "Think of it as arriving at a building with a badge and a destination. Authorization: Bearer <token> is the badge — a sign-in token from Lane A. X-Tenant-ID is the tenant you want to act for (a UUID). X-Deployment-Key is the saved AI setup you want to use inside that tenant — a short name like customer-support-gpt or invoice-summariser. A deployment is a named provider + model + settings bundle, never a software release.",
+      "To be exact about what that key is, since it could mean four different things: it is not something the caller invents on the spot — a key that was never registered simply matches no row later, in Resolve Deployment. It is not the database's own primary key either — that is a separate internal UUID (deployment_id) the caller never sees. It is a human-chosen, URL-safe slug (e.g. gpt4-prod) an administrator registered ahead of time for this tenant, over in Manage The Platform — and that act of registering is what created the stored record the key now names: which provider, which model, where its credential lives in Vault, which region, and the timeout / temperature / token-limit defaults for calls made under it. So of the four readings, the last is closest: the key is a mapping, a lookup handle to that whole bundle, not a piece of configuration in itself.",
       "Only the badge proves anything. The tenant and deployment are what the caller is asking for, not something they have shown a right to — naming them is a request. All three routes (chat, embed, rerank) share this one door; whether a deployment can chat but not embed is decided later, in Resolve Deployment.",
       "The deployment key must start with a letter or digit, and may then use letters, digits, dot, dash and underscore, up to 128 characters in all. A key that breaks any of those rules is refused with 422 — as is a tenant id that is not a UUID.",
       "But that shape check runs AFTER the token is proven, not before it. Get both wrong at once and the answer is 401, never 422. The order is not cosmetic: it means a caller who cannot prove who they are never learns whether their tenant id or deployment key was even well-formed.",
@@ -255,9 +301,12 @@ const DETAILS = {
   },
 
   AUTHCTX: {
-    title: "3 · The Question To Answer",
-    sub: "Can this USER use this DEPLOYMENT inside this TENANT?\nuser = from your verified token\ntenant = X-Tenant-ID (the customer)\ndeployment = X-Deployment-Key (a saved AI setup, e.g. support-gpt)",
+    title: "3 · May This User Use This Deployment?",
+    sub: "May this USER use this DEPLOYMENT in this TENANT?\nuser = user_id on your verified token\ntenant = X-Tenant-ID, from the request header\ndeployment = X-Deployment-Key, saved in that tenant\nthe key is unique per tenant, never globally",
     paragraphs: [
+      "Who is being authorized: a user, and only a user. The verified token carries a user_id and that user's PLATFORM role — authority across the whole service. Access Control does not use that platform role. Authority inside one tenant is a separate thing, stored on a membership row as a tenant role, and the code keeps the two sets deliberately apart even though four role names appear in both.",
+      "Tenant is this canvas's only word for that boundary — see the naming note on Request In if you want the one-time alias explanation. Nothing below uses 'customer' again.",
+      "What is being authorized is one deployment inside that tenant, named by X-Deployment-Key. That key is unique per tenant rather than globally, so the identical key string in another tenant is a different deployment and grants nothing here. The thing that finally permits the call is an entitlement — the row tying this user to that deployment's exact provider and model.",
       "In the code: InferenceAuthorizationService.authorize_inference(tenant_id, deployment_key, current_user) in app/auth/authorization/tenant_inference_auth.py — those three arguments are the question. Its answer is one frozen object (InferenceAccessContext) that later phases trust instead of re-checking.",
       "Those three values together are the authorization question for every inference call. Redis and PostgreSQL both work on exactly that triple. Chat, embed, and rerank ask the same question — the operation is not part of it. The operation is checked one phase later, in Resolve Deployment.",
       "X-Tenant-ID means \"I want to work as tenant T\", never \"I belong to tenant T\". Only the user id on the token is proven. Naming a tenant you have nothing to do with is allowed and achieves nothing — membership is required below or the request is 403.",
@@ -265,18 +314,17 @@ const DETAILS = {
   },
   CACHE: {
     title: "4 · Recent Approval Cached?",
-    sub: "Have we already said yes to this exact question a moment ago? Only yeses are remembered, and for 30 seconds at most. Revoked access takes effect immediately, without waiting for that.",
+    sub: "A shortcut, never the source of truth.\nKEY · (user, tenant, deployment) → approved\nMISS → always check PostgreSQL fresh",
     paragraphs: [
-      "Why a cache at all: the four database checks below are the same for every request this user makes against this deployment, and they rarely change between one request and the next. A hit replaces four lookups with one.",
-      "What is stored is identifiers only: the tenant, the user, the deployment (key and id), the permission record, the caller's role inside the tenant, and the provider and model rows that deployment points at. What is never stored is anything you could actually dial a model with — no provider name, no endpoint URL, no region, no settings, and above all no credential and no secret location. The object refuses unknown fields and cannot be modified once built.",
-      "So it does carry a provider id and a model id — and the next phase ignores both. Resolve Deployment re-reads the permission record from PostgreSQL rather than trusting those, which is what makes a revocation or a model change land on the very next call instead of waiting for this entry to age out.",
-      "A management change advances a version seal, and the very next read sees the mismatch and discards the stored yes — revocation is immediate, not bounded by the timer below. The TTL (30 seconds by default, configurable 1 to 300) exists only as defense-in-depth for the one pathological case where a seal write itself failed; it is not the real invalidation path.",
-      "Only successful checks are cached, on purpose: a cached refusal would lock out someone who was just granted access for as long as that entry lived. Redis unavailable is treated exactly like a miss — PostgreSQL still runs, so correctness never depends on the cache being up.",
+      "Why a cache at all: the four database checks below are the same for every request this user makes against this deployment, and they rarely change between one request and the next. A hit replaces four lookups with one — but it is purely a speed-up. PostgreSQL is the only place this decision is actually made; Redis only remembers an answer PostgreSQL already gave.",
+      "What is remembered, in plain terms: which user, which tenant, which deployment, and that the answer for that exact combination was yes. A miss means Redis has no memory of that combination — not that the answer is no, just that it has to be looked up. A hit does not skip verification forever, either: it still carries the identifiers the next phase needs, so nothing downstream has to re-fetch them, but it does not carry anything you could dial a model with — no provider name, no URL, no credential.",
+      "What actually invalidates a cached yes is not the timer: a management change (revoking access, deactivating a deployment, suspending a tenant) advances a version seal, and the very next read sees the mismatch and discards the stored answer immediately. The TTL (30 seconds by default, configurable 1 to 300) only exists as defense-in-depth for the one pathological case where a seal write itself failed — it is not the real invalidation path.",
+      "Only approvals are ever cached, on purpose: caching a refusal would lock out someone who was just granted access for as long as that entry lived. Redis unavailable is treated exactly like a miss — PostgreSQL still runs, so correctness never depends on the cache being up. That is the sense in which Redis is optional and PostgreSQL is not.",
     ],
   },
   GATES: {
     title: "5 · Look It Up In The Database",
-    sub: "Four questions. The first \"no\" stops it.\n1  Is this customer real and switched on?\n2  Are you an active member allowed to use AI there?\n3  Does this saved AI setup exist and is it on?\n4  Were you given permission to use it?",
+    sub: "Four questions. The first \"no\" stops it.\n1  Is this tenant real and switched on?\n2  Are you an active member allowed to use AI there?\n3  Does this saved AI setup exist and is it on?\n4  Were you given permission to use it?",
     paragraphs: [
       "In the code: _authorize_from_source_of_truth in tenant_inference_auth.py runs Gate 1 (tenant exists; status active or trial), Gate 2 (an active membership whose tenant role is developer or above — a viewer is read-only and cannot invoke), Gate 3 (deployment exists and is active), Gate 4 (an active entitlement for this exact tenant + user + deployment + provider + model). Errors map to HTTP codes in app/api/exception_handlers.py.",
       "Why a strange-looking deployment key simply vanishes at Gate 3: the header in Request In accepts a fairly loose shape, but a key that is actually stored is kebab-case — lowercase letters, digits, single hyphens — and that shape is enforced three times over, by the management schema, by this phase's own answer object, and by a CHECK constraint on the table. A key like Support_GPT clears the header check one phase earlier and then matches no row here, so it ends as a 404 rather than an error about its spelling.",
@@ -305,20 +353,22 @@ const DETAILS = {
   },
 
   LIVE: {
-    title: "6 · Read What The Deployment Key Stands For",
-    sub: "A deployment key is only a name. What it stands for is read fresh on every call — never from the yes-cache:\n• which provider company  e.g. OpenAI\n• which model  e.g. gpt-4o\n• which URL to call\n• where its API key is kept\nCustomer gone → 404. Suspended or revoked → 403.",
+    title: "6 · Resolve Entitlement Configuration",
+    sub: "Re-read the entitlement behind this key — fresh every call, never from the yes-cache:\n• which provider company  e.g. OpenAI\n• which model  e.g. gpt-4o\n• which URL to call\n• where its API key is kept\nTenant gone → 404. Suspended or revoked → 403.",
     paragraphs: [
-      "Access Control only proved this user may use the named deployment. It did not hand over anything needed to dial a model. Those four facts live on the permission record (called an entitlement in the code) that Gate 4 already identified — this step re-reads that exact record, plus the customer row, so a revocation or model change applies on the very next call.",
+      "Access Control only proved this user may use the named deployment. It did not hand over anything needed to dial a model. Those four facts live on the permission record (called an entitlement in the code) that Gate 4 already identified — this step re-reads that exact record, plus the tenant row, so a revocation or model change applies on the very next call.",
       "The key path is only a location. The real API key is fetched later from Vault, in AI Provider Call.",
       "In the code: InferenceRouteResolver._read_active_tenant and _read_authorized_entitlement (app/inference_routing/route_resolution.py). PostgreSQL unreachable here has no designed status — it would surface as an unhandled 500.",
     ],
   },
   PLANBOX: {
-    title: "7 · Is That Provider Allowed, And That Model Capable?",
-    sub: "Three checks on what step 6 read. The first no stops it:\n1  May this customer use that provider? → else 403\n2  Is that model in our catalog at all? → else 422\n3  Can that model do chat, embed or rerank? → else 422",
+    title: "7 · Provider Policy, Then Model Capability",
+    sub: "A · PROVIDER POLICY — allowed for this tenant? → else 403\nB · MODEL CAPABILITY — known, fit for chat/embed/rerank? → else 422\nFirst failure wins, before capacity or Vault.",
     paragraphs: [
-      "Example: the permission points at an embeddings-only model and the caller asks it to chat. The permission is real; the model simply cannot do that job → 422, before capacity or Vault.",
-      "Gate 1 reads the customer's allowed-provider list. No list at all (null) means every provider is allowed — a list, even an empty one, restricts the tenant to exactly what it names, so an empty list locks out every provider. Gate 2 looks the company and model up in the catalog loaded at startup — no database call. Gate 3 checks that model's capabilities in the same catalog.",
+      "A — provider policy is one check, and it is a tenant-level allow-list, not a global on/off switch. There is no \"is this provider enabled\" flag anywhere in the code — every provider the system has loaded is available by default unless this tenant's own allowed-provider list excludes it (no list at all permits everything; an empty list permits nothing). There is also no \"are credentials configured\" check at this gate — that is not verified until Vault is read in step 9, seconds before the call. Fail here and the answer is 403: the provider is fine, this tenant's policy is not.",
+      "B — model capability is two checks against the catalog loaded at startup, no database call. First, does this model exist under this provider at all — an unknown model is 422, the caller's problem. Second, can this exact model perform the specific operation actually being called: chat, embed, or rerank — that is the only capability this step checks. Streaming, tool calling, structured output and vision are not modeled as separate capability gates anywhere in this catalog; only those three operations are. The catalog does carry an is_active / is_deprecated flag per model, and this step does not read either one — a deprecated model that still lists the right operation still passes.",
+      "Example: the permission points at an embeddings-only model and the caller asks it to chat. Provider policy (A) is satisfied — this tenant may use that provider. Model capability (B) is not — the model simply cannot do that job → 422, before capacity or Vault.",
+      "Gate 1 reads the tenant's allowed-provider list. No list at all (null) means every provider is allowed — a list, even an empty one, restricts the tenant to exactly what it names, so an empty list locks out every provider. Gate 2 looks the company and model up in the catalog loaded at startup — no database call. Gate 3 checks that model's capabilities in the same catalog.",
       "Check 2 hides a split worth knowing, and the status code gives it away. An unknown MODEL is the caller's problem — the permission names a model this company does not offer — and answers 422. An unknown COMPANY is not: it means a provider name is sitting in the database with no matching config file loaded at startup, so the database and this service have drifted apart. That raises a configuration error no status map covers, and it reaches the caller as a 500. That is the right answer — nothing the caller can change would fix it.",
       "Why here and not in Access Control: Gate 4 never looked at whether the HTTP route was chat, embed or rerank. A cached yes still reaches this box, and this is the first place that can refuse the wrong job. Nothing is substituted — if this exact model cannot do it, the call fails.",
       "In the code: _require_provider_allowed and _resolve_provider_model in route_resolution.py.",
@@ -326,19 +376,23 @@ const DETAILS = {
   },
   RECIPE: {
     title: "Freeze The Execution Plan",
-    sub: "Every answer from steps 6 and 7, frozen onto one sheet:\nprovider · model · URL · key location · timeout · temperature · max reply length.\nCapacity, Vault and the provider call all read it.",
+    sub: "Build the fixed, request-scoped configuration.\nEvery answer from steps 6 and 7, written once onto one sheet — never rewritten:\nprovider · model · URL · key location · timeout · temperature · max reply length.",
     paragraphs: [
-      "Steps 6 and 7 answered the questions. This step just writes the answers onto one fixed sheet for the rest of the request. Capacity Check, Vault, and the vendor call all read that sheet — they do not look settings up again or change them.",
-      "From the permission record: AI company, model, URL, region, key location, extra options. From the startup catalog: how long to wait (timeout), creativity (temperature), and longest reply allowed (max tokens).",
-      "Two labels are added: a usage id (the permission's id) that Token Manager meters against, and a fingerprint of the deployment name plus its settings — so anything that caches per-setup state can tell when the setup changed. In the code this sheet is ResolvedRoute (route_builder.py).",
+      "What's on the sheet: from the permission record — the AI company, model, URL, region, key location, extra options. From the startup catalog — how long to wait (timeout), creativity (temperature), longest reply allowed (max tokens). Nothing on it is guessed or re-decided after this point; every value was already settled in steps 6 and 7.",
+      "\"Frozen\" is not a figure of speech here. In the code this sheet is ResolvedRoute (app/inference_routing/models.py), built with Pydantic's frozen=True: once constructed, trying to change any field raises an error instead of silently succeeding. There is no code path anywhere that edits a ResolvedRoute after it is built — it is genuinely immutable, not just handled carefully.",
+      "The question worth asking: why not just keep querying the deployment's configuration again later, whenever capacity or Vault needs a value, instead of writing it all down now? Two reasons. Correctness: resolve it once, and every later stage reads the exact same values — nothing can see one setting from an earlier moment and a different setting from a later one, because there is no later read to drift. Cost: resolving these values already took a database read and a catalog lookup; nothing in this request writes to that data afterward, so reading it again downstream would just repeat work whose answer cannot have changed.",
+      "That's what makes the freeze pay off: Capacity, Vault and the provider call never look any of this up themselves — they take the sheet as a parameter and read fields straight off it. route_fingerprint becomes the provider-connection cache key, secret_reference says which credential to fetch, quota_key is what usage counts against. Each stage can trust those values precisely because nothing between here and the provider call is able to change them.",
+      "Two labels are added specifically for the stages ahead: quota_key (the permission's id) that Token Manager meters against, and route_fingerprint, a fixed identity of this exact provider + model + settings combination, computed in route_builder.py.",
+      "From here the request forks, and the two arrows leaving this box say why. A streaming chat holds a connection open for as long as the reply takes to type out, so it goes through 8a first — that check exists to stop one process's open connections from exhausting its own memory and sockets. Embed, rerank, and non-streaming chat all return one complete response and close immediately; there is no held-open connection for 8a to protect, so those requests skip it entirely — that is the \"Not streaming\" arrow. Token quota (8b) makes no such exception: streamed or not, every operation still spends the AI provider's tokens, so every route passes through it.",
     ],
   },
   DENY422: {
-    title: "Provider Not Allowed, Or Model Cannot Do This Job",
-    sub: "403 — this customer may not use that provider.\n422 — that model is unknown, or cannot do this job.\n500 — that provider is unknown here: our fault.\nAll three stop before capacity or Vault.",
+    title: "Route Rejected",
+    sub: "403 · Provider not allowed for this tenant\n422 · Model unknown, or cannot do this job\n500 · Provider configuration missing here — our fault\nAll three stop before capacity or Vault.",
     paragraphs: [
+      "The two failures read very differently even though both can land here. \"Provider not permitted\" (A, 403) means nothing is wrong with the provider or model — this tenant's own allow-list simply excludes that provider. \"Model not capable\" (B, 422) means the opposite: the provider is fine and permitted, but the specific model behind this entitlement cannot perform the operation being called.",
       "This 422 is different from Access Control's 422 (deployment switched off). Here the permission is on, but the provider behind it is forbidden, unknown, or the wrong kind of model for the route.",
-      "Customer suspended or permission revoked fail one step earlier (step 6) with 403/404 — they never reach these three gates.",
+      "Tenant suspended or permission revoked fail one step earlier (step 6) with 403/404 — they never reach these three gates.",
     ],
   },
 
@@ -348,17 +402,18 @@ const DETAILS = {
      and were previously easy to blur together. */
   SLOT: {
     title: "8a · Is There A Free Streaming Slot?",
-    sub: "A live reply arrives a bit at a time, holding the connection open.\nCOUNTS · connections open right now — 20 at once by default\nKEPT BY · this one server, in its own memory\nASKED BY · streaming chat only\nNO ROOM → 503 straight away, never a queue",
+    sub: "PROTECTS · this process's sockets\nSCOPE · this process only, in memory\nRESERVES · 1 slot for the whole stream\nFREED · when the stream ends\nASKED BY · streaming chat · max 20\nNO ROOM → 503 at once, never a queue",
     paragraphs: [
-      "Picture several people watching answers type out live on the same machine. Each one holds a line open until their answer finishes. Too many open lines and this server runs out of memory and sockets — so it counts them, and refuses a new one when it is full.",
+      "Picture several people watching answers type out live from the same process. Each one holds a connection open until their answer finishes. Too many open at once and that process runs out of memory and sockets — so it counts them, and refuses a new one when it is full.",
       "Twenty at once is the default. The process refuses to even start if that number is set higher than the outbound HTTP connection pool can support, because a stream that cannot get a connection is not capacity at all.",
-      "The count lives in this one server's memory and nowhere else. It is not the token quota (that is 8b), it is not money, and it is not the sign-in token. Another copy of the service on another machine keeps its own separate count — so a refusal here is not a statement about the fleet, and retrying may simply land you somewhere with room.",
+      "Scope, exactly: the count is a plain number in this Python process's memory, guarded by an asyncio lock — no Redis, no database, nothing shared. The code calls it \"intentionally process-local\", and the setting behind it is named stream_max_concurrent_per_worker. Every other running instance keeps its own separate count, so a refusal here says nothing about the fleet and a retry may simply land somewhere with room. Contrast 8b directly below: that one is shared by everybody.",
+      "One caveat worth knowing, because \"process\" and \"container\" are not automatically the same thing: the shipped Dockerfile starts uvicorn with no --workers flag, so as built there is exactly one such process per container, and process-local and container-local mean the same thing here. Add --workers N and that stops being true — you would get N independent counters inside one container, each allowing its own 20.",
       "It never queues. Waiting would mean holding an open socket to say \"please wait\", which spends the very resource that has run out.",
     ],
   },
   DENYSLOT: {
     title: "No Streaming Slot Left",
-    sub: "503 — try again shortly; the response says how long.\nOnly a streaming chat can ever reach this box.\nAnother server may have room right now.",
+    sub: "503 — try again shortly; the response says how long.\nOnly a streaming chat can ever reach this box.\nAnother instance may have room right now.",
     paragraphs: [
       "The refusal carries a Retry-After hint, one second by default.",
       "Note the ordering: this check runs BEFORE the token quota in 8b. If 8b then refuses, the streaming slot claimed here is handed straight back, so a refusal never leaves this count stuck high.",
@@ -366,10 +421,12 @@ const DETAILS = {
   },
   RESV: {
     title: "8b · Is There Token Quota Left?",
-    sub: "Text is measured in LLM tokens — very roughly, chunks of words.\nCOUNTS · tokens this one call may use\nKEPT BY · Token Manager, across every server at once\nASKED BY · every chat, embed and rerank\nNO FIXED NUMBER HERE · the cap is per customer, held by Token Manager\nNO ROOM → 429 · NO ANSWER → 503",
+    sub: "PROTECTS · the provider's token pool\nSCOPE · fleet-wide, via Token Manager\nRESERVES · estimated tokens for this call\nFREED · settled for real after the call\nASKED BY · every chat, embed, rerank\nNO ROOM → 429 · NO ANSWER → 503",
     paragraphs: [
+      "Why this exists when 8a already said yes: the two protect completely different resources. 8a protects this one process from running out of connections and memory — a local, technical limit. 8b protects the token allowance at the AI provider, which every instance in the fleet spends from the same pool. Passing one tells you nothing about the other: a quiet process with plenty of free connections can still be refused here because the rest of the fleet has spent the tokens, and a busy process can be full at 8a while the token pool is barely touched.",
       "\"Token Manager\" here means a real, separately deployed sibling service — llm_token_manager, its own repository and process, reached over HTTP by TokenManagerClient (app/clients/token_manager_client.py). Not a component inside this service and not a metaphor.",
-      "AI companies meter and cap by how much text moves. Every server in the fleet may be talking to the same model at the same moment, so only one shared service can say whether there is still room — no single server can know.",
+      "The scope worth being exact about: the ceiling number itself is read from the deployment row (its own token_capacity_limit), but the running counter it is checked against is not scoped to that deployment, and not to a tenant either. Token Manager keys its Redis counter by model name plus a hash of the API endpoint URL alone — tenant_id and deployment_id are not part of that key. So the pool is shared by every deployment, in any tenant, that happens to point at the same model on the same endpoint; it is not the per-tenant allowance an earlier version of this card claimed.",
+      "AI companies meter and cap by how much text moves. Every instance in the fleet may be talking to the same model at the same moment, so only one shared service can say whether there is still room — no single instance can know.",
       "How much is asked for: the tokens in your actual message, plus the longest reply we will allow, which came off the plan frozen in step 3. Embed and rerank add nothing for a reply, because they do not write one.",
       "That same reply limit is what we then tell the AI company not to exceed, so what we reserve and what we permit cannot drift apart.",
       "One more answer exists that this diagram does not draw: if Token Manager replies with something that breaks the contract — rejecting our service credentials, malformed JSON, or a reservation for a different endpoint than the one we authorised — that is a 502, not a 429 or a 503. The endpoint cross-check is a deliberate guard: a reservation that silently points somewhere else is refused rather than used.",
@@ -388,7 +445,7 @@ const DETAILS = {
     sub: "503 — timed out, unreachable, or their own server error.\nNobody answered, rather than somebody saying no.\nNothing was reserved, so there is nothing to give back.",
     paragraphs: [
       "The difference from the 429 above is worth holding on to: there, the shared quota is genuinely spent and retrying is pointless until it frees up. Here, we simply never heard back, and the quota may be entirely untouched.",
-      "We never got a yes, so nothing is left reserved on Token Manager's side. The streaming slot claimed in 8a is still freed on this server.",
+      "We never got a yes, so nothing is left reserved on Token Manager's side. The streaming slot claimed in 8a is still freed in this process.",
     ],
   },
 
@@ -432,9 +489,9 @@ const DETAILS = {
   },
   DONE: {
     title: "12 · Release The Streaming Slot · Report Token Usage",
-    sub: "Always runs once. Give back this server's streaming slot if we took one; tell Token Manager how much text was really used (or none if unknown).",
+    sub: "Always runs once. Give back this process's streaming slot if we took one; tell Token Manager how much text was really used (or none if unknown).",
     paragraphs: [
-      "If this was a streaming chat, this server's open-streaming-slot count goes down by one. Token Manager is told the real input and output sizes when known, and the reservation closes as completed, failed, cancelled, or disconnected.",
+      "If this was a streaming chat, this process's open-streaming-slot count goes down by one. Token Manager is told the real input and output sizes when known, and the reservation closes as completed, failed, cancelled, or disconnected.",
       "We reserved an estimate before the call; we settle the books after — whether the call went well or not.",
     ],
   },
@@ -1097,7 +1154,7 @@ function buildElements(onHover, onLeave) {
       zIndex: 4,
     }),
 
-    /* Lane 04 -- Connections & Tokens: live replies on this server, then
+    /* Lane 04 -- Connections & Tokens: live connections in this process, then
        shared token quota for every inference. */
     flowEdge("slot-503", "SLOT", "DENYSLOT", {
       type: "phaseHop",
@@ -1108,7 +1165,7 @@ function buildElements(onHover, onLeave) {
       data: { exitX: 1752, viaY: "target", labelX: 1870, labelY: 1240 },
       zIndex: 4,
     }),
-    flowEdge("slot-resv", "SLOT", "RESV", { sourceHandle: "bottom", targetHandle: "top", label: "This server can hold one more" }),
+    flowEdge("slot-resv", "SLOT", "RESV", { sourceHandle: "bottom", targetHandle: "top", label: "This process has a free slot" }),
     flowEdge("resv-429", "RESV", "DENYRESV", {
       type: "phaseHop",
       sourceHandle: "right",

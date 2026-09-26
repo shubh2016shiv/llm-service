@@ -181,7 +181,7 @@
 
           <p class="flow-legend-title">Who owns what</p>
           <ul class="flow-legend-how">
-            <li><b>Tenant</b> &mdash; a customer organisation. It owns its Deployments.</li>
+            <li><b>Tenant</b> &mdash; one organisation using the platform; the isolation boundary. It owns its Deployments.</li>
             <li><b>User</b> &mdash; global, not owned by a Tenant. One User can belong to several Tenants, one membership row each.</li>
             <li><b>Deployment</b> &mdash; one saved AI configuration belonging to one Tenant, e.g. <code>gpt4-prod</code>. It names a provider, a model and an endpoint.</li>
             <li><b>Entitlement</b> &mdash; grants one User one Deployment. Belonging to a Tenant does <b>not</b> grant its Deployments &mdash; that is why step 5 checks membership and entitlement separately.</li>
@@ -199,7 +199,7 @@
             <li><i class="fl-swatch fl-swatch-inputs" aria-hidden="true"></i>Request In</li>
             <li><i class="fl-swatch fl-swatch-knowledge" aria-hidden="true"></i>Access Control</li>
             <li><i class="fl-swatch fl-swatch-context" aria-hidden="true"></i>Resolve Deployment</li>
-            <li><i class="fl-swatch fl-swatch-plan" aria-hidden="true"></i>Capacity Check</li>
+            <li><i class="fl-swatch fl-swatch-plan" aria-hidden="true"></i>Connections & Tokens</li>
             <li><i class="fl-swatch fl-swatch-execute" aria-hidden="true"></i>AI Provider Call</li>
             <li><i class="fl-swatch fl-swatch-post" aria-hidden="true"></i>Response &amp; Wrap-Up</li>
           </ul>
@@ -207,7 +207,7 @@
           <ul class="flow-legend-list">
             <li><i class="fl-line fl-line-main" aria-hidden="true"></i>Solid, thick &mdash; the main path, step to step</li>
             <li><i class="fl-line fl-line-blocked" aria-hidden="true"></i>Red dashed &mdash; the request ends here</li>
-            <li><i class="fl-line fl-line-evidence" aria-hidden="true"></i>Blue dashed &mdash; a cached answer, skipping work</li>
+            <li><i class="fl-line fl-line-evidence" aria-hidden="true"></i>Blue dashed &mdash; a conditional branch: this request skips a step for the reason named on the arrow &mdash; a cache hit (&ldquo;Remembered&rdquo;), a guest login, or an operation that does not need the step it is bypassing (&ldquo;Not streaming&rdquo;). Read the label; the color only means &ldquo;not the main path.&rdquo;</li>
             <li><i class="fl-line fl-line-loop" aria-hidden="true"></i>Plum dashed &mdash; writing a result back into the cache</li>
           </ul>
 
