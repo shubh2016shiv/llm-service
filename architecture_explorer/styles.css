@@ -1089,6 +1089,34 @@ main { display: block; }
 .full-flow-canvas .react-flow__pane { cursor: grab; }
 .full-flow-canvas .react-flow__pane.dragging { cursor: grabbing; }
 .full-flow-canvas .react-flow__node-phase { pointer-events: none !important; }
+.full-flow-canvas .react-flow__node-laneHeader { pointer-events: none !important; }
+
+/* Lane identity belongs above the diagram, not inside a phase panel or card.
+   Each header doubles as the dotted separator after the preceding lane. */
+.hld-lane-header {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 10px 18px 0;
+  border-top: 2px dotted rgba(67, 81, 75, 0.42);
+  color: var(--ink);
+}
+.hld-lane-header-name {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.hld-lane-header-meaning {
+  padding-top: 1px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink-3);
+}
 
 /* One colour family per architectural phase. Components inherit the same
    tokens as their surrounding phase panel so the grouping is immediate even

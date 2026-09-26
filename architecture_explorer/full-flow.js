@@ -1,28 +1,25 @@
 /* ============================================================
    Full HLD: horizontal, explorable React Flow canvas
    ============================================================
-   Four request shapes, stacked as swimlanes top to bottom — because
-   "the request" this service handles is not one thing. A GET health
-   check, a POST sign-in, a POST chat completion and a PATCH to a
-   tenant's deployment take four genuinely different paths through
-   the infrastructure, and showing only the busiest of the four (as
+   Three request shapes, stacked as swimlanes top to bottom — because
+   "the request" this service handles is not one thing. A POST sign-in,
+   a POST chat completion and a PATCH to a tenant's deployment take three
+   different paths through the infrastructure, and showing only the busiest (as
    an earlier version of this canvas did) implied every request looks
    like a chat completion. It doesn't.
 
    Lane A — Sign In            POST /auth/sign-in, /guest-session
    Lanes 01–06 — Run Inference POST /llm/chat, /embed, /rerank
-   Lane C — Manage The Platform GET/POST/PATCH/DELETE across
+   Lane C — Manage Tenants & Deployments. GET/POST/PATCH/DELETE across
                                 /tenants, /users, /providers,
                                 /deployments, /entitlements
-   Lane D — Health Check       GET /health, /health/ready
 
    Run Inference is the one lane complex enough to need six internal
    sub-phases of its own (Request In, Access Control, Resolve Deployment,
    Capacity Check, AI Provider Call, Response & Wrap-Up). Sign In is
    the other lane that branches: two unauthenticated entry points join
    just before one in-process token issuer, and each decision that can
-   stop the request has its refusal drawn. Manage and Health stay one
-   row each.
+   stop the request has its refusal drawn.
 
    Infrastructure is not a separate legend below the diagram — it is
    inline, at the exact step where a request actually crosses a
@@ -33,10 +30,10 @@
    PostgreSQL, Redis, Vault, the sibling Token Manager service, or
    the AI provider itself.
 
-   A small precondition note floats above all four lanes: the process
+   A small precondition note floats above all three lanes: the process
    already has its database pool, cache connection, secret client and
-   provider catalog built before any of the four request shapes below
-   arrives. It has no outgoing edges — it applies to all four lanes
+   provider catalog built before any of the three request shapes below
+   arrives. It has no outgoing edges — it applies to all three lanes
    equally, not to one more than another.
 
    Nodes never navigate away: hover and keyboard focus reveal a
@@ -44,8 +41,8 @@
 
    Phase keys reuse the stylesheet's colour families for the six
    Run Inference sub-phases (inputs / knowledge / context / plan /
-   execute / post), plus three added in explorer.css for the other
-   three lanes (boot, authn, manage, health).
+   execute / post), plus the boot, authn and manage families used by
+   the precondition and the other two lanes.
    ============================================================ */
 
 import React from "react";
@@ -54,10 +51,20 @@ import { ReactFlow, Background, Controls, Handle, Position, MarkerType, BaseEdge
 
 const h = React.createElement;
 
+/* Standalone lane captions sit in the whitespace above each lane. They are
+   deliberately not phase headings and not cards: the dotted rule establishes
+   the lane boundary before the reader reaches its diagram. */
+const LANE_HEADERS = {
+  concepts: { label: "Definition and Key Concepts", meaning: "Shared vocabulary and service-wide preconditions", x: 0, y: 0, w: 3410 },
+  laneA: { label: "Lane A", meaning: "Sign In — create a bearer token", x: 0, y: 220, w: 2440 },
+  laneB: { label: "Lane B", meaning: "Run Inference — authorize, resolve, execute and wrap up an AI request", x: 0, y: 1200, w: 3010 },
+  laneC: { label: "Lane C", meaning: "Manage Tenants & Deployments — administrative configuration and access changes", x: 0, y: 2290, w: 3010 },
+};
+
 /* Six real phases. No "boot" column here — startup is a precondition
    note floating above phase one, not a step a request takes. */
 const PHASES = {
-  /* Four request shapes, stacked as swimlanes top to bottom. Sign In is
+  /* Three request shapes, stacked as swimlanes top to bottom. Sign In is
      the one lane with two entry points and three ways to be refused —
      everything else is one straight line. Run Inference is the lane
      with six internal sub-phases — most requests are simpler than a
@@ -65,24 +72,23 @@ const PHASES = {
 
   /* 2440 wide, not 2160: the six steps need a gap big enough to hold a
      decision label without it touching the card on either side. */
-  authn:  { index: "A", title: "Sign In", note: "HOW DOES A CALLER GET A TOKEN? Every other lane below needs a token already. This is the only lane that creates one. Two separate doors lead to it.", x: 0, y: 170, w: 2440, h: 900 },
+  authn:  { index: "A", title: "Sign In", note: "HOW DOES A CALLER GET A TOKEN? Every other lane below needs a token already. This is the only lane that creates one. Two separate doors lead to it.", x: 0, y: 260, w: 2440, h: 900 },
 
-  inputs:    { index: "01", title: "Request In", note: "STEP 1 · WHO ARE YOU? Show a sign-in token and the server checks it is genuine. The tenant and deployment headers are only what you are asking for — not proof.", x: 0,    y: 1110, w: 300, h: 900 },
-  knowledge: { index: "02", title: "Access Control", note: "STEP 2 · ARE YOU ALLOWED? Your identity is proven; your access is not. May this USER use this DEPLOYMENT, inside this TENANT? Answered from a brief memory of a past yes, or checked fresh in the database.", x: 340,  y: 1110, w: 610, h: 1010 },
-  context:   { index: "03", title: "Resolve Deployment", note: "STEP 3 · WHAT DOES THAT DEPLOYMENT KEY MEAN? Step 2 proved you may use the name. Resolving turns that name into one concrete plan — provider, model, URL, key, limits — allowed for this tenant and able to do this job, then frozen.", x: 990,  y: 1110, w: 420, h: 1010 },
+  inputs:    { index: "01", title: "Request In", note: "STEP 1 · WHO ARE YOU? Show a sign-in token and the server checks it is genuine. The tenant and deployment headers are only what you are asking for — not proof.", x: 0,    y: 1240, w: 300, h: 900 },
+  knowledge: { index: "02", title: "Access Control", note: "STEP 2 · ARE YOU ALLOWED? Your identity is proven; your access is not. May this USER use this DEPLOYMENT, inside this TENANT? Answered from a brief memory of a past yes, or checked fresh in the database.", x: 340,  y: 1240, w: 610, h: 1010 },
+  context:   { index: "03", title: "Resolve Deployment", note: "STEP 3 · WHAT DOES THAT DEPLOYMENT KEY MEAN? Step 2 proved you may use the name. Resolving turns that name into one concrete plan — provider, model, URL, key, limits — allowed for this tenant and able to do this job, then frozen.", x: 990,  y: 1240, w: 420, h: 1010 },
   /* "Capacity Check" never said capacity OF WHAT, which made this the hardest
      phase to read cold: two unrelated limits share one word. The title now
      names both limits instead of the word they get mistaken for, and the two
      cards below answer to it in identical shape — Counts / Kept by / Asked by
      / When full — so the differences are the only thing that varies between
      them. */
-  plan:      { index: "04", title: "Connections & Tokens", note: "STEP 4 · TWO LIMITS, NOT ONE — and they guard different resources. 8a is CONCURRENCY: can this one process take another live connection? Counted in its own memory, shared with nobody. 8b is WORKLOAD: can the platform reserve enough tokens? Counted fleet-wide by Token Manager. Passing one says nothing about the other. Neither is about money.", x: 1450, y: 1110, w: 540, h: 1010 },
-  execute:   { index: "05", title: "AI Provider Call", note: "RUN IT. Fetch the API key from Vault, then call the vendor named in the Execution Plan.", x: 2010, y: 1110, w: 420, h: 1010 },
-  post:      { index: "06", title: "Response & Wrap-Up", note: "Send the response. Always release the streaming slot in this process (if we took one) and report how many LLM tokens were really used — even if the stream failed halfway.", x: 2450, y: 1110, w: 560, h: 1010 },
+  plan:      { index: "04", title: "Connections & Tokens", note: "STEP 4 · TWO LIMITS, NOT ONE — and they guard different resources. 8a is CONCURRENCY: can this one process take another live connection? Counted in its own memory, shared with nobody. 8b is WORKLOAD: can the platform reserve enough tokens? Counted fleet-wide by Token Manager. Passing one says nothing about the other. Neither is about money.", x: 1450, y: 1240, w: 540, h: 1010 },
+  execute:   { index: "05", title: "AI Provider Call", note: "RUN IT. Fetch the API key from Vault, then call the vendor named in the Execution Plan.", x: 2010, y: 1240, w: 420, h: 1010 },
+  post:      { index: "06", title: "Response & Wrap-Up", note: "Send the response. Always release the streaming slot in this process (if we took one) and report how many LLM tokens were really used — even if the stream failed halfway.", x: 2450, y: 1240, w: 560, h: 1010 },
 
-  manage: { index: "C", title: "Manage The Platform", note: "GET · POST · PATCH · DELETE across tenants, users, providers, models, deployments and entitlements", x: 0, y: 2120, w: 3010, h: 280 },
+  manage: { index: "C", title: "Manage Tenants & Deployments", note: "WHERE A DEPLOYMENT OR ENTITLEMENT ACTUALLY COMES FROM. An administrator's CRUD API — GET · POST · PATCH · DELETE across tenants, users, providers, models, deployments and entitlements. Every row Run Inference reads above was created here first, by an admin, never by an end user's own request.", x: 0, y: 2330, w: 3010, h: 570 },
 
-  health: { index: "D", title: "Health Check", note: "GET /health · GET /health/ready — no identity required; polled by the load balancer", x: 0, y: 2440, w: 1180, h: 260 },
 };
 
 /* `hop` marks a step that leaves this process for another system —
@@ -92,7 +98,7 @@ const LAYOUT = {
   /* y=8, not 20: the glossary cards to the right are four lines tall and at
      y=20 their bottom edge landed 1px inside Lane A. All four top-margin
      cards move up together so their top edges still line up. */
-  START:   { phase: "boot", icon: "repository", tag: "BEFORE ANY REQUEST", x: 40,   y: 8,  w: 280 },
+  START:   { phase: "boot", icon: "repository", tag: "BEFORE ANY REQUEST", x: 40,   y: 50,  w: 280 },
 
   /* Glossary. Three reference cards sharing the top margin with START —
      same "boot" phase, so no panel sits behind them, and no edge touches
@@ -101,16 +107,17 @@ const LAYOUT = {
      opens at its top-left, so the nouns are on screen before the numbered
      flow below uses them. Definitions only — no mechanism, no file names,
      no status codes; every one of those lives on the step that owns it. */
-  GLOSSWHO:  { phase: "boot", icon: "documents", tag: "GLOSSARY · NOT A STEP", x: 360,  y: 8, w: 660 },
-  GLOSSWHAT: { phase: "boot", icon: "documents", tag: "GLOSSARY · NOT A STEP", x: 1060, y: 8, w: 660 },
-  GLOSSRUN:  { phase: "boot", icon: "documents", tag: "GLOSSARY · NOT A STEP", x: 1760, y: 8, w: 660 },
+  GLOSSWHO:  { phase: "boot", icon: "documents", tag: "GLOSSARY · NOT A STEP", x: 360,  y: 50, w: 660 },
+  GLOSSWHAT: { phase: "boot", icon: "documents", tag: "GLOSSARY · NOT A STEP", x: 1060, y: 50, w: 660 },
+  GLOSSRUN:  { phase: "boot", icon: "documents", tag: "GLOSSARY · NOT A STEP", x: 1760, y: 50, w: 660 },
 
   /* The key -> entitlement -> plan chain, in the same reference row and for the
      same reason: a reader has otherwise to infer it from four separate
      cards spread across phases 02 and 03. Four lines only — the correction
      that matters (the dialled values come from the entitlement, NOT from
      the deployment row) is too long for a card and lives in the hover. */
-  CHAIN:     { phase: "boot", icon: "assembly", tag: "RELATIONSHIP · NOT A STEP", x: 2450, y: 8, w: 540 },
+  CHAIN:     { phase: "boot", icon: "assembly", tag: "RELATIONSHIP · NOT A STEP", x: 2450, y: 50, w: 540 },
+  ARROWLEGEND: { phase: "boot", icon: "documents", tag: "LEGEND · NOT A STEP", x: 3030, y: 50, w: 380 },
 
   /* Lane A — Sign In. Three bands, and the band a box sits in is what it
      means, so a reader can read the shape before reading a word:
@@ -137,18 +144,18 @@ const LAYOUT = {
 
      Every box uses a plain verb — "check", "read", "issue" — never a
      metaphor that has to be decoded before the mechanism can be read. */
-  ENTRY:   { phase: "authn", icon: "description", tag: "POST /auth/sign-in", x: 112,  y: 318, w: 236, h: 150 },
-  LIMIT:   { phase: "authn", icon: "queue", tag: "FAILED ATTEMPTS ONLY", x: 508,  y: 318, w: 236, h: 150, gate: true, hop: "Redis" },
-  READ:    { phase: "authn", icon: "database", tag: "PASSWORD HASH + ROLE", x: 904,  y: 318, w: 236, h: 150, hop: "PostgreSQL" },
-  VERIFY:  { phase: "authn", icon: "decision", tag: "SAME ERROR EITHER WAY", x: 1300, y: 318, w: 236, h: 150, gate: true },
-  ISSUE:   { phase: "authn", icon: "guard", tag: "SIGNED, TIME-BOUNDED", x: 1696, y: 318, w: 236, h: 150 },
-  TOKENOUT:{ phase: "authn", icon: "accept", tag: "200 OK", x: 2092, y: 318, w: 236, h: 150 },
+  ENTRY:   { phase: "authn", icon: "description", tag: "POST /auth/sign-in", x: 112,  y: 408, w: 236, h: 150 },
+  LIMIT:   { phase: "authn", icon: "queue", tag: "FAILED ATTEMPTS ONLY", x: 508,  y: 408, w: 236, h: 150, gate: true, hop: "Redis" },
+  READ:    { phase: "authn", icon: "database", tag: "PASSWORD HASH + ROLE", x: 904,  y: 408, w: 236, h: 150, hop: "PostgreSQL" },
+  VERIFY:  { phase: "authn", icon: "decision", tag: "SAME ERROR EITHER WAY", x: 1300, y: 408, w: 236, h: 150, gate: true },
+  ISSUE:   { phase: "authn", icon: "guard", tag: "SIGNED, TIME-BOUNDED", x: 1696, y: 408, w: 236, h: 150 },
+  TOKENOUT:{ phase: "authn", icon: "accept", tag: "200 OK", x: 2092, y: 408, w: 236, h: 150 },
 
-  GUEST:   { phase: "authn", icon: "description", tag: "POST /auth/guest-session", x: 112, y: 558, w: 236, h: 136, gate: true },
+  GUEST:   { phase: "authn", icon: "description", tag: "POST /auth/guest-session", x: 112, y: 648, w: 236, h: 136, gate: true },
 
-  STOP403: { phase: "authn", icon: "gap", tag: "403", x: 112,  y: 808, w: 236, h: 124, blocked: true },
-  STOP429: { phase: "authn", icon: "gap", tag: "429", x: 508,  y: 808, w: 236, h: 124, blocked: true },
-  STOP401: { phase: "authn", icon: "gap", tag: "401", x: 1300, y: 808, w: 236, h: 124, blocked: true },
+  STOP403: { phase: "authn", icon: "gap", tag: "403", x: 112,  y: 898, w: 236, h: 124, blocked: true },
+  STOP429: { phase: "authn", icon: "gap", tag: "429", x: 508,  y: 898, w: 236, h: 124, blocked: true },
+  STOP401: { phase: "authn", icon: "gap", tag: "401", x: 1300, y: 898, w: 236, h: 124, blocked: true },
 
   /* Lane 01 — Request In. What arrives, then the one gate that can stop it
      here. A bad token ends in this column and never reaches Access Control.
@@ -160,9 +167,9 @@ const LAYOUT = {
      Same rhythm as Lane A: one card height for the two steps, one gap
      (132) between every pair, and the refusal directly below the gate that
      produced it. */
-  REQIN:   { phase: "inputs", icon: "description", tag: "ONE ENTRY POINT", x: 22, y: 1258, w: 256, h: 156 },
-  IDENT:   { phase: "inputs", icon: "guard", tag: "AUTHENTICATION", x: 22, y: 1546, w: 256, h: 156, gate: true },
-  DENY401: { phase: "inputs", icon: "gap", tag: "401", x: 22, y: 1834, w: 256, h: 124, blocked: true },
+  REQIN:   { phase: "inputs", icon: "description", tag: "ONE ENTRY POINT", x: 22, y: 1388, w: 256, h: 156 },
+  IDENT:   { phase: "inputs", icon: "guard", tag: "AUTHENTICATION", x: 22, y: 1676, w: 256, h: 156, gate: true },
+  DENY401: { phase: "inputs", icon: "gap", tag: "401", x: 22, y: 1964, w: 256, h: 124, blocked: true },
 
   /* Lane 02 — Access Control. One question, then the two ways it can be
      answered, stacked in the order they are tried: the cache first, the
@@ -174,61 +181,70 @@ const LAYOUT = {
      "Remembered" hit a dead straight horizontal line rather than a dogleg,
      and a straight line is the fastest way to show that a cache hit skips
      the database entirely. Moving either card means recomputing the other. */
-  AUTHCTX: { phase: "knowledge", icon: "decision", tag: "THE THREE INPUTS", x: 360, y: 1215, w: 300, h: 165, gate: true },
-  CACHE:   { phase: "knowledge", icon: "queue", tag: "YES ONLY · BRIEF", x: 360,  y: 1448, w: 300, h: 136, hop: "Redis" },
-  GATES:   { phase: "knowledge", icon: "database", tag: "FOUR QUESTIONS · IN ORDER", x: 360,  y: 1652, w: 300, h: 165, gate: true, hop: "PostgreSQL" },
-  APPROVED:{ phase: "knowledge", icon: "accept", tag: "MERGE POINT", x: 760, y: 1431, w: 170, h: 170, gate: true },
-  DENYACL: { phase: "knowledge", icon: "gap", tag: "403 · 404 · 422", x: 360, y: 1885, w: 300, h: 180, blocked: true },
+  AUTHCTX: { phase: "knowledge", icon: "decision", tag: "THE THREE INPUTS", x: 360, y: 1345, w: 300, h: 165, gate: true },
+  CACHE:   { phase: "knowledge", icon: "queue", tag: "YES ONLY · BRIEF", x: 360,  y: 1578, w: 300, h: 136, hop: "Redis" },
+  GATES:   { phase: "knowledge", icon: "database", tag: "FOUR QUESTIONS · IN ORDER", x: 360,  y: 1782, w: 300, h: 165, gate: true, hop: "PostgreSQL" },
+  APPROVED:{ phase: "knowledge", icon: "accept", tag: "MERGE POINT", x: 760, y: 1561, w: 170, h: 170, gate: true },
+  DENYACL: { phase: "knowledge", icon: "gap", tag: "403 · 404 · 422", x: 360, y: 2015, w: 300, h: 180, blocked: true },
 
   /* Lane 03 — Resolve Deployment. The most congested column on the canvas,
      and the only one where two cards had been left touching edge to edge
      (LIVE ended at 1491 and PLANBOX began at 1491), which read as one tall
      box rather than two steps. The lane went 310 -> 380 wide and every phase
      to its right moved 100 to the right to pay for it. */
-  LIVE:    { phase: "context", icon: "database", tag: "PERMISSION · EVERY CALL", x: 1020,  y: 1240, w: 320, h: 212, hop: "PostgreSQL" },
-  PLANBOX: { phase: "context", icon: "decision", tag: "ALLOW · KNOWN · CAPABLE", x: 1020,  y: 1493, w: 320, h: 188, gate: true },
-  RECIPE:  { phase: "context", icon: "assembly", tag: "FIXED FOR THIS REQUEST", x: 1020,  y: 1722, w: 320, h: 154 },
-  DENY422: { phase: "context", icon: "gap", tag: "403 · 422 · 500", x: 1020, y: 1917, w: 320, h: 172, blocked: true },
+  LIVE:    { phase: "context", icon: "database", tag: "PERMISSION · EVERY CALL", x: 1020,  y: 1370, w: 320, h: 212, hop: "PostgreSQL" },
+  PLANBOX: { phase: "context", icon: "decision", tag: "ALLOW · KNOWN · CAPABLE", x: 1020,  y: 1623, w: 320, h: 188, gate: true },
+  RECIPE:  { phase: "context", icon: "assembly", tag: "FIXED FOR THIS REQUEST", x: 1020,  y: 1852, w: 320, h: 154 },
+  DENY422: { phase: "context", icon: "gap", tag: "403 · 422 · 500", x: 1020, y: 2047, w: 320, h: 172, blocked: true },
 
   /* Two columns: the checks on the left, what refuses them on the right, each
      refusal's top aligned to the check that raises it. RESV raises two very
      different refusals, so it gets two boxes stacked beneath one another —
      they used to overlap by 39px, and the lower one escaped the panel
      entirely (bottom 2020 against a panel ending at 1960). */
-  SLOT:    { phase: "plan", icon: "queue", tag: "CONCURRENCY · THIS PROCESS", x: 1485, y: 1280, w: 250, h: 216 },
-  DENYSLOT:{ phase: "plan", icon: "gap", tag: "503", x: 1770, y: 1280, w: 200, h: 182, blocked: true },
-  RESV:    { phase: "plan", icon: "external", tag: "WORKLOAD · FLEET-WIDE", x: 1485, y: 1580, w: 250, h: 238, gate: true, hop: "Token Manager" },
-  DENYRESV:{ phase: "plan", icon: "gap", tag: "429", x: 1770, y: 1580, w: 200, h: 202, blocked: true },
-  RESVDOWN:{ phase: "plan", icon: "gap", tag: "503", x: 1770, y: 1852, w: 200, h: 202, blocked: true },
+  SLOT:    { phase: "plan", icon: "queue", tag: "CONCURRENCY · THIS PROCESS", x: 1485, y: 1410, w: 250, h: 216 },
+  DENYSLOT:{ phase: "plan", icon: "gap", tag: "503", x: 1770, y: 1410, w: 200, h: 182, blocked: true },
+  RESV:    { phase: "plan", icon: "external", tag: "WORKLOAD · FLEET-WIDE", x: 1485, y: 1710, w: 250, h: 238, gate: true, hop: "Token Manager Service" },
+  DENYRESV:{ phase: "plan", icon: "gap", tag: "429", x: 1770, y: 1710, w: 200, h: 202, blocked: true },
+  RESVDOWN:{ phase: "plan", icon: "gap", tag: "503", x: 1770, y: 1982, w: 200, h: 202, blocked: true },
 
-  CRED:    { phase: "execute", icon: "guard", tag: "API KEY", x: 2035, y: 1280, w: 240, hop: "Vault" },
-  DENYVAULT:{ phase: "execute", icon: "gap", tag: "503", x: 2290, y: 1280, w: 130, blocked: true },
-  CALLBOX: { phase: "execute", icon: "logic", tag: "OPENAI · ANTHROPIC · …", x: 2035, y: 1555, w: 280, gate: true, hop: "AI Provider" },
+  CRED:    { phase: "execute", icon: "guard", tag: "API KEY", x: 2035, y: 1410, w: 240, hop: "Vault" },
+  DENYVAULT:{ phase: "execute", icon: "gap", tag: "503", x: 2290, y: 1410, w: 130, blocked: true },
+  CALLBOX: { phase: "execute", icon: "logic", tag: "OPENAI · ANTHROPIC · …", x: 2035, y: 1685, w: 280, gate: true, hop: "AI Provider" },
 
-  SEND:    { phase: "post", icon: "runtime", tag: "CLIENT CONTRACT", x: 2475, y: 1280, w: 280 },
-  MIDSTREAM:{ phase: "post", icon: "gap", tag: "AFTER 200 SENT", x: 2780, y: 1280, w: 200, blocked: true },
-  DONE:    { phase: "post", icon: "accept", tag: "ALWAYS ONCE", x: 2475, y: 1555, w: 280, gate: true, hop: "Token Manager" },
-  GAP:     { phase: "post", icon: "gap", tag: "KNOWN LIMITATION", x: 2475, y: 1800, w: 280, blocked: true },
+  SEND:    { phase: "post", icon: "runtime", tag: "CLIENT CONTRACT", x: 2475, y: 1410, w: 280 },
+  MIDSTREAM:{ phase: "post", icon: "gap", tag: "AFTER 200 SENT", x: 2780, y: 1410, w: 200, blocked: true },
+  DONE:    { phase: "post", icon: "accept", tag: "ALWAYS ONCE", x: 2475, y: 1685, w: 280, gate: true, hop: "Token Manager Service" },
+  GAP:     { phase: "post", icon: "gap", tag: "KNOWN LIMITATION", x: 2475, y: 1930, w: 280, blocked: true },
 
-  /* Lane C — Manage The Platform. A different identity check (the same
+  /* Lane C — Manage Tenants & Deployments. A different identity check (the same
      bearer-token verification the Inference lane uses) feeds a different
      authorization question, then a linear write path with one optional
      branch: only deployment and entitlement writes touch Vault. */
-  MREQ:    { phase: "manage", icon: "description", tag: "GET · POST · PATCH · DELETE", x: 35,   y: 2230, w: 250 },
-  MIDENT:  { phase: "manage", icon: "guard", tag: "SAME BEARER TOKEN CHECK", x: 345,  y: 2230, w: 230 },
-  MSCOPE:  { phase: "manage", icon: "decision", tag: "PLATFORM ROLE OR TENANT ADMIN", x: 635,  y: 2230, w: 260, gate: true },
-  MREF:    { phase: "manage", icon: "database", tag: "DOES THE ID EXIST?", x: 1080, y: 2230, w: 250, hop: "PostgreSQL" },
-  MWRITE:  { phase: "manage", icon: "database", tag: "CREATE · UPDATE · DELETE", x: 1390, y: 2230, w: 250, gate: true, hop: "PostgreSQL" },
-  MSECRET: { phase: "manage", icon: "guard", tag: "ONLY IF A KEY WAS INCLUDED", x: 1840, y: 2230, w: 250, hop: "Vault" },
-  MCACHE:  { phase: "manage", icon: "queue", tag: "SO INFERENCE SEES IT NEXT TIME", x: 2150, y: 2230, w: 250, hop: "Redis" },
-  MDONE:   { phase: "manage", icon: "accept", tag: "200 · 201 · 204", x: 2460, y: 2230, w: 170 },
+  /* All eight cards share one width (260) and one pinned height (130, the
+     tallest natural content — MSCOPE's two paragraphs — plus a small
+     margin). Without a shared h, cards auto-size to their own text, their
+     handles land at different vertical midpoints, and every connector
+     between them renders as a slight S-bend instead of a straight line. */
+  MREQ:    { phase: "manage", icon: "description", tag: "GET · POST · PATCH · DELETE", x: 35,   y: 2440, w: 260, h: 130 },
+  MIDENT:  { phase: "manage", icon: "guard", tag: "SAME BEARER TOKEN CHECK", x: 355,  y: 2440, w: 260, h: 130 },
+  MSCOPE:  { phase: "manage", icon: "decision", tag: "PLATFORM-WIDE ROLE OR TENANT ADMIN", x: 675,  y: 2440, w: 260, h: 130, gate: true },
+  MREF:    { phase: "manage", icon: "database", tag: "DOES THE ID EXIST?", x: 1120, y: 2440, w: 260, h: 130, hop: "PostgreSQL" },
+  MWRITE:  { phase: "manage", icon: "database", tag: "CREATE · UPDATE · DELETE", x: 1440, y: 2440, w: 260, h: 130, gate: true, hop: "PostgreSQL" },
+  MSECRET: { phase: "manage", icon: "guard", tag: "ONLY IF A KEY WAS INCLUDED", x: 1900, y: 2440, w: 260, h: 130, hop: "Vault" },
+  MCACHE:  { phase: "manage", icon: "queue", tag: "SO INFERENCE SEES IT NEXT TIME", x: 2220, y: 2440, w: 260, h: 130, hop: "Redis" },
+  MDONE:   { phase: "manage", icon: "accept", tag: "200 · 201 · 204", x: 2540, y: 2440, w: 260, h: 130 },
 
-  /* Lane D — Health Check. No identity, no cache, no provider — the
-     shortest lane on the canvas by design. */
-  HREQ:    { phase: "health", icon: "description", tag: "GET /health · GET /health/ready", x: 35,  y: 2530, w: 250 },
-  HPG:     { phase: "health", icon: "database", tag: "READINESS ONLY", x: 325, y: 2530, w: 250, hop: "PostgreSQL" },
-  HREDIS:  { phase: "health", icon: "queue", tag: "READINESS ONLY", x: 615, y: 2530, w: 250, hop: "Redis" },
-  HDONE:   { phase: "health", icon: "accept", tag: "200 READY · 503 DEGRADED", x: 905, y: 2530, w: 210 },
+  /* Management refusals mirror the red dashed stop cards used by the other
+     lanes. Keeping each card directly below the gate that owns it makes the
+     status mapping visible without disturbing the aligned happy-path row. */
+  MIDENT401: { phase: "manage", icon: "gap", tag: "401", x: 355,  y: 2660, w: 260, h: 130, blocked: true },
+  MSCOPE403: { phase: "manage", icon: "gap", tag: "403", x: 675,  y: 2660, w: 260, h: 130, blocked: true },
+  MREF404:   { phase: "manage", icon: "gap", tag: "404", x: 1120, y: 2660, w: 260, h: 130, blocked: true },
+  MWRITE4XX: { phase: "manage", icon: "gap", tag: "400 · 409", x: 1440, y: 2660, w: 260, h: 130, blocked: true },
+  MSECRET503:{ phase: "manage", icon: "gap", tag: "503", x: 1900, y: 2660, w: 260, h: 130, blocked: true },
+  MCACHE503: { phase: "manage", icon: "gap", tag: "503", x: 2220, y: 2660, w: 260, h: 130, blocked: true },
+
 };
 
 const DETAILS = {
@@ -251,7 +267,7 @@ const DETAILS = {
   },
   GLOSSRUN: {
     title: "Key Concepts · What Runs It",
-    sub: "Execution Plan — the frozen settings one request runs on, decided before any call.\nStreaming Slot — one live connection slot, counted per process; only so many exist.\nToken Quota — an allowance of LLM tokens, reserved before a call and settled after.\nToken Manager — a separate service that grants and tracks token quota fleet-wide.",
+    sub: "Execution Plan — the frozen settings one request runs on, decided before any call.\nStreaming Slot — one live connection slot, counted per process; only so many exist.\nToken Quota — an allowance of LLM tokens, reserved before a call and settled after.\nToken Manager — a separate internal service, shared by every instance, granting token quota.",
   },
 
   CHAIN: {
@@ -263,6 +279,10 @@ const DETAILS = {
       "Why everything downstream reads the plan instead of resolving again: the plan is built once and frozen, carrying one already-decided value per question — which timeout, which temperature, which token ceiling. Capacity, Vault and the provider call all read that same sheet, so no two steps can disagree about what this request is. It also carries a fingerprint of itself, which is what lets the provider layer reuse one cached connection per exact route.",
     ],
   },
+  ARROWLEGEND: {
+    title: "Reading The Arrows",
+    sub: "──── Normal path, step to step\n┄┄┄┄ Failure, red — the request ends here\n┄┄┄┄ Branch, blue — skips a step; read its own label",
+  },
 
   REQIN: {
     title: "1 · Request Arrives",
@@ -272,8 +292,8 @@ const DETAILS = {
     sub: "Authorization: Bearer eyJ… ← who you are\nX-Tenant-ID: <tenant id> ← which tenant\nX-Deployment-Key: support-gpt ← the AI setup",
     paragraphs: [
       "One naming note, stated once and then dropped: this canvas uses \"tenant\" as its only word for this from here on — see Key Concepts above. A tenant is the customer boundary; there is no separate customer entity anywhere in the code.",
-      "Think of it as arriving at a building with a badge and a destination. Authorization: Bearer <token> is the badge — a sign-in token from Lane A. X-Tenant-ID is the tenant you want to act for (a UUID). X-Deployment-Key is the saved AI setup you want to use inside that tenant — a short name like customer-support-gpt or invoice-summariser. A deployment is a named provider + model + settings bundle, never a software release.",
-      "To be exact about what that key is, since it could mean four different things: it is not something the caller invents on the spot — a key that was never registered simply matches no row later, in Resolve Deployment. It is not the database's own primary key either — that is a separate internal UUID (deployment_id) the caller never sees. It is a human-chosen, URL-safe slug (e.g. gpt4-prod) an administrator registered ahead of time for this tenant, over in Manage The Platform — and that act of registering is what created the stored record the key now names: which provider, which model, where its credential lives in Vault, which region, and the timeout / temperature / token-limit defaults for calls made under it. So of the four readings, the last is closest: the key is a mapping, a lookup handle to that whole bundle, not a piece of configuration in itself.",
+      "Think of it as arriving at a building with a badge and a destination. Authorization: Bearer <token> is the badge — a sign-in token from Lane A. X-Tenant-ID is the tenant you want to act for (a UUID). X-Deployment-Key names the saved AI setup you want to use inside that tenant — a short name like customer-support-gpt or invoice-summariser, identifying a deployment rather than being one. A deployment is a named provider + model + settings bundle, never a software release.",
+      "To be exact about what that key is, since it could mean four different things: it is not something the caller invents on the spot — a key that was never registered simply matches no row later, in Resolve Deployment. It is not the database's own primary key either — that is a separate internal UUID (deployment_id) the caller never sees. It is a human-chosen, URL-safe slug (e.g. gpt4-prod) an administrator registered ahead of time for this tenant, over in Manage Tenants & Deployments — and that act of registering is what created the stored record the key now names: which provider, which model, where its credential lives in Vault, which region, and the timeout / temperature / token-limit defaults for calls made under it. So of the four readings, the last is closest: the key is a mapping, a lookup handle to that whole bundle, not a piece of configuration in itself.",
       "Only the badge proves anything. The tenant and deployment are what the caller is asking for, not something they have shown a right to — naming them is a request. All three routes (chat, embed, rerank) share this one door; whether a deployment can chat but not embed is decided later, in Resolve Deployment.",
       "The deployment key must start with a letter or digit, and may then use letters, digits, dot, dash and underscore, up to 128 characters in all. A key that breaks any of those rules is refused with 422 — as is a tenant id that is not a UUID.",
       "But that shape check runs AFTER the token is proven, not before it. Get both wrong at once and the answer is 401, never 422. The order is not cosmetic: it means a caller who cannot prove who they are never learns whether their tenant id or deployment key was even well-formed.",
@@ -302,7 +322,7 @@ const DETAILS = {
 
   AUTHCTX: {
     title: "3 · May This User Use This Deployment?",
-    sub: "May this USER use this DEPLOYMENT in this TENANT?\nuser = user_id on your verified token\ntenant = X-Tenant-ID, from the request header\ndeployment = X-Deployment-Key, saved in that tenant\nthe key is unique per tenant, never globally",
+    sub: "May this USER use this DEPLOYMENT in this TENANT?\nuser = user_id on your verified token\ntenant = X-Tenant-ID, from the request header\nkey = X-Deployment-Key, identifies a deployment\nunique per tenant, never global",
     paragraphs: [
       "Who is being authorized: a user, and only a user. The verified token carries a user_id and that user's PLATFORM role — authority across the whole service. Access Control does not use that platform role. Authority inside one tenant is a separate thing, stored on a membership row as a tenant role, and the code keeps the two sets deliberately apart even though four role names appear in both.",
       "Tenant is this canvas's only word for that boundary — see the naming note on Request In if you want the one-time alias explanation. Nothing below uses 'customer' again.",
@@ -354,9 +374,9 @@ const DETAILS = {
 
   LIVE: {
     title: "6 · Resolve Entitlement Configuration",
-    sub: "Re-read the entitlement behind this key — fresh every call, never from the yes-cache:\n• which provider company  e.g. OpenAI\n• which model  e.g. gpt-4o\n• which URL to call\n• where its API key is kept\nTenant gone → 404. Suspended or revoked → 403.",
+    sub: "Entitlement = this user's own override of that deployment. Re-read fresh, never cached:\n• which provider company  e.g. OpenAI\n• which model  e.g. gpt-4o\n• which URL to call\n• where its API key is kept\nTenant gone → 404. Suspended or revoked → 403.",
     paragraphs: [
-      "Access Control only proved this user may use the named deployment. It did not hand over anything needed to dial a model. Those four facts live on the permission record (called an entitlement in the code) that Gate 4 already identified — this step re-reads that exact record, plus the tenant row, so a revocation or model change applies on the very next call.",
+      "Why \"entitlement\" and not \"deployment,\" since this step loads operational detail rather than checking permission again: an entitlement is the specific grant of one provider + model to one user, and it is deliberately where the dial-able details live — not the deployment row, even though a deployment carries its own copy of provider name, model name, endpoint URL and credential reference. The query behind this step joins only user_entitlements to the provider and model catalogs and never touches the deployments table at all. This is not authorization happening twice: Access Control (step 5) already proved this user may use this deployment — that was the permission check. This step reads the one record that actually names what to dial, and that record happens to be scoped per user, not per deployment, which is why it has its own name. Gate 4 already identified it; this step re-reads that exact record, plus the tenant row, so a revocation or model change applies on the very next call.",
       "The key path is only a location. The real API key is fetched later from Vault, in AI Provider Call.",
       "In the code: InferenceRouteResolver._read_active_tenant and _read_authorized_entitlement (app/inference_routing/route_resolution.py). PostgreSQL unreachable here has no designed status — it would surface as an unhandled 500.",
     ],
@@ -544,7 +564,7 @@ const DETAILS = {
     sub: "Identity and platform role. No tenant on the token.",
     paragraphs: [
       "The token is signed here, in this process, from the same settings the verifier will later trust: identity, platform role, issuer, audience, and a lifetime this service refuses to let outrun verification.",
-      "This is the only place in the system that issues one. The token carries no tenant, and it carries no flag saying the session was a guest. Run Inference and Manage The Platform only ever check a token -- they never issue one.",
+      "This is the only place in the system that issues one. The token carries no tenant, and it carries no flag saying the session was a guest. Run Inference and Manage Tenants & Deployments only ever check a token -- they never issue one.",
     ],
   },
   TOKENOUT: {
@@ -584,7 +604,7 @@ const DETAILS = {
     ],
   },
 
-  /* ---------- Lane C - Manage The Platform ---------- */
+  /* ---------- Lane C - Manage Tenants & Deployments ---------- */
   MREQ: {
     title: "Receive The Request",
     sub: "Every administrative action in the product goes through here",
@@ -601,9 +621,10 @@ const DETAILS = {
   },
   MSCOPE: {
     title: "Check Tenant-Scoped Access",
-    sub: "A different question from inference's four gates: may you administer this, not may you infer",
+    sub: "Platform-wide token role or tenant-local admin: may you administer this, not may you infer?",
     paragraphs: [
-      "A platform administrator or operator role passes on that badge alone, no database lookup needed. Anyone else must be an active member of the specific tenant being touched - and a write additionally requires an admin role inside that tenant, not just membership.",
+      "A platform role is the service-wide role carried in the caller's token (for example operator, admin or owner); it is distinct from a role held only inside one tenant. A sufficiently privileged platform role passes on that badge alone. Anyone else must be an active member of the specific tenant being touched - and a write additionally requires a tenant-admin role, not just membership.",
+      "On tenant-scoped routes this check can safely precede body-reference validation: the tenant being authorized is the tenant_id already parsed from the route or query, while MREF checks the related tenant, user, provider or model identifiers supplied by the operation. Authorization therefore does not depend on trusting those body references first.",
       "This is a genuinely different authorization decision from the four gates in Run Inference. It is never cached: every administrative action is checked fresh.",
     ],
   },
@@ -643,37 +664,59 @@ const DETAILS = {
       "Whatever comes back has been scrubbed of anything that looks like a credential, recursively, even inside nested fields - a defensive filter on the way out, not a promise that a field was never asked for.",
     ],
   },
+  MIDENT401: {
+    title: "Identity Rejected",
+    sub: "401 - the bearer token is missing, invalid, expired or the wrong kind",
+    paragraphs: [
+      "The shared authentication dependency returns this 401 before the management route runs. It is not produced by the management exception map; it is the same front-door bearer-token response used by the other protected API lanes.",
+    ],
+  },
+  MSCOPE403: {
+    title: "Administration Denied",
+    sub: "403 - the caller lacks the required platform-wide or tenant-local role",
+    paragraphs: [
+      "TenantAccessDeniedError maps to 403. The caller is authenticated, but is not permitted to read or administer the tenant-scoped resource.",
+    ],
+  },
+  MREF404: {
+    title: "Reference Not Found",
+    sub: "404 - a referenced tenant, user, provider or model does not exist",
+    paragraphs: [
+      "ResourceNotFoundError maps to 404. Reference validation stops the operation before a write can turn a missing related record into an opaque database error.",
+    ],
+  },
+  MWRITE4XX: {
+    title: "Write Rejected",
+    sub: "409 for conflict or invalid state; 400 for management validation",
+    paragraphs: [
+      "InvalidStateTransitionError and ResourceConflictError map to 409. ManagementValidationError maps to 400. These are distinct client-visible outcomes of the write gate, so the card names both instead of inventing one catch-all code.",
+    ],
+  },
+  MSECRET503: {
+    title: "Vault Unavailable",
+    sub: "503 - the credential cannot be written safely",
+    paragraphs: [
+      "SecretBackendUnavailableError maps to 503. The operation cannot claim success when a supplied credential could not be persisted to Vault.",
+    ],
+  },
+  MCACHE503: {
+    title: "Cache Invalidation Failed",
+    sub: "503 - authorization grants could not be invalidated in Redis",
+    paragraphs: [
+      "AuthorizationGrantCacheUnavailableError maps to 503. The API refuses to report a clean success while stale authorization grants may still be served.",
+    ],
+  },
 
-  /* ---------- Lane D - Health Check ---------- */
-  HREQ: {
-    title: "Receive The Request",
-    sub: "No identity required - this is what a load balancer polls",
-    paragraphs: [
-      "A plain liveness check (is the process running at all?) returns immediately with no dependency checks. A readiness check goes further and asks whether this instance should actually receive traffic right now.",
-    ],
-  },
-  HPG: {
-    title: "Ping PostgreSQL",
-    sub: "PostgreSQL - readiness only; a plain liveness check never gets this far",
-    paragraphs: [
-      "A single lightweight query confirms the connection pool can actually reach the database. This and the Redis check below run at the same time, not one after the other.",
-    ],
-  },
-  HREDIS: {
-    title: "Ping Redis",
-    sub: "Redis - readiness only, and deliberately strict",
-    paragraphs: [
-      "An unreachable Redis marks this instance unready, not merely degraded - because the authorization cache's invalidation path cannot function without it, and serving inference traffic on a Redis that might be handing out stale grants is worse than refusing traffic outright.",
-    ],
-  },
-  HDONE: {
-    title: "Return Status",
-    sub: "200 and ready, or 503 and pulled from rotation",
-    paragraphs: [
-      "In non-production environments the response also names which dependency failed, to make local debugging faster. In production it says only ready or degraded - enough for a load balancer to act on, nothing that helps an attacker map the internal topology.",
-    ],
-  },
 };
+
+function LaneHeader({ data }) {
+  return h(
+    "div",
+    { className: "hld-lane-header" },
+    h("span", { className: "hld-lane-header-name" }, data.label),
+    h("span", { className: "hld-lane-header-meaning" }, data.meaning)
+  );
+}
 
 function PhasePanel({ data }) {
   return h(
@@ -921,7 +964,7 @@ function RefusalDropEdge({ id, sourceX, sourceY, targetX, targetY, markerEnd, st
   );
 }
 
-const NODE_TYPES = { phase: PhasePanel, step: StepCard };
+const NODE_TYPES = { laneHeader: LaneHeader, phase: PhasePanel, step: StepCard };
 const EDGE_TYPES = {
   phaseHop: PhaseHopEdge,
   lowerCorridor: LowerCorridorEdge,
@@ -956,7 +999,19 @@ function flowEdge(id, source, target, options = {}) {
 }
 
 function buildElements(onHover, onLeave) {
-  const nodes = Object.entries(PHASES).map(([phase, box]) => ({
+  const nodes = Object.entries(LANE_HEADERS).map(([id, header]) => ({
+    id: `lane-header-${id}`,
+    type: "laneHeader",
+    position: { x: header.x, y: header.y },
+    style: { width: header.w },
+    data: header,
+    draggable: false,
+    selectable: false,
+    focusable: false,
+    zIndex: 5,
+  }));
+
+  nodes.push(...Object.entries(PHASES).map(([phase, box]) => ({
     id: `phase-${phase}`,
     type: "phase",
     position: { x: box.x, y: box.y },
@@ -966,7 +1021,7 @@ function buildElements(onHover, onLeave) {
     selectable: false,
     focusable: false,
     zIndex: 0,
-  }));
+  })));
 
   Object.entries(LAYOUT).forEach(([id, layout]) => {
     const detail = DETAILS[id];
@@ -1032,7 +1087,7 @@ function buildElements(onHover, onLeave) {
       targetHandle: "top",
       kind: "blocked",
       label: "Closed",
-      data: { labelY: 744 },
+      data: { labelY: 834 },
     }),
     flowEdge("guest-issue", "GUEST", "ISSUE", {
       type: "lowerCorridor",
@@ -1045,7 +1100,7 @@ function buildElements(onHover, onLeave) {
          where the corridor rises through empty space. The label sits at 1022,
          the midpoint of the wide gap between the 429 and 401 boxes, so it
          never reads as a caption belonging to either of them. */
-      data: { leftRailX: 428, rightRailX: 1814, corridorY: 986, labelX: 1022, labelY: 986 },
+      data: { leftRailX: 428, rightRailX: 1814, corridorY: 1076, labelX: 1022, labelY: 1076 },
       zIndex: 4,
     }),
 
@@ -1064,7 +1119,7 @@ function buildElements(onHover, onLeave) {
       label: "Identity OK",
       /* Rises through the gutter between this column and Access Control; the
          label sits at the midpoint of that vertical run, clear of both. */
-      data: { exitX: 320, viaY: 1297, labelX: 320, labelY: 1460, labelWidth: 92 },
+      data: { exitX: 320, viaY: 1427, labelX: 320, labelY: 1590, labelWidth: 92 },
       zIndex: 4,
     }),
 
@@ -1080,14 +1135,14 @@ function buildElements(onHover, onLeave) {
       label: "A question said no",
       /* Centred in the 68px gap rather than the usual offset-under-the-gate:
          the gap here is short enough that the default would clip the box. */
-      data: { labelY: 1851 },
+      data: { labelY: 1981 },
     }),
     flowEdge("gates-approved", "GATES", "APPROVED", {
       type: "phaseHop",
       sourceHandle: "right",
       targetHandle: "bottom-in",
       label: "All 4 pass",
-      data: { exitX: 690, viaY: 1734, labelX: 767, labelY: 1734 },
+      data: { exitX: 690, viaY: 1864, labelX: 767, labelY: 1864 },
       zIndex: 4,
     }),
     flowEdge("cache-approved", "CACHE", "APPROVED", {
@@ -1098,7 +1153,7 @@ function buildElements(onHover, onLeave) {
       label: "Remembered",
       /* Sits ON the line, not floating above it: a label hovering beside a
          connector reads as belonging to neither end. */
-      data: { exitX: 690, viaY: 1516, labelX: 710, labelY: 1516, labelWidth: 92 },
+      data: { exitX: 690, viaY: 1646, labelX: 710, labelY: 1646, labelWidth: 92 },
       zIndex: 4,
     }),
     flowEdge("approved-live", "APPROVED", "LIVE", {
@@ -1108,7 +1163,7 @@ function buildElements(onHover, onLeave) {
       label: "Approved",
       /* Turns in level with the target's left handle, so the arrival reads
          as a left-hand arrival. The label sits on the vertical run. */
-      data: { exitX: 970, viaY: "target", labelX: 970, labelY: 1420, labelWidth: 76 },
+      data: { exitX: 970, viaY: "target", labelX: 970, labelY: 1550, labelWidth: 76 },
       zIndex: 4,
     }),
 
@@ -1132,14 +1187,14 @@ function buildElements(onHover, onLeave) {
       targetHandle: "top",
       kind: "blocked",
       label: "Refused",
-      data: { exitX: 1004, viaY: 1897, labelX: 1092, labelY: 1897, labelWidth: 84 },
+      data: { exitX: 1004, viaY: 2027, labelX: 1092, labelY: 2027, labelWidth: 84 },
       zIndex: 4,
     }),
     flowEdge("plan-slot", "RECIPE", "SLOT", {
       type: "phaseHop",
       targetHandle: "top",
       label: "Live (streaming) chat → 8a",
-      data: { exitX: 1356, viaY: 1250, labelX: 1610, labelY: 1225 },
+      data: { exitX: 1356, viaY: 1380, labelX: 1610, labelY: 1355 },
       zIndex: 4,
     }),
     flowEdge("plan-resv-bypass", "RECIPE", "RESV", {
@@ -1147,10 +1202,18 @@ function buildElements(onHover, onLeave) {
       sourceHandle: "right",
       targetHandle: "left",
       kind: "evidence",
-      label: "Not streaming",
+      label: "Not streaming — skip 8a, go to 8b",
       /* Turns in flat at 8b's own handle; anything else leaves a stub that
-         swings the arrowhead downward. */
-      data: { exitX: 1425, viaY: "target", labelX: 1425, labelY: 1755, labelWidth: 120 },
+         swings the arrowhead downward. labelWidth widened from 120 to fit
+         the longer label — the auto formula (len*6.7+24) wants ~245px.
+
+         The label does NOT sit on the line. The gutter between RECIPE (ends
+         x1340) and 8b (starts x1485) is only 145px, and a 245px label placed
+         there covered 8b's "NO ROOM -> 429" line. It moves instead to the
+         clear band under 8b: below 8b's bottom edge (1818), right of RECIPE
+         (1340), above DENY422's top (1917). Same trick guest-issue already
+         uses — park a wide label in open space rather than crop it. */
+      data: { exitX: 1425, viaY: "target", labelX: 1470, labelY: 1982, labelWidth: 240 },
       zIndex: 4,
     }),
 
@@ -1162,7 +1225,7 @@ function buildElements(onHover, onLeave) {
       targetHandle: "left",
       kind: "blocked",
       label: "Already too many live replies",
-      data: { exitX: 1752, viaY: "target", labelX: 1870, labelY: 1240 },
+      data: { exitX: 1752, viaY: "target", labelX: 1870, labelY: 1370 },
       zIndex: 4,
     }),
     flowEdge("slot-resv", "SLOT", "RESV", { sourceHandle: "bottom", targetHandle: "top", label: "This process has a free slot" }),
@@ -1172,7 +1235,7 @@ function buildElements(onHover, onLeave) {
       targetHandle: "left",
       kind: "blocked",
       label: "Not enough token quota",
-      data: { exitX: 1752, viaY: "target", labelX: 1870, labelY: 1545 },
+      data: { exitX: 1752, viaY: "target", labelX: 1870, labelY: 1675 },
       zIndex: 4,
     }),
     flowEdge("resv-503", "RESV", "RESVDOWN", {
@@ -1183,7 +1246,7 @@ function buildElements(onHover, onLeave) {
       label: "Token Manager silent",
       /* Centres in the 70px gap now open between the two stacked refusals;
          while they overlapped, every candidate position sat over a card. */
-      data: { exitX: 1755, viaY: "target", labelX: 1870, labelY: 1817 },
+      data: { exitX: 1755, viaY: "target", labelX: 1870, labelY: 1947 },
       zIndex: 4,
     }),
     flowEdge("resv-cred", "RESV", "CRED", {
@@ -1196,7 +1259,7 @@ function buildElements(onHover, onLeave) {
       sourceHandle: "left-out",
       targetHandle: "top",
       label: "Token quota reserved",
-      data: { exitX: 1440, viaY: 1250, labelX: 2090, labelY: 1250 },
+      data: { exitX: 1440, viaY: 1380, labelX: 2090, labelY: 1380 },
       zIndex: 4,
     }),
 
@@ -1217,7 +1280,7 @@ function buildElements(onHover, onLeave) {
       type: "phaseHop",
       targetHandle: "top",
       label: "Response received",
-      data: { exitX: 2430, viaY: 1250, labelX: 2475, labelY: 1250 },
+      data: { exitX: 2430, viaY: 1380, labelX: 2475, labelY: 1380 },
       zIndex: 4,
     }),
 
@@ -1248,7 +1311,7 @@ function buildElements(onHover, onLeave) {
       sourceHandle: "bottom",
       targetHandle: "top",
       label: "Cleanup still runs",
-      data: { exitX: 2890, viaY: 1520, labelX: 2840, labelY: 1520 },
+      data: { exitX: 2890, viaY: 1650, labelX: 2840, labelY: 1650 },
       zIndex: 4,
     }),
     flowEdge("callbox-done", "CALLBOX", "DONE", {
@@ -1257,35 +1320,58 @@ function buildElements(onHover, onLeave) {
       targetHandle: "left",
       kind: "blocked",
       label: "Failed before first byte",
-      data: { exitX: 2175, viaY: 1720, labelX: 2325, labelY: 1720 },
+      data: { exitX: 2175, viaY: 1850, labelX: 2325, labelY: 1850 },
       zIndex: 4,
     }),
     flowEdge("done-gap", "DONE", "GAP", { sourceHandle: "bottom", targetHandle: "top", kind: "blocked", label: "Known limitation" }),
 
-    /* Lane C -- Manage The Platform. Linear, with one optional branch:
+    /* Lane C -- Manage Tenants & Deployments. Linear, with one optional branch:
        only a request that included a credential visits Vault. */
     flowEdge("mreq-mident", "MREQ", "MIDENT", { sourceHandle: "right", targetHandle: "left" }),
     flowEdge("mident-mscope", "MIDENT", "MSCOPE", { sourceHandle: "right", targetHandle: "left" }),
     flowEdge("mscope-mref", "MSCOPE", "MREF", { sourceHandle: "right", targetHandle: "left", label: "Scope approved" }),
     flowEdge("mref-mwrite", "MREF", "MWRITE", { sourceHandle: "right", targetHandle: "left" }),
     flowEdge("mwrite-msecret", "MWRITE", "MSECRET", { sourceHandle: "right", targetHandle: "left", label: "Includes a credential" }),
+    flowEdge("mident-401", "MIDENT", "MIDENT401", {
+      type: "refusalDrop", sourceHandle: "bottom", targetHandle: "top",
+      kind: "blocked", label: "Missing or invalid token",
+    }),
+    flowEdge("mscope-403", "MSCOPE", "MSCOPE403", {
+      type: "refusalDrop", sourceHandle: "bottom", targetHandle: "top",
+      kind: "blocked", label: "Not authorized",
+    }),
+    flowEdge("mref-404", "MREF", "MREF404", {
+      type: "refusalDrop", sourceHandle: "bottom", targetHandle: "top",
+      kind: "blocked", label: "Reference missing",
+    }),
+    flowEdge("mwrite-4xx", "MWRITE", "MWRITE4XX", {
+      type: "refusalDrop", sourceHandle: "bottom", targetHandle: "top",
+      kind: "blocked", label: "Invalid or conflicting write",
+    }),
+    flowEdge("msecret-503", "MSECRET", "MSECRET503", {
+      type: "refusalDrop", sourceHandle: "bottom", targetHandle: "top",
+      kind: "blocked", label: "Vault unavailable",
+    }),
+    flowEdge("mcache-503", "MCACHE", "MCACHE503", {
+      type: "refusalDrop", sourceHandle: "bottom", targetHandle: "top",
+      kind: "blocked", label: "Redis unavailable",
+    }),
     flowEdge("mwrite-mcache-bypass", "MWRITE", "MCACHE", {
       type: "lowerCorridor",
       sourceHandle: "bottom",
       kind: "evidence",
       label: "No credential -- skip Vault",
-      data: { leftRailX: 1670, rightRailX: 2120, corridorY: 2640, labelX: 1895, labelY: 2640 },
+      /* leftRailX/rightRailX recomputed for the uniform-width row above (30px
+         gutter past MWRITE's new right edge 1700, and before MCACHE's new
+         left edge 2220). corridorY unchanged: it deliberately drops into the
+         open band below the management refusal row. The rail rises through
+         the gap between the Vault and Redis refusal cards. */
+      data: { leftRailX: 1730, rightRailX: 2190, corridorY: 2850, labelX: 1960, labelY: 2850 },
       zIndex: 4,
     }),
     flowEdge("msecret-mcache", "MSECRET", "MCACHE", { sourceHandle: "right", targetHandle: "left" }),
     flowEdge("mcache-mdone", "MCACHE", "MDONE", { sourceHandle: "right", targetHandle: "left" }),
 
-    /* Lane D -- Health Check. Linear; Postgres and Redis are actually
-       checked at the same time, noted in each box's own detail rather
-       than drawn as a fork the reader has to untangle. */
-    flowEdge("hreq-hpg", "HREQ", "HPG", { sourceHandle: "right", targetHandle: "left" }),
-    flowEdge("hpg-hredis", "HPG", "HREDIS", { sourceHandle: "right", targetHandle: "left" }),
-    flowEdge("hredis-hdone", "HREDIS", "HDONE", { sourceHandle: "right", targetHandle: "left" }),
   ];
 
   return { nodes, edges };
