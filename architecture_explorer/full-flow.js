@@ -184,7 +184,7 @@ const LAYOUT = {
   AUTHCTX: { phase: "knowledge", icon: "decision", tag: "THE THREE INPUTS", x: 360, y: 1345, w: 300, h: 165, gate: true },
   CACHE:   { phase: "knowledge", icon: "queue", tag: "YES ONLY · BRIEF", x: 360,  y: 1578, w: 300, h: 136, hop: "Redis" },
   GATES:   { phase: "knowledge", icon: "database", tag: "FOUR QUESTIONS · IN ORDER", x: 360,  y: 1782, w: 300, h: 165, gate: true, hop: "PostgreSQL" },
-  APPROVED:{ phase: "knowledge", icon: "accept", tag: "MERGE POINT", x: 760, y: 1561, w: 170, h: 170, gate: true },
+  APPROVED:{ phase: "knowledge", icon: "accept", tag: "MERGE POINT", x: 760, y: 1536, w: 170, h: 220, gate: true },
   DENYACL: { phase: "knowledge", icon: "gap", tag: "403 · 404 · 422", x: 360, y: 2015, w: 300, h: 180, blocked: true },
 
   /* Lane 03 — Resolve Deployment. The most congested column on the canvas,
@@ -328,53 +328,154 @@ const DETAILS = {
 
   AUTHCTX: {
     title: "3 · May This User Use This Deployment?",
-    sub: "May this USER use this DEPLOYMENT in this TENANT?\nuser = user_id on your verified token\ntenant = X-Tenant-ID, from the request header\nkey = X-Deployment-Key, identifies a deployment\nunique per tenant, never global",
+    sub: "The service now asks one permission question: may this verified person use this saved AI setup inside this tenant?",
     paragraphs: [
-      "Who is being authorized: a user, and only a user. The verified token carries a user_id and that user's PLATFORM role — authority across the whole service. Access Control does not use that platform role. Authority inside one tenant is a separate thing, stored on a membership row as a tenant role, and the code keeps the two sets deliberately apart even though four role names appear in both.",
-      "Tenant is this canvas's only word for that boundary — see the naming note on Request In if you want the one-time alias explanation. Nothing below uses 'customer' again.",
-      "What is being authorized is one deployment inside that tenant, named by X-Deployment-Key. That key is unique per tenant rather than globally, so the identical key string in another tenant is a different deployment and grants nothing here. The thing that finally permits the call is an entitlement — the row tying this user to that deployment's exact provider and model.",
-      "In the code: InferenceAuthorizationService.authorize_inference(tenant_id, deployment_key, current_user) in app/auth/authorization/tenant_inference_auth.py — those three arguments are the question. Its answer is one frozen object (InferenceAccessContext) that later phases trust instead of re-checking.",
-      "Those three values together are the authorization question for every inference call. Redis and PostgreSQL both work on exactly that triple. Chat, embed, and rerank ask the same question — the operation is not part of it. The operation is checked one phase later, in Resolve Deployment.",
-      "X-Tenant-ID means \"I want to work as tenant T\", never \"I belong to tenant T\". Only the user id on the token is proven. Naming a tenant you have nothing to do with is allowed and achieves nothing — membership is required below or the request is 403.",
+      "The sign-in token has proved who the caller is. The service now combines that verified identity with X-Tenant-ID and X-Deployment-Key from the request. Together, these values form the permission question for every chat, embedding, and reranking request.",
+      "A tenant is an organisation boundary. X-Tenant-ID means \"I want to act within this tenant.\" It does not mean \"I belong to this tenant.\" A caller may name any tenant in a request, but access is granted only when the service finds an active membership that permits AI use in that tenant.",
+      "The deployment key identifies one saved AI setup within the named tenant. Deployment keys are unique only within a tenant. For example, two different tenants can both have a deployment named support-gpt, but they are separate deployments and permission for one gives no access to the other.",
+      "The platform role inside the access token is not used to answer this question. It describes the caller's role across the service as a whole. Access within a particular tenant is decided separately using the caller's tenant membership role. A viewer, for example, is read-only and cannot run AI requests, while an eligible tenant role can continue to the next checks.",
+      "The final permission is an active entitlement. An entitlement is the record that gives this person permission to use this exact deployment with its exact provider and model. It is more specific than tenant membership. Membership asks whether the person may use AI in the tenant at all. The entitlement asks whether they may use this particular saved AI setup.",
+      "At this point, the service does not yet ask whether the caller wants a chat answer, an embedding vector, or a reranked document list. It only asks, \"May this person use this deployment in this tenant?\" Once the answer is yes, the service reads the deployment's provider and model. It then checks whether that model supports the requested task. For example, a person may be allowed to use support-gpt, but the request is rejected later if its configured model cannot create embedding vectors.",
+      "If access is approved, the service keeps the resulting identity, tenant, deployment, provider, model, and entitlement identifiers together for later steps. Later parts of the request can use that approved context instead of repeating this permission decision.",
     ],
   },
   CACHE: {
     title: "4 · Recent Approval Cached?",
-    sub: "A shortcut, never the source of truth.\nKEY · (user, tenant, deployment) → approved\nMISS → always check PostgreSQL fresh",
-    paragraphs: [
-      "Why a cache at all: the four database checks below are the same for every request this user makes against this deployment, and they rarely change between one request and the next. A hit replaces four lookups with one — but it is purely a speed-up. PostgreSQL is the only place this decision is actually made; Redis only remembers an answer PostgreSQL already gave.",
-      "What is remembered, in plain terms: which user, which tenant, which deployment, and that the answer for that exact combination was yes. A miss means Redis has no memory of that combination — not that the answer is no, just that it has to be looked up. A hit does not skip verification forever, either: it still carries the identifiers the next phase needs, so nothing downstream has to re-fetch them, but it does not carry anything you could dial a model with — no provider name, no URL, no credential.",
-      "What actually invalidates a cached yes is not the timer: a management change (revoking access, deactivating a deployment, suspending a tenant) advances a version seal, and the very next read sees the mismatch and discards the stored answer immediately. The TTL (30 seconds by default, configurable 1 to 300) only exists as defense-in-depth for the one pathological case where a seal write itself failed — it is not the real invalidation path.",
-      "Only approvals are ever cached, on purpose: caching a refusal would lock out someone who was just granted access for as long as that entry lived. Redis unavailable is treated exactly like a miss — PostgreSQL still runs, so correctness never depends on the cache being up. That is the sense in which Redis is optional and PostgreSQL is not.",
+    sub: "Redis may remember a recent approval to save database work, but PostgreSQL remains the source of truth.",
+    blocks: [
+      { type: "heading", text: "Why Redis Is Checked" },
+      { type: "paragraph", text: "Before repeating the full permission check, the service asks Redis whether it already holds a recent approval for this exact person, tenant, and deployment." },
+      { type: "paragraph", text: "Redis only makes repeated requests faster. PostgreSQL remains the source of truth that originally approved the access." },
+
+      { type: "heading", text: "The Approval Key" },
+      { type: "code", text: "inference_authz:{tenant ID}:{user ID}:{deployment key}" },
+      { type: "paragraph", text: "Example:" },
+      { type: "code", text: "inference_authz:9f0e2dd4-9ec7-4b8e-ae45-91be5d34a711:4c669c1f-669c-4b73-a275-7c46b36210fb:support-gpt" },
+      { type: "paragraph", text: "Each person, tenant, and deployment combination receives a different key. The example means that user 4c...10fb was approved to use support-gpt inside tenant 9f...a711." },
+
+      { type: "heading", text: "What The Approval Contains" },
+      { type: "code", text: `{
+  "context": {
+    "tenant_id": "9f0e2dd4-9ec7-4b8e-ae45-91be5d34a711",
+    "user_id": "4c669c1f-669c-4b73-a275-7c46b36210fb",
+    "deployment_key": "support-gpt",
+    "deployment_id": "17392e64-9dab-4c1d-ae46-c0fc6e3dfa6d",
+    "provider_id": "a38b4b95-9e0c-4b60-b162-2a24c3e35456",
+    "model_id": "da7dd9d6-16f7-4ac3-9a73-d14dd832a05a",
+    "tenant_role": "developer",
+    "entitlement_id": "ce963f83-ca13-4b89-b29a-8c9e6b330907"
+  },
+  "versions": {
+    "tenant_version": "tenant:0",
+    "membership_version": "membership:0",
+    "deployment_version": "deployment:0",
+    "route_version": "route:0"
+  }
+}` },
+      { type: "paragraph", text: "The context section answers, \"Who was approved to use what?\" It records the approved person, tenant, deployment, provider, model, tenant role, and entitlement." },
+      { type: "paragraph", text: "It does not contain the provider URL, secret reference, API key, or plaintext credential." },
+
+      { type: "heading", text: "How Redis Decides Whether An Approval Is Still Current" },
+      { type: "paragraph", text: "Redis treats an approval as a short-lived copy of a previous \"yes.\" Before reusing it, the service must answer one question: has anything relevant changed since this approval was created?" },
+      { type: "paragraph", text: "It checks four things: the tenant, the person's membership in that tenant, the saved AI setup, and the person's exact permission to use that setup. Each has a small version value that changes when an administrator updates it." },
+      { type: "paragraph", text: "The cached approval stores the four values that existed when it was created. On the next request, Redis reads the latest four values and compares them with the saved ones. If every value is the same, the approval is still current. If any value differs, the service ignores the old approval and checks PostgreSQL again." },
+
+      { type: "heading", text: "What A Cache Hit Or Miss Means" },
+      { type: "list", items: [
+        { label: "Cache hit", text: "Redis found an approval and all four version values still match. The request can continue without repeating the database permission check." },
+        { label: "Cache miss", text: "Redis has no approval, cannot read one safely, or found one that is no longer current. The service checks PostgreSQL." },
+        { label: "Redis unavailable", text: "The service treats Redis as unavailable memory and checks PostgreSQL." },
+        { label: "Rejected access", text: "A refusal is never stored. Redis remembers only successful approvals." },
+      ] },
+
+      { type: "heading", text: "How Long A Saved Approval Lasts" },
+      { type: "paragraph", text: "A saved approval expires automatically after 30 seconds by default. The permitted setting range is 1 to 300 seconds. Expiry is a backup safety limit. The version comparison is intended to detect relevant changes sooner." },
+
+      { type: "heading", text: "Current Code Issue" },
+      { type: "paragraph", text: "The version comparison cannot currently work reliably after an administrator changes a tenant, membership, deployment, or permission. The stored default values look like tenant:0, but the update path writes a different shape, such as v:<unique ID>. The reader expects the first shape and rejects the second." },
+      { type: "paragraph", text: "Until that defect is repaired, Redis can still be treated as an optional speed improvement, because the service falls back to PostgreSQL when it cannot use the cached approval. But the system should not claim immediate cache invalidation is working correctly." },
     ],
   },
   GATES: {
     title: "5 · Look It Up In The Database",
-    sub: "Four questions. The first \"no\" stops it.\n1  Is this tenant real and switched on?\n2  Are you an active member allowed to use AI there?\n3  Does this saved AI setup exist and is it on?\n4  Were you given permission to use it?",
-    paragraphs: [
-      "In the code: _authorize_from_source_of_truth in tenant_inference_auth.py runs Gate 1 (tenant exists; status active or trial), Gate 2 (an active membership whose tenant role is developer or above — a viewer is read-only and cannot invoke), Gate 3 (deployment exists and is active), Gate 4 (an active entitlement for this exact tenant + user + deployment + provider + model). Errors map to HTTP codes in app/api/exception_handlers.py.",
-      "Why a strange-looking deployment key simply vanishes at Gate 3: the header in Request In accepts a fairly loose shape, but a key that is actually stored is kebab-case — lowercase letters, digits, single hyphens — and that shape is enforced three times over, by the management schema, by this phase's own answer object, and by a CHECK constraint on the table. A key like Support_GPT clears the header check one phase earlier and then matches no row here, so it ends as a 404 rather than an error about its spelling.",
-      "A pass here writes the yes back to Redis before moving on — that write is step 5's last action, not a separate arrow back out of this box, and not something Approved itself does.",
-      "Order is deliberate, and cheapest first: each check only runs once the one before it holds. Prove the tenant exists before reading membership; prove membership before reading the deployment; prove the deployment before looking up the permission that names its provider and model.",
-      "Checks 2 and 4 are a hierarchy, not a repeat. Check 2 is coarse: does this user belong to this tenant with a role allowed to call AI. Check 4 is specific: is this user permitted to use THIS deployment.",
-      "404 means the named thing does not exist for this tenant. 403 means it exists and you may not use it. 422 for an inactive deployment is deliberate — a real thing the caller may have permission for, in a state that cannot serve traffic.",
+    sub: "PostgreSQL answers four permission questions in a fixed order. The first \"no\" stops the request.",
+    blocks: [
+      { type: "heading", text: "What This Step Decides" },
+      { type: "paragraph", text: "Redis had no usable remembered approval, so PostgreSQL now becomes the source of truth. The service checks whether this verified person may use the requested AI setup inside the requested tenant." },
+
+      { type: "heading", text: "The Four Questions" },
+      { type: "ordered", items: [
+        { label: "Is the tenant real and able to receive AI requests", text: "The tenant must exist and its status must be active or trial." },
+        { label: "Is this person an active member who may use AI", text: "The person must have an active membership in the tenant and a tenant role that permits AI use. A viewer can read information but cannot submit an AI request." },
+        { label: "Does the saved AI setup exist and is it active", text: "The deployment key must identify a deployment within this tenant, and that deployment must be switched on." },
+        { label: "Does this person have permission for this exact AI setup", text: "An active entitlement must connect this tenant, this person, this deployment, and the provider and model selected by that deployment." },
+      ] },
+
+      { type: "heading", text: "Why The Questions Are In This Order" },
+      { type: "paragraph", text: "The checks run from broad and inexpensive to specific. The service first confirms that the tenant exists. Only then does it read membership. Only after confirming membership does it look up the deployment. It checks the most specific permission last, because that permission depends on the deployment's provider and model." },
+      { type: "paragraph", text: "Membership and entitlement are not duplicates. Membership answers, \"May this person use AI in this tenant at all?\" Entitlement answers, \"May this person use this particular AI setup?\"" },
+
+      { type: "heading", text: "About The Deployment Key" },
+      { type: "paragraph", text: "The request header accepts a broad format so the service can safely receive the key. A key that was actually registered follows a stricter lowercase, hyphen-separated format, such as support-gpt." },
+      { type: "paragraph", text: "For example, Support_GPT can pass the initial header-format check but still match no registered deployment in this tenant. It is therefore returned as 404 Not Found at this step, because there is no saved AI setup with that exact key." },
+
+      { type: "heading", text: "What Happens After A Yes" },
+      { type: "paragraph", text: "When all four questions pass, the service creates an approved access record containing the tenant, person, deployment, provider, model, tenant role, and entitlement identifiers. It then attempts to save that approval in Redis so a later identical request can avoid repeating these database checks." },
+
+      { type: "heading", text: "How Failures Are Reported" },
+      { type: "list", items: [
+        { label: "404 Not Found", text: "The named tenant or deployment does not exist for this request." },
+        { label: "403 Forbidden", text: "The tenant exists, but the person is not an eligible active member or does not have the required permission." },
+        { label: "422 Unprocessable Entity", text: "The deployment exists, but it is inactive and cannot serve AI traffic." },
+      ] },
     ],
   },
   APPROVED: {
     title: "Access Approved",
-    sub: "May use this deployment — yes. Not yet: which company, model, URL, or key. That is the next column.",
-    paragraphs: [
-      "Both paths through Access Control — a fresh Postgres pass and a Redis cache hit — join here so Resolve Deployment never looks like a skipped unfinished Phase 2.",
-      "What leaves here is identifiers and a yes — including which provider row and which model row the deployment points at. What does not leave with it is anything you could dial a model with: no provider name, no URL, no settings, no key. Those are what the next column goes and reads.",
+    sub: "The request has been approved to use one deployment in one tenant, whether Redis remembered the approval or PostgreSQL checked it again.",
+    blocks: [
+      { type: "heading", text: "Why Two Paths Meet Here" },
+      { type: "paragraph", text: "Access can be approved in two ways. Redis may provide a still-current remembered approval, or PostgreSQL may perform the four database checks and create a fresh approval." },
+      { type: "paragraph", text: "Both paths arrive here with the same result: the caller is allowed to use the requested deployment inside the requested tenant. From this point onward, the next phase does not need to know how that approval was obtained." },
+
+      { type: "heading", text: "What Has Been Approved" },
+      { type: "paragraph", text: "The service now carries the identifiers for the approved person, tenant, deployment, provider, model, tenant role, and exact permission record. These identifiers are the evidence that the request passed Access Control." },
+      { type: "paragraph", text: "The approval answers only one question: \"May this person use this deployment in this tenant?\" It does not yet determine how to contact an AI provider or whether the selected model can perform the requested task." },
+
+      { type: "heading", text: "What Does Not Move Forward" },
+      { type: "paragraph", text: "No provider name, provider URL, API key, secret reference, timeout, temperature, token limit, or other AI connection setting is available at this point." },
+      { type: "paragraph", text: "The next phase reads the approved permission record and provider configuration to build the complete execution route. Keeping permission approval separate from connection details prevents later steps from using unapproved or mismatched AI settings." },
     ],
   },
   DENYACL: {
     title: "Access Denied",
-    sub: "Stops at the first failed question. No fallback to a default tenant or deployment.\n1 → 404 not found · 403 suspended\n2 → 403 not a member / no AI role\n3 → 404 missing · 422 switched off\n4 → 403 no permission",
-    paragraphs: [
-      "The 422 above means the deployment is switched off — it exists, but cannot serve traffic right now. That is a different 422 from the one in Resolve Deployment, which means the deployment does not support the operation that was called.",
-      "Redis being down never causes this box: a cache miss just means the four checks run against PostgreSQL instead, exactly as if nothing had ever been cached. PostgreSQL being down is a different story, and less reassuring — there is no matching deliberate rule for it here. It has no dedicated handling today and would surface as an unhandled 500, not a designed 503. It fails closed by accident, not by design.",
-      "No such tenant → 404. Tenant suspended → 403. Not a member, or a role without AI access → 403. No such deployment → 404. Deployment switched off → 422. No permission for that deployment → 403.",
+    sub: "The request stops when the tenant, membership, AI setup, or permission check does not pass.",
+    blocks: [
+      { type: "heading", text: "What These Responses Mean" },
+      { type: "paragraph", text: "The service has already confirmed the caller's identity. It now knows who made the request, but one of the database permission checks did not allow the requested AI work to continue." },
+      { type: "list", items: [
+        { label: "404 Not Found", text: "The requested tenant does not exist, or the requested deployment key does not identify a saved AI setup in that tenant." },
+        { label: "403 Forbidden", text: "The tenant exists, but it is suspended, the person is not an eligible active member, or the person does not have permission for the requested AI setup." },
+        { label: "422 Unprocessable Entity", text: "The deployment exists and is known, but it is switched off and cannot receive AI traffic." },
+      ] },
+
+      { type: "heading", text: "Two Different 422 Responses" },
+      { type: "paragraph", text: "A 422 at this point means the saved AI setup is inactive. It exists, but the administrator has switched it off." },
+      { type: "paragraph", text: "A later 422 in Resolve Deployment means something different. The saved AI setup is active, but its configured model cannot perform the requested work. For example, an active chat model may not support embedding vectors." },
+
+      { type: "heading", text: "Why Redis Does Not Cause This Outcome" },
+      { type: "paragraph", text: "Redis is only a performance shortcut. If Redis is unavailable, missing an approval, or unable to read one, the service treats that as a cache miss and performs the four database checks. Redis being down does not itself deny access." },
+      { type: "paragraph", text: "If PostgreSQL is unavailable, the service cannot answer the permission question at all. There is no dedicated database-outage response for this authorization step. The request reaches the general unexpected-error handling and returns 500 Internal Server Error, with a request ID for investigation. It does not return a designed 503 Service Unavailable response." },
+
+      { type: "heading", text: "The Complete Decision Path" },
+      { type: "ordered", items: [
+        { label: "Tenant missing", text: "404 Not Found." },
+        { label: "Tenant suspended", text: "403 Forbidden." },
+        { label: "No active membership, or membership role cannot use AI", text: "403 Forbidden." },
+        { label: "Deployment missing", text: "404 Not Found." },
+        { label: "Deployment inactive", text: "422 Unprocessable Entity." },
+        { label: "No active permission for that person and deployment", text: "403 Forbidden." },
+      ] },
     ],
   },
 
@@ -1405,6 +1506,21 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function renderBubbleBlocks(blocks) {
+  return blocks.map((block) => {
+    if (block.type === "paragraph") return `<p>${escapeHtml(block.text)}</p>`;
+    if (block.type === "heading") return `<h4>${escapeHtml(block.text)}</h4>`;
+    if (block.type === "code") return `<pre><code>${escapeHtml(block.text)}</code></pre>`;
+    const tag = block.type === "ordered" ? "ol" : "ul";
+    const items = (block.items || []).map((item) => {
+      if (typeof item === "string") return `<li>${escapeHtml(item)}</li>`;
+      const separator = item.separator === undefined ? ":" : item.separator;
+      return `<li><strong>${escapeHtml(item.label)}${escapeHtml(separator)}</strong> ${escapeHtml(item.text)}</li>`;
+    }).join("");
+    return `<${tag}>${items}</${tag}>`;
+  }).join("");
+}
+
 const BUBBLE_HOVER_DELAY = 1000;
 let bubbleShowTimer = null;
 let bubbleHideTimer = null;
@@ -1439,9 +1555,11 @@ function showBubble(nodeElement, detail) {
   if (!shell || !bubble || !nodeElement || !detail) return;
   keepBubbleOpen();
 
-  const body = detail.paragraphs?.length
-    ? `<div class="full-flow-bubble-copy">${detail.paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}</div>`
-    : `<p>${escapeHtml(detail.sub)}</p>`;
+  const body = detail.blocks?.length
+    ? `<div class="full-flow-bubble-copy">${renderBubbleBlocks(detail.blocks)}</div>`
+    : detail.paragraphs?.length
+      ? `<div class="full-flow-bubble-copy">${detail.paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}</div>`
+      : `<p>${escapeHtml(detail.sub)}</p>`;
 
   bubble.innerHTML = `
     <span>${escapeHtml(detail.tag || "Component detail")}</span>
