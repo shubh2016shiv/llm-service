@@ -27,8 +27,8 @@ from app.inference_routing.models import ResolutionRequest, ResolvedRoute
 from app.inference_routing.route_resolution import InferenceRouteResolver
 from app.schemas.auth_schema import AuthTokenPayload, InferenceAccessContext
 from app.schemas.enums import OperationType
+from app.schemas.identifier_constraints import KEBAB_IDENTIFIER_PATTERN
 
-_DEPLOYMENT_KEY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
 RouteDependency = Callable[..., Awaitable[ResolvedRoute]]
 
 
@@ -54,7 +54,7 @@ async def require_inference_access(
             alias="X-Deployment-Key",
             min_length=1,
             max_length=128,
-            pattern=_DEPLOYMENT_KEY_PATTERN,
+            pattern=KEBAB_IDENTIFIER_PATTERN,
         ),
     ],
     current_user: Annotated[AuthTokenPayload, Depends(get_current_user)],

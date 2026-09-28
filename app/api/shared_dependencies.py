@@ -12,6 +12,7 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
+from app.adapters.cache import RedisCache
 from app.adapters.postgresql import PostgresSessionProvider
 from app.auth.authorization import AuthorizationGrantCache, TenantAccessService
 from app.core.settings.loader import ConfigLoader
@@ -40,6 +41,25 @@ def require_app_state[AppStateValue](
     return value
 
 
+def optional_app_state[AppStateValue](
+    request: Request,
+    attr_name: str,
+    expected_type: type[AppStateValue],
+    *,
+    hint: str,
+) -> AppStateValue | None:
+    """Return an optional lifespan resource, rejecting wiring type errors."""
+    value = getattr(request.app.state, attr_name, None)
+    if value is None:
+        return None
+    if not isinstance(value, expected_type):
+        raise RuntimeError(
+            f"app.state.{attr_name} has type {type(value).__name__}; "
+            f"expected {expected_type.__name__} or None. {hint}"
+        )
+    return value
+
+
 def get_postgres_session_provider(request: Request) -> PostgresSessionProvider:
     """Return the application-scoped PostgreSQL pool/session provider."""
     return require_app_state(
@@ -58,7 +78,12 @@ PostgresSessionProviderDependency = Annotated[
 
 def get_credential_writer(request: Request) -> CredentialWriter | None:
     """Return the optional write-only credential backend."""
-    return getattr(request.app.state, "credential_writer", None)
+    return optional_app_state(
+        request,
+        "credential_writer",
+        CredentialWriter,  # type: ignore[type-abstract]  # runtime-checkable Protocol
+        hint="Ensure the lifespan configured a compatible credential writer.",
+    )
 
 
 CredentialWriterDependency = Annotated[
@@ -71,7 +96,12 @@ def get_inference_authorization_cache(request: Request) -> AuthorizationGrantCac
     """Build a request-light cache façade around the process Redis adapter."""
     settings = get_application_settings()
     return AuthorizationGrantCache(
-        backend=getattr(request.app.state, "redis_cache", None),
+        backend=optional_app_state(
+            request,
+            "redis_cache",
+            RedisCache,
+            hint="Ensure the lifespan configured the Redis cache adapter.",
+        ),
         ttl_seconds=settings.inference_authorization_cache_ttl_seconds,
     )
 

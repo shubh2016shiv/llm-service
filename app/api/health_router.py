@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.core.settings.settings import ApplicationSettings
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -49,19 +51,25 @@ async def readiness_check(request: Request) -> JSONResponse:
         _probe("postgresql", postgres.health_check if postgres else None),
         _probe("redis", redis.health_check if redis else None),
     )
+    settings = getattr(request.app.state, "settings", None)
+    settings_healthy = isinstance(settings, ApplicationSettings)
     statuses = {"postgresql": database_healthy, "redis": redis_healthy}
-    ready = all(statuses.values())
+    ready = settings_healthy and all(statuses.values())
     if not ready:
+        failing_dependencies = [name for name, healthy in statuses.items() if not healthy]
+        if not settings_healthy:
+            failing_dependencies.append("settings")
         logger.warning(
             "Readiness check failed",
             extra={
                 "request_id": getattr(request.state, "request_id", None),
-                "failing_dependencies": [name for name, healthy in statuses.items() if not healthy],
+                "failing_dependencies": failing_dependencies,
             },
         )
-    settings = request.app.state.settings
     content: dict[str, object] = {"status": "ready" if ready else "degraded"}
-    if settings.app_environment != "production":
+    # If settings are absent or malformed, fail closed without disclosing
+    # dependency details, matching production response behavior.
+    if isinstance(settings, ApplicationSettings) and settings.app_environment != "production":
         content["dependencies"] = {
             name: "ok" if healthy else "unavailable" for name, healthy in statuses.items()
         }

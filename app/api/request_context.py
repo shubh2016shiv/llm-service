@@ -32,7 +32,7 @@ def resolve_request_id(incoming_request_id: str | None) -> tuple[str, bool]:
     """Return a safe request ID and whether a supplied value was accepted."""
     if incoming_request_id and _REQUEST_ID_PATTERN.fullmatch(incoming_request_id):
         return incoming_request_id, True
-    return str(uuid.uuid4()), incoming_request_id is None
+    return str(uuid.uuid4()), False
 
 
 class RequestContextMiddleware:
