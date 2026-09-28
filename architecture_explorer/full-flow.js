@@ -481,16 +481,184 @@ const DETAILS = {
 
   LIVE: {
     title: "6 · Resolve Entitlement Configuration",
-    sub: "Entitlement = this user's own override of that deployment. Re-read fresh, never cached:\n• which provider company  e.g. OpenAI\n• which model  e.g. gpt-4o\n• which URL to call\n• where its API key is kept\nTenant gone → 404. Suspended or revoked → 403.",
-    paragraphs: [
-      "Why \"entitlement\" and not \"deployment,\" since this step loads operational detail rather than checking permission again: an entitlement is the specific grant of one provider + model to one user, and it is deliberately where the dial-able details live — not the deployment row, even though a deployment carries its own copy of provider name, model name, endpoint URL and credential reference. The query behind this step joins only user_entitlements to the provider and model catalogs and never touches the deployments table at all. This is not authorization happening twice: Access Control (step 5) already proved this user may use this deployment — that was the permission check. This step reads the one record that actually names what to dial, and that record happens to be scoped per user, not per deployment, which is why it has its own name. Gate 4 already identified it; this step re-reads that exact record, plus the tenant row, so a revocation or model change applies on the very next call.",
-      "The key path is only a location. The real API key is fetched later from Vault, in AI Provider Call.",
-      "In the code: InferenceRouteResolver._read_active_tenant and _read_authorized_entitlement (app/inference_routing/route_resolution.py). PostgreSQL unreachable here has no designed status — it would surface as an unhandled 500.",
+    sub: "Access Control approved who may use the deployment. PostgreSQL now supplies the current details needed to prepare the AI call.",
+    blocks: [
+      { type: "heading", text: "What Access Control Approved" },
+      { type: "paragraph", text: "Access Control has already approved these facts:" },
+      { type: "list", items: [
+        { label: "Person", text: "The verified person identified by the sign-in token." },
+        { label: "Tenant", text: "The organisation in which the person wants to perform the AI request." },
+        { label: "Tenant membership", text: "The person is an active member of that tenant and has a tenant role that permits AI use." },
+        { label: "Deployment", text: "The requested deployment key identifies an active saved AI setup inside that tenant." },
+        { label: "Provider and model identifiers", text: "The deployment points to a specific provider record and model record." },
+        { label: "Entitlement", text: "An active permission record allows this person to use that exact deployment, provider, and model combination." },
+      ] },
+      { type: "paragraph", text: "This approval proves permission. It does not yet provide the provider name, model name, endpoint, region, credential location, or provider-specific settings needed to prepare the call." },
+
+      { type: "heading", text: "What PostgreSQL Reads Now" },
+      { type: "paragraph", text: "PostgreSQL performs two fresh reads." },
+
+      { type: "heading", text: "1 · The Tenant Record" },
+      { type: "list", items: [
+        { label: "Tenant identity", text: "Confirms which tenant is being used." },
+        { label: "Current tenant status", text: "Confirms that the tenant still exists and is still active or in trial." },
+        { label: "Subscription tier", text: "Loads the tenant's current service tier." },
+        { label: "Request limit", text: "Loads the configured request allowance." },
+        { label: "Token limit", text: "Loads the configured AI-token allowance." },
+        { label: "Concurrent-request limit", text: "Loads the number of AI requests the tenant may run at once." },
+        { label: "Allowed providers", text: "Loads the current list of AI providers this tenant is permitted to use." },
+      ] },
+      { type: "paragraph", text: "This step immediately uses the tenant's status. The allowed-provider list is used by the next policy check. The other tenant settings are included in the current tenant configuration but are not all enforced at this exact box." },
+
+      { type: "heading", text: "2 · The Exact Entitlement Approved Earlier" },
+      { type: "list", items: [
+        { label: "Entitlement identity", text: "Confirms that the same permission record approved by Access Control is being read." },
+        { label: "Person and tenant", text: "Confirms that the entitlement still belongs to the same person and tenant." },
+        { label: "Deployment key", text: "Not a field on the result. It is one of four values — tenant, user, deployment key, entitlement id — the query matches in its WHERE clause; if any one is wrong, no row comes back at all, rather than a mismatch being caught afterward." },
+        { label: "Current entitlement status", text: "Confirms that the entitlement has not been revoked or deactivated." },
+        { label: "Provider name", text: "Identifies the AI company or platform." },
+        { label: "Model name", text: "Identifies the model selected for this person." },
+        { label: "Provider endpoint", text: "Supplies the network address used for the future provider call." },
+        { label: "Secret reference", text: "Supplies the location of the provider credential, but not the credential itself." },
+        { label: "Cloud provider and region", text: "Supplies optional routing information for cloud-hosted models." },
+        { label: "Additional configuration", text: "Supplies provider-specific settings stored with the entitlement." },
+      ] },
+
+      { type: "heading", text: "Why Provider And Model Names Require A Join" },
+      { type: "list", items: [
+        { label: "What the entitlement stores", text: "Internal provider and model identifiers." },
+        { label: "What later steps need", text: "Readable provider and model names, such as openai and gpt-4o." },
+        { label: "What PostgreSQL does", text: "It joins the entitlement to the provider and model catalogs and returns the corresponding names." },
+        { label: "What PostgreSQL does not read", text: "The deployment table is not queried again at this step." },
+      ] },
+
+      { type: "heading", text: "Example" },
+      { type: "paragraph", text: "Access Control has approved:" },
+      { type: "code", text: `Person:       Priya
+Tenant:       Acme
+Deployment:   support-gpt
+Entitlement:  priya-support-access
+Provider ID:  a38b4b95...
+Model ID:     da7dd9d6...` },
+      { type: "paragraph", text: "PostgreSQL now reads the current tenant details:" },
+      { type: "code", text: `Tenant:               Acme
+Status:               active
+Subscription tier:    enterprise
+Request limit:        600 per minute
+Token limit:          500,000 per minute
+Concurrent requests:  25
+Allowed providers:    openai, bedrock` },
+      { type: "paragraph", text: "PostgreSQL also reads Priya's exact entitlement:" },
+      { type: "code", text: `Entitlement:       priya-support-access
+Status:            active
+Provider:          openai
+Model:             gpt-4o
+Endpoint:          https://api.openai.com/v1
+Cloud region:      not required
+Secret reference:  vault://acme/priya/openai-key
+Additional config: {"organization": "acme-support"}` },
+
+      { type: "heading", text: "What The Example Means" },
+      { type: "list", items: [
+        { label: "Permission is already proven", text: "Priya may use support-gpt inside Acme." },
+        { label: "The tenant is still usable", text: "Acme remains active." },
+        { label: "The provider is identified", text: "The request is associated with OpenAI." },
+        { label: "The model is identified", text: "The request is associated with gpt-4o." },
+        { label: "The destination is known", text: "The provider endpoint has been loaded." },
+        { label: "The credential location is known", text: "The service knows where the OpenAI credential is stored." },
+        { label: "The credential is not loaded", text: "The actual API key remains in the secret store and is retrieved later." },
+      ] },
+
+      { type: "heading", text: "Why These Records Are Read Again" },
+      { type: "list", items: [
+        { label: "Immediate revocation", text: "A recently revoked entitlement is rejected on the next request." },
+        { label: "Current status", text: "A newly suspended tenant or deactivated entitlement is not allowed to continue." },
+        { label: "Current routing", text: "Changes to the endpoint, region, provider, model, credential location, or additional settings become visible immediately." },
+        { label: "No substitution", text: "If the approved entitlement is missing or inactive, the service does not search for another entitlement or fallback credential." },
+      ] },
+
+      { type: "heading", text: "When This Step Stops The Request" },
+      { type: "list", items: [
+        { label: "Tenant missing", text: "404 Not Found." },
+        { label: "Tenant no longer active", text: "403 Forbidden." },
+        { label: "Approved entitlement missing, revoked, or inactive", text: "403 Forbidden." },
+        { label: "Returned entitlement does not match the approved entitlement", text: "500 Internal Server Error." },
+        { label: "PostgreSQL unavailable", text: "500 Internal Server Error. There is currently no dedicated 503 Service Unavailable response for this database read." },
+      ] },
     ],
   },
   PLANBOX: {
-    title: "7 · Provider Policy, Then Model Capability",
-    sub: "A · PROVIDER POLICY — allowed for this tenant? → else 403\nB · MODEL CAPABILITY — known, fit for chat/embed/rerank? → else 422\nFirst failure wins, before capacity or Vault.",
+    title: "7 · May this tenant use this AI provider and model for chat, embedding, or reranking?",
+    sub: "The selected provider must be allowed for this tenant, and the selected model must support this endpoint's operation.",
+    blocks: [
+      { type: "paragraph", text: "The earlier steps confirmed that this person may use the selected deployment. This step answers a different question: can the provider and model selected by that deployment perform the type of AI request that just arrived?" },
+
+      { type: "heading", text: "Where the information comes from" },
+      { type: "paragraph", text: "Before this step begins, the preceding step reads two current records from PostgreSQL:" },
+      { type: "list", items: [
+        { label: "Tenant configuration", text: "Whether the tenant is active and which AI providers, if any, that tenant permits." },
+        { label: "Exact approved entitlement", text: "The active permission record for this person, tenant, and deployment. It identifies the provider and model selected for the request." },
+      ] },
+      { type: "paragraph", text: "For example, the entitlement might identify OpenAI and `gpt-4o` as the provider and model selected for Priya's `customer-support` deployment." },
+      { type: "paragraph", text: "Step 7 does not make another PostgreSQL query. It uses those already-read tenant and entitlement details, then checks the provider configuration loaded into memory when the service started." },
+      { type: "paragraph", text: "That startup configuration is stored in provider YAML files. It lists each provider's registered models and the AI operations each model supports." },
+      { type: "paragraph", text: "The PostgreSQL `model_catalog` table is used by the management area to register and manage models. It is not the catalog consulted by this step. A model registered in PostgreSQL still needs a matching entry in its provider's startup configuration before this step can use it." },
+
+      { type: "heading", text: "Check 1: Is this provider allowed for the tenant?" },
+      { type: "paragraph", text: "The tenant can limit which AI providers it permits." },
+      { type: "list", items: [
+        { label: "No provider list", text: "The tenant permits every provider known to the running service." },
+        { label: "A list with provider names", text: "The tenant permits only the providers on that list." },
+        { label: "An empty list", text: "The tenant permits no providers." },
+      ] },
+      { type: "paragraph", text: "This is a rule for one tenant, not a global provider on or off switch." },
+      { type: "paragraph", text: "If the provider selected by the entitlement is excluded from the tenant's list, the request stops with **403 Forbidden**." },
+      { type: "paragraph", text: "This check does not confirm that an API key exists or that the provider can be reached. The secret is read from Vault later, immediately before the external AI call." },
+
+      { type: "heading", text: "Check 2: Is the provider and model known to the running service?" },
+      { type: "paragraph", text: "The service next checks the startup-loaded provider configuration." },
+      { type: "list", items: [
+        { text: "The provider must have a configuration file loaded when the service started." },
+        { text: "The selected model must be listed under that provider." },
+        { text: "A model listed for one provider is not automatically available from another provider." },
+      ] },
+      { type: "paragraph", text: "If the provider is missing from the running service's configuration, the database and the running service disagree. For example, PostgreSQL may contain an entitlement for OpenAI, but the running service may have started without the OpenAI provider configuration. The caller cannot fix that mismatch, so it currently reaches the caller as an internal **500 error**." },
+      { type: "paragraph", text: "If the provider is known but the model is not listed under it, the request stops with **422 Unprocessable Entity**." },
+
+      { type: "heading", text: "Check 3: Can the model perform this endpoint's operation?" },
+      { type: "paragraph", text: "A known model must support the operation represented by the endpoint:" },
+      { type: "list", items: [
+        { label: "Chat", text: "Generate a conversational response." },
+        { label: "Embedding", text: "Convert text into numerical vectors." },
+        { label: "Reranking", text: "Reorder supplied results by relevance." },
+      ] },
+      { type: "paragraph", text: "These are the only capabilities checked here. Streaming, tool calling, structured output, and vision are not separate checks at this point." },
+      { type: "paragraph", text: "A model can remain listed in the startup catalog even when marked deprecated. This step does not reject it for that reason. It checks only whether the model supports chat, embedding, or reranking." },
+      { type: "paragraph", text: "If the model cannot perform the endpoint's operation, the request stops with **422 Unprocessable Entity**." },
+
+      { type: "heading", text: "Example" },
+      { type: "paragraph", text: "Suppose Acme Support permits OpenAI, and Priya is approved to use a deployment whose entitlement selects `text-embedding-3-small`. Priya sends a chat request:" },
+      { type: "ordered-list", items: [
+        "The provider check passes because Acme Support permits OpenAI.",
+        "The provider and model check passes because OpenAI and `text-embedding-3-small` are known to the running service.",
+        "The capability check fails because that model supports embedding, not chat.",
+        "The service returns **422** before checking capacity, reading Vault, or contacting OpenAI.",
+      ] },
+      { type: "paragraph", text: "The service does not quietly replace the model with a chat-capable alternative." },
+
+      { type: "heading", text: "Why this check happens after access control" },
+      { type: "paragraph", text: "Access Control answered, \"May this person use this deployment inside this tenant?\" It did not answer, \"Can the selected model perform the operation requested by this endpoint?\"" },
+      { type: "paragraph", text: "That is why a cached access approval still reaches this step. Permission to use a deployment does not mean its selected model can perform every kind of AI request." },
+
+      { type: "heading", text: "Possible outcomes" },
+      { type: "list", items: [
+        { label: "Provider is not permitted for this tenant", text: "403." },
+        { label: "Provider is missing from the running service's configuration", text: "500." },
+        { label: "Model is not listed under that provider", text: "422." },
+        { label: "Model does not support chat, embedding, or reranking as requested", text: "422." },
+        { label: "Every check passes", text: "Continue to capacity checks and credential retrieval." },
+      ] },
+    ],
     paragraphs: [
       "A — provider policy is one check, and it is a tenant-level allow-list, not a global on/off switch. There is no \"is this provider enabled\" flag anywhere in the code — every provider the system has loaded is available by default unless this tenant's own allowed-provider list excludes it (no list at all permits everything; an empty list permits nothing). There is also no \"are credentials configured\" check at this gate — that is not verified until Vault is read in step 9, seconds before the call. Fail here and the answer is 403: the provider is fine, this tenant's policy is not.",
       "B — model capability is two checks against the catalog loaded at startup, no database call. First, does this model exist under this provider at all — an unknown model is 422, the caller's problem. Second, can this exact model perform the specific operation actually being called: chat, embed, or rerank — that is the only capability this step checks. Streaming, tool calling, structured output and vision are not modeled as separate capability gates anywhere in this catalog; only those three operations are. The catalog does carry an is_active / is_deprecated flag per model, and this step does not read either one — a deprecated model that still lists the right operation still passes.",
@@ -502,8 +670,95 @@ const DETAILS = {
     ],
   },
   RECIPE: {
-    title: "Freeze The Execution Plan",
-    sub: "Build the fixed, request-scoped configuration.\nEvery answer from steps 6 and 7, written once onto one sheet — never rewritten:\nprovider · model · URL · key location · timeout · temperature · max reply length.",
+    title: "Create the fixed plan for this AI call",
+    sub: "Gather every approved routing decision into one read-only plan for the remaining stages of this request.",
+    blocks: [
+      { type: "paragraph", text: "Steps 6 and 7 have now answered every routing question for this request:" },
+      { type: "list", items: [
+        { text: "Which tenant and deployment are involved." },
+        { text: "Which AI provider and model were selected." },
+        { text: "Where the provider request should be sent." },
+        { text: "Which credential location will be used later." },
+        { text: "How long the provider call may run." },
+        { text: "How creative a chat response may be." },
+        { text: "How many tokens a chat response may generate." },
+      ] },
+      { type: "paragraph", text: "This step gathers those answers into one fixed plan that the remaining stages use for this request." },
+
+      { type: "heading", text: "What the completed plan looks like" },
+      { type: "paragraph", text: "The completed plan is a validated, read-only record held in the running application. It is not a database row, and it is not sent to the caller." },
+      { type: "code", language: "text", text: "Completed plan\n├── Tenant and deployment\n│   ├── tenant ID\n│   └── deployment key\n│\n├── AI route\n│   ├── provider name\n│   ├── model name\n│   ├── provider endpoint address\n│   └── cloud region, when applicable\n│\n├── Operating limits\n│   ├── timeout\n│   ├── temperature\n│   └── maximum output tokens\n│\n├── Credential handling\n│   └── credential location, never the API key itself\n│\n├── Provider settings\n│   ├── full startup-loaded provider configuration\n│   ├── additional approved entitlement settings\n│   └── extra request headers, currently empty at creation\n│\n└── Internal tracking\n    ├── usage-meter identity\n    └── route identity" },
+      { type: "paragraph", text: "For example, Priya's completed plan may contain:" },
+      { type: "code", language: "text", text: "Tenant: Acme Support\nDeployment: customer-support\n\nProvider: OpenAI\nModel: gpt-4o\nEndpoint: https://api.openai.com/v1\nRegion: none\n\nTimeout: 60 seconds\nTemperature: 0.7\nMaximum response length: 4,096 tokens\n\nCredential location: secret/acme/openai/customer-support\nAPI key: not included\n\nUsage-meter identity: Priya's approved entitlement ID\nRoute identity: a fixed SHA-256 fingerprint" },
+      { type: "paragraph", text: "The API key is not copied into this plan. Think of the credential location as a locker number written on an instruction sheet. The key remains in the locker until the later Vault step retrieves it." },
+
+      { type: "heading", text: "What comes from the approved entitlement" },
+      { type: "paragraph", text: "The approved entitlement, read from PostgreSQL in the earlier step, supplies the details specific to this person's permitted AI setup:" },
+      { type: "list", items: [
+        { label: "Provider and model", text: "For example, OpenAI and `gpt-4o`." },
+        { label: "Endpoint address", text: "The provider URL to contact." },
+        { label: "Cloud region", text: "When the provider uses one." },
+        { label: "Credential location", text: "A pointer to where the API key is stored." },
+        { label: "Additional provider settings", text: "Any approved settings specific to this entitlement." },
+        { label: "Usage-meter identity", text: "The identifier used later when the token service records this request's quota usage." },
+      ] },
+
+      { type: "heading", text: "What comes from the startup catalog" },
+      { type: "paragraph", text: "The provider and model catalog checked in Step 7 supplies shared defaults:" },
+      { type: "list", items: [
+        { label: "Timeout", text: "How long the provider call may wait before it is treated as unsuccessful." },
+        { label: "Temperature", text: "The default level of variation for a chat response." },
+        { label: "Maximum output tokens", text: "The largest response the selected model may generate." },
+        { label: "Provider configuration", text: "The provider's connection and authentication rules, without any actual API secret." },
+      ] },
+      { type: "paragraph", text: "The plan keeps the full provider configuration so later stages do not need to load that catalog again." },
+
+      { type: "heading", text: "What this step does not do" },
+      { type: "list", items: [
+        { text: "Make another PostgreSQL query." },
+        { text: "Read Vault." },
+        { text: "Retrieve the API key." },
+        { text: "Contact the AI provider." },
+        { text: "Reserve token capacity." },
+        { text: "Choose a different provider or model." },
+      ] },
+      { type: "paragraph", text: "It only assembles information already approved and verified." },
+
+      { type: "heading", text: "Why make one fixed plan?" },
+      { type: "paragraph", text: "Without this step, each later stage would need to rediscover the provider, model, timeout, credential location, and limits. That creates two risks:" },
+      { type: "list", items: [
+        { label: "Inconsistent decisions", text: "Different stages could use different versions of the configuration." },
+        { label: "Repeated work", text: "The service would repeat database and catalog lookups whose answers have already been established." },
+      ] },
+      { type: "paragraph", text: "The completed plan means every remaining stage works from the same approved answers for this one request." },
+
+      { type: "heading", text: "It cannot be changed after creation" },
+      { type: "paragraph", text: "The plan is deliberately locked after it is created." },
+      { type: "paragraph", text: "Later stages can read its values, but cannot:" },
+      { type: "list", items: [
+        { text: "Switch to a cheaper model." },
+        { text: "Change the provider endpoint." },
+        { text: "Select another credential location." },
+        { text: "Increase the output-token limit." },
+        { text: "Add an unexpected setting." },
+      ] },
+      { type: "paragraph", text: "For example, if `gpt-4o` is the approved model, the capacity step cannot decide to use `gpt-4o-mini` instead. The provider call must use the route that was already approved." },
+
+      { type: "heading", text: "Two internal identities used later" },
+      { type: "list", items: [
+        { label: "Usage-meter identity", text: "Tells the token service which approved entitlement this request spends from." },
+        { label: "Route identity", text: "A one-way SHA-256 fingerprint calculated from the deployment key and the full approved entitlement details. The service uses it to recognise requests that share the same saved route and can reuse a cached provider connection." },
+      ] },
+      { type: "paragraph", text: "The route identity changes when the deployment key or approved entitlement changes. It does not include the provider and model defaults loaded from the startup catalog." },
+
+      { type: "heading", text: "What happens next" },
+      { type: "list", items: [
+        { text: "Capacity checks use the provider, model, and maximum output length." },
+        { text: "Vault uses the credential location to retrieve the API key only when needed." },
+        { text: "The provider call uses the selected endpoint, region, model, and settings." },
+        { text: "The token service uses the usage-meter identity to record quota consumption." },
+      ] },
+    ],
     paragraphs: [
       "What's on the sheet: from the permission record — the AI company, model, URL, region, key location, extra options. From the startup catalog — how long to wait (timeout), creativity (temperature), longest reply allowed (max tokens). Nothing on it is guessed or re-decided after this point; every value was already settled in steps 6 and 7.",
       "\"Frozen\" is not a figure of speech here. In the code this sheet is ResolvedRoute (app/inference_routing/models.py), built with Pydantic's frozen=True: once constructed, trying to change any field raises an error instead of silently succeeding. There is no code path anywhere that edits a ResolvedRoute after it is built — it is genuinely immutable, not just handled carefully.",
@@ -514,8 +769,35 @@ const DETAILS = {
     ],
   },
   DENY422: {
-    title: "Route Rejected",
-    sub: "403 · Provider not allowed for this tenant\n422 · Model unknown, or cannot do this job\n500 · Provider configuration missing here — our fault\nAll three stop before capacity or Vault.",
+    title: "Why was this AI route rejected?",
+    sub: "A 403, 422, or 500 here identifies whether the problem is the tenant's provider policy, the selected model, or the service's own configuration.",
+    blocks: [
+      { type: "paragraph", text: "The person is allowed to use the selected deployment, but that approval is only the first part of the decision. The service must still confirm that the deployment leads to an AI provider this tenant permits and to a model that can handle the request that just arrived." },
+      { type: "paragraph", text: "Think of the deployment as a saved travel plan. Access Control confirmed that this person is allowed to use the plan. This step checks whether the destination is permitted, whether it exists in the service's current map, and whether it can provide the requested service." },
+
+      { type: "heading", text: "When the response is 403" },
+      { type: "paragraph", text: "A **403 Forbidden** means the tenant's own policy does not permit the provider selected by the entitlement." },
+      { type: "paragraph", text: "For example, Priya may be allowed to use Acme Support's `customer-support` deployment, and that deployment may select OpenAI. If Acme Support currently permits only Anthropic, Priya's permission to use the deployment does not override the tenant's provider policy. The request stops with 403." },
+      { type: "paragraph", text: "Nothing is necessarily wrong with OpenAI, the model, Priya's account, or her entitlement. The provider is simply not permitted for this tenant." },
+      { type: "paragraph", text: "A missing provider list means the tenant has placed no provider restriction. A populated list permits only the providers named in it." },
+      { type: "paragraph", text: "The intended meaning of an empty list is that the tenant permits no providers. The current implementation does not preserve that distinction correctly. It treats an empty list like a missing list and therefore permits every provider. That is a known defect recorded in the production review document." },
+
+      { type: "heading", text: "When the response is 422" },
+      { type: "paragraph", text: "A **422 Unprocessable Entity** means the provider is permitted, but the selected model cannot be used for this request." },
+      { type: "paragraph", text: "One possibility is that the entitlement names a model that is not present under that provider in the catalog loaded when the service started. PostgreSQL may contain the model and the entitlement, but the running service does not recognise that model in its startup configuration." },
+      { type: "paragraph", text: "The other possibility is that the model is known but cannot perform the operation represented by the endpoint." },
+      { type: "paragraph", text: "For example, `text-embedding-3-small` may be correctly registered as an embedding model. If Priya sends it to the chat endpoint, the service does not guess, replace it with a chat model, or send a request that is expected to fail. It stops here with 422 because the approved model cannot perform chat." },
+      { type: "paragraph", text: "There is another 422 earlier in Access Control, but it means something different. The earlier 422 says the deployment itself is switched off. The 422 here says the deployment is active and approved, but its selected model is unknown to the running service or cannot perform chat, embedding, or reranking as requested." },
+
+      { type: "heading", text: "When the response is 500" },
+      { type: "paragraph", text: "A **500 Internal Server Error** means the database and the running service disagree about the provider." },
+      { type: "paragraph", text: "For example, PostgreSQL may contain an active entitlement that selects OpenAI, while the running service may have started without loading the OpenAI provider configuration. The database says which provider to use, but the application does not know how to operate it." },
+      { type: "paragraph", text: "That is not something Priya can fix by changing her request. It is an internal configuration problem that an operator must correct." },
+
+      { type: "heading", text: "What happens after any of these failures" },
+      { type: "paragraph", text: "The request ends here. The service does not choose another provider, substitute another model, reserve capacity, retrieve an API key, or contact an AI company." },
+      { type: "paragraph", text: "Related failures can also stop one step earlier. A missing tenant returns 404, a suspended tenant returns 403, and a missing, revoked, or inactive entitlement returns 403. Those requests never reach the provider and model checks described here." },
+    ],
     paragraphs: [
       "The two failures read very differently even though both can land here. \"Provider not permitted\" (A, 403) means nothing is wrong with the provider or model — this tenant's own allow-list simply excludes that provider. \"Model not capable\" (B, 422) means the opposite: the provider is fine and permitted, but the specific model behind this entitlement cannot perform the operation being called.",
       "This 422 is different from Access Control's 422 (deployment switched off). Here the permission is on, but the provider behind it is forbidden, unknown, or the wrong kind of model for the route.",
@@ -528,8 +810,50 @@ const DETAILS = {
      changed — which is the whole point, because the two limits are unrelated
      and were previously easy to blur together. */
   SLOT: {
-    title: "8a · Is There A Free Streaming Slot?",
-    sub: "PROTECTS · this process's sockets\nSCOPE · this process only, in memory\nRESERVES · 1 slot for the whole stream\nFREED · when the stream ends\nASKED BY · streaming chat · max 20\nNO ROOM → 503 at once, never a queue",
+    title: "8a · Can this process start another live-streaming response?",
+    sub: "One live-streaming chat uses one temporary permission from this process's in-memory capacity limit.",
+    blocks: [
+      { type: "paragraph", text: "A streaming chat sends the answer to the client gradually. The client begins receiving words while the AI provider is still generating the rest of the response." },
+      { type: "paragraph", text: "Because the answer remains open for that entire time, one streaming chat can occupy a client connection, a provider connection, memory, and background processing for much longer than a normal request." },
+      { type: "paragraph", text: "Before starting another streaming answer, this process checks whether it has room to keep one more stream open." },
+
+      { type: "heading", text: "What a streaming slot means" },
+      { type: "paragraph", text: "A streaming slot is one temporary permission to run one live-streaming chat." },
+      { type: "paragraph", text: "It is not a physical object and it does not contain the response. The process keeps a simple count of how many streaming chats it is currently responsible for." },
+      { type: "paragraph", text: "Suppose the configured limit is 20. When the first streaming chat starts, the count becomes 1 and 19 slots remain. When the twentieth starts, the count becomes 20 and no more slots are available in this process." },
+      { type: "paragraph", text: "The twenty-first streaming request is refused immediately." },
+
+      { type: "heading", text: "How long one slot is held" },
+      { type: "paragraph", text: "The slot is claimed before token capacity is reserved and before the AI provider stream is created." },
+      { type: "paragraph", text: "If preparation fails, such as when token capacity cannot be reserved or the provider cannot be prepared, the slot is returned immediately." },
+      { type: "paragraph", text: "If preparation succeeds, the slot remains occupied while the answer is being streamed. It is returned when:" },
+      { type: "list", items: [
+        { text: "The provider finishes the answer." },
+        { text: "The provider reports an error." },
+        { text: "The caller disconnects." },
+        { text: "Stream cleanup finishes after an interruption." },
+      ] },
+      { type: "paragraph", text: "The release is protected so that two cleanup paths cannot accidentally return the same slot twice." },
+
+      { type: "heading", text: "Why the default is 20" },
+      { type: "paragraph", text: "The default limit allows this process to manage up to 20 live-streaming chats at the same time." },
+      { type: "paragraph", text: "The service refuses to start if the streaming limit is greater than the number of outbound provider connections it can support. Advertising 50 streaming slots while the provider connection pool can support only 20 would create capacity that cannot actually be used." },
+
+      { type: "heading", text: "The limit belongs to one process" },
+      { type: "paragraph", text: "This counter exists only in the memory of the process handling the request. PostgreSQL and Redis are not involved." },
+      { type: "paragraph", text: "Another running process has its own separate counter. One process may have all 20 slots occupied while another process still has room." },
+      { type: "paragraph", text: "The supplied container starts one application process, so the process limit is also the container limit in the current deployment. If several application workers are started inside one container, each worker receives its own separate limit." },
+      { type: "paragraph", text: "For example, four workers with a limit of 20 could admit up to 80 streaming chats in that container." },
+
+      { type: "heading", text: "Why the request is not placed in a queue" },
+      { type: "paragraph", text: "When every slot is occupied, the process returns **503 Service Unavailable** immediately with a short retry suggestion." },
+      { type: "paragraph", text: "It does not keep the request waiting in a queue. A waiting streaming request would continue occupying a client connection while asking the process to wait for a resource that is already exhausted." },
+      { type: "paragraph", text: "A retry may reach another process that still has an available slot." },
+
+      { type: "heading", text: "Which requests use a slot" },
+      { type: "paragraph", text: "Only live-streaming chat requests pass through this check." },
+      { type: "paragraph", text: "A normal chat response that is returned all at once, an embedding request, and a reranking request do not claim a streaming slot. They continue directly to the shared token-capacity check." },
+    ],
     paragraphs: [
       "Picture several people watching answers type out live from the same process. Each one holds a connection open until their answer finishes. Too many open at once and that process runs out of memory and sockets — so it counts them, and refuses a new one when it is full.",
       "Twenty at once is the default. The process refuses to even start if that number is set higher than the outbound HTTP connection pool can support, because a stream that cannot get a connection is not capacity at all.",
@@ -539,16 +863,67 @@ const DETAILS = {
     ],
   },
   DENYSLOT: {
-    title: "No Streaming Slot Left",
-    sub: "503 — try again shortly; the response says how long.\nOnly a streaming chat can ever reach this box.\nAnother instance may have room right now.",
+    title: "This process has no room for another live-streaming response",
+    sub: "503 · This process has reached its live-streaming limit. The response includes a short retry suggestion.",
+    blocks: [
+      { type: "paragraph", text: "This process is already handling its configured maximum number of live-streaming chat responses." },
+      { type: "paragraph", text: "For example, when the limit is 20 and 20 responses are still open, the next streaming request cannot begin here. The service returns **503 Service Unavailable** immediately." },
+      { type: "paragraph", text: "The response includes a `Retry-After` hint. The default is one second, although that value can be configured." },
+      { type: "paragraph", text: "This refusal applies only to live-streaming chat. A normal chat response returned all at once, embedding, and reranking do not use a streaming slot and cannot reach this box." },
+      { type: "paragraph", text: "The slot check happens before shared token capacity is reserved. If this process has a free streaming slot but the Token Manager later refuses the request, cannot be reached, or reports an integration problem, the temporarily claimed slot is returned before the error is sent to the caller." },
+      { type: "paragraph", text: "That means a failed request does not leave the process believing it has one more live stream open than it actually does." },
+      { type: "paragraph", text: "The request is not queued, no provider credential is read, and no AI provider is contacted. A retry may succeed if an existing stream finishes or if the next request reaches another process with available streaming capacity." },
+    ],
     paragraphs: [
       "The refusal carries a Retry-After hint, one second by default.",
       "Note the ordering: this check runs BEFORE the token quota in 8b. If 8b then refuses, the streaming slot claimed here is handed straight back, so a refusal never leaves this count stuck high.",
     ],
   },
   RESV: {
-    title: "8b · Is There Token Quota Left?",
-    sub: "PROTECTS · the provider's token pool\nSCOPE · fleet-wide, via Token Manager\nRESERVES · estimated tokens for this call\nFREED · settled for real after the call\nASKED BY · every chat, embed, rerank\nNO ROOM → 429 · NO ANSWER → 503",
+    title: "8b · Is there enough shared token capacity for this request?",
+    sub: "Every application instance shares this provider-capacity decision through the separate Token Manager service.",
+    blocks: [
+      { type: "paragraph", text: "A streaming slot in Step 8a protects one application process from becoming too busy. This step protects something different: the amount of AI-provider capacity that every running application instance is trying to use together." },
+      { type: "paragraph", text: "AI providers measure usage in tokens. A token is a small piece of text. Both the text sent to the provider and the text returned by the provider consume tokens." },
+      { type: "paragraph", text: "Before calling the AI provider, the service asks whether enough shared token capacity can be reserved for this request." },
+
+      { type: "heading", text: "Why a separate service makes this decision" },
+      { type: "paragraph", text: "Many copies of this application may be running at the same time. One copy cannot know how many tokens every other copy has already reserved." },
+      { type: "paragraph", text: "For that reason, the request is sent over HTTP to a separate Token Manager service. That service keeps the shared record of reserved capacity and decides whether another request can begin." },
+      { type: "paragraph", text: "Step 8a and Step 8b can therefore produce different answers. A process may have plenty of room for another live-streaming response while the shared token capacity is already exhausted. The opposite can also happen: shared token capacity may be available while this particular process has no free streaming slot." },
+
+      { type: "heading", text: "How much capacity is reserved" },
+      { type: "paragraph", text: "The service estimates the tokens in the request content, then adds the largest response the approved model is allowed to produce." },
+      { type: "code", language: "text", text: "estimated tokens in the chat messages\n+\nmaximum response tokens from the fixed execution plan\n=\ntoken capacity requested" },
+      { type: "paragraph", text: "Embedding and reranking requests do not generate a written response, so they reserve only the estimated tokens in their input." },
+      { type: "paragraph", text: "Using the same maximum response length for both the reservation and the later provider call prevents a mismatch. The service does not reserve capacity for a small response and then permit the provider to generate a much larger one." },
+
+      { type: "heading", text: "Which capacity pool is checked" },
+      { type: "paragraph", text: "The Token Manager reads the selected deployment's token-capacity limit from its own deployment record." },
+      { type: "paragraph", text: "Its fast shared counter is more broadly scoped. The counter is identified by:" },
+      { type: "code", language: "text", text: "model name + provider endpoint address" },
+      { type: "paragraph", text: "It does not include the tenant ID or deployment ID." },
+      { type: "paragraph", text: "For example, if two tenants use the same model through the same provider endpoint, their requests contribute to the same fast shared counter. Their deployments may be different, but the current Redis counter treats them as users of the same provider capacity pool." },
+      { type: "paragraph", text: "That is the current implementation. It is not a separate token pool for every tenant or deployment." },
+
+      { type: "heading", text: "The endpoint safety check" },
+      { type: "paragraph", text: "The fixed execution plan already contains the endpoint approved for this request." },
+      { type: "paragraph", text: "The Token Manager selects a matching active deployment in its own records and returns the endpoint for which it reserved capacity. Before continuing, the service compares that returned endpoint with the endpoint in the approved plan." },
+      { type: "paragraph", text: "If they differ, the request stops with **502 Bad Gateway**. The service refuses to reserve capacity for one destination and send the AI request to another." },
+
+      { type: "heading", text: "What happens when capacity is available" },
+      { type: "paragraph", text: "The Token Manager returns a reservation. The AI provider call may then begin." },
+      { type: "paragraph", text: "When the request finishes, fails, or the caller disconnects, the service reports the final outcome and actual token usage. The reservation can then be settled using what was actually consumed." },
+
+      { type: "heading", text: "When this step stops the request" },
+      { type: "paragraph", text: "If the Token Manager says capacity is unavailable, or returns a waiting reservation instead of an approved one, the caller receives **429 Too Many Requests**. The AI provider is not contacted." },
+      { type: "paragraph", text: "If the Token Manager cannot be reached, times out, or reports one of its own server failures, the caller receives **503 Service Unavailable**. The service does not assume capacity is available when it cannot confirm it." },
+      { type: "paragraph", text: "If the Token Manager rejects this service's credentials, returns invalid response data, or returns an endpoint different from the approved endpoint, the caller receives **502 Bad Gateway**. Those outcomes mean the two services cannot safely trust their integration." },
+
+      { type: "heading", text: "What happens next" },
+      { type: "paragraph", text: "A successful reservation does not mean the AI provider has been called yet. It means the service has reserved room to make that call." },
+      { type: "paragraph", text: "The next step retrieves the credential from Vault. Only then does the service contact the approved AI provider." },
+    ],
     paragraphs: [
       "Why this exists when 8a already said yes: the two protect completely different resources. 8a protects this one process from running out of connections and memory — a local, technical limit. 8b protects the token allowance at the AI provider, which every instance in the fleet spends from the same pool. Passing one tells you nothing about the other: a quiet process with plenty of free connections can still be refused here because the rest of the fleet has spent the tokens, and a busy process can be full at 8a while the token pool is barely touched.",
       "\"Token Manager\" here means a real, separately deployed sibling service — llm_token_manager, its own repository and process, reached over HTTP by TokenManagerClient (app/clients/token_manager_client.py). Not a component inside this service and not a metaphor.",
@@ -560,16 +935,39 @@ const DETAILS = {
     ],
   },
   DENYRESV: {
-    title: "No Token Quota Left",
-    sub: "429 — Token Manager said no, or could not grant room yet.\nSomebody answered. Retrying helps only once quota frees up elsewhere.\nThe AI company is never called.",
+    title: "Shared token capacity is currently unavailable",
+    sub: "429 · The Token Manager responded but could not approve capacity for this request.",
+    blocks: [
+      { type: "paragraph", text: "The Token Manager responded, but it could not approve enough shared token capacity for this request." },
+      { type: "paragraph", text: "This is different from a Token Manager outage. The service received a valid answer: the request cannot begin with the capacity available right now." },
+      { type: "paragraph", text: "For a chat request, the service asks for enough capacity to cover the input text and the largest response the approved model may generate. If that amount does not fit in the shared capacity pool, the request stops with **429 Too Many Requests**." },
+      { type: "paragraph", text: "The same response is also used when the Token Manager returns a waiting result rather than an approved reservation. The application does not wait for capacity to become available and does not send the AI request anyway." },
+      { type: "paragraph", text: "No active capacity reservation is passed to the provider call. The service does not read a credential from Vault and does not contact the AI provider." },
+      { type: "paragraph", text: "If this was a live-streaming chat, Step 8a may already have temporarily claimed a streaming slot. That slot is returned before the 429 response is sent, so this refused request does not reduce the number of slots available for other live-streaming responses." },
+      { type: "paragraph", text: "The Token Manager may include a `Retry-After` hint. Retrying can help only after capacity has been released by another completed, failed, or expired request." },
+      { type: "paragraph", text: "A **503** means something different: the Token Manager could not be reached or was unavailable. A **429** means it responded and declined this request." },
+    ],
     paragraphs: [
       "This is a real refusal, not a sign that Token Manager is unwell. Nothing stays reserved for this call.",
       "The streaming slot claimed back in 8a is freed on the way out.",
     ],
   },
   RESVDOWN: {
-    title: "Token Manager Did Not Answer",
-    sub: "503 — timed out, unreachable, or their own server error.\nNobody answered, rather than somebody saying no.\nNothing was reserved, so there is nothing to give back.",
+    title: "Shared token capacity could not be confirmed",
+    sub: "503 · The service could not obtain a usable capacity decision from the Token Manager.",
+    blocks: [
+      { type: "paragraph", text: "The service could not obtain a usable decision from the Token Manager." },
+      { type: "paragraph", text: "This can happen when the Token Manager cannot be reached, takes too long to respond, or returns one of its own server errors. The service does not know whether enough shared token capacity is available, so it stops the request with **503 Service Unavailable**." },
+      { type: "paragraph", text: "This is different from the **429** in the previous box." },
+      { type: "paragraph", text: "A 429 means the Token Manager responded and declined the request because capacity was unavailable. A 503 means the service could not safely obtain a capacity decision at all." },
+      { type: "paragraph", text: "The service does not continue on the assumption that capacity is available. It does not read a credential from Vault and does not contact the AI provider." },
+      { type: "paragraph", text: "If this was a live-streaming chat, Step 8a may already have temporarily claimed a streaming slot. That local slot is returned before the 503 response is sent, so the failed Token Manager request does not occupy streaming capacity in this process." },
+
+      { type: "heading", text: "An important timeout detail" },
+      { type: "paragraph", text: "When the request times out, the service cannot know whether the Token Manager received it just before the connection failed." },
+      { type: "paragraph", text: "The Token Manager may have received the request and temporarily reserved capacity, even though this service never received the approval response. In that case, the reservation is eventually cleared by the Token Manager's expiration process." },
+      { type: "paragraph", text: "The AI provider is still never called because this service did not receive an approved reservation. A retry is safe from causing two provider calls, but it may temporarily find less shared capacity until any uncertain reservation expires." },
+    ],
     paragraphs: [
       "The difference from the 429 above is worth holding on to: there, the shared quota is genuinely spent and retrying is pointless until it frees up. Here, we simply never heard back, and the quota may be entirely untouched.",
       "We never got a yes, so nothing is left reserved on Token Manager's side. The streaming slot claimed in 8a is still freed in this process.",
@@ -577,54 +975,280 @@ const DETAILS = {
   },
 
   CRED: {
-    title: "9 · Fetch API Key From Vault",
-    sub: "Step 6 stored WHERE the key lives. The value is read here, seconds before the call.",
+    title: "9 · Fetch the API key from Vault",
+    sub: "The execution plan carries only the credential location. Vault provides the actual API key only when the provider needs it.",
+    blocks: [
+      { type: "paragraph", text: "Up to this point, the request has carried only a credential location, such as `secret/acme/openai/customer-support`. It has never carried the actual API key." },
+      { type: "paragraph", text: "That distinction is deliberate. The execution plan can safely say where the key lives without exposing the key to PostgreSQL records, logs, browser responses, or earlier stages of the request." },
+
+      { type: "heading", text: "When Vault is contacted" },
+      { type: "paragraph", text: "Vault is contacted only after the tenant, entitlement, provider, model, streaming capacity, and shared token capacity have all been approved." },
+      { type: "paragraph", text: "This order matters. There is no reason to retrieve a sensitive credential for a request that will later be rejected because the caller lacks access, the model cannot perform the requested operation, or capacity is unavailable." },
+      { type: "paragraph", text: "Vault is also not necessarily contacted for every request. Once a provider instance has been created, the service caches that provider instance with its credential for a limited time. The default lifetime is five minutes." },
+      { type: "paragraph", text: "A later request using the same saved route can reuse the cached provider instance during that period. When the cached instance expires, the service reads Vault again before rebuilding it." },
+
+      { type: "heading", text: "What Vault returns" },
+      { type: "paragraph", text: "The service sends the credential location to Vault using a read-only service identity." },
+      { type: "paragraph", text: "Vault returns a secret record containing an `api_key` value. The service validates that the value exists and is not empty, then keeps it in a protected in-memory form while creating the provider connection." },
+      { type: "paragraph", text: "The API key is never added to the execution plan and is never returned to the client." },
+      { type: "paragraph", text: "The service uses a different Vault identity for credential management. The identity used for inference can read credentials but cannot create, replace, or delete them." },
+
+      { type: "heading", text: "Some providers do not use an API key" },
+      { type: "paragraph", text: "Not every provider needs an explicit API key." },
+      { type: "paragraph", text: "Providers that use cloud identity signing, such as AWS request signing, or providers configured with no authentication, skip the Vault read completely. They continue with the authentication method defined for that provider." },
+      { type: "paragraph", text: "This card describes the Vault-backed credential path shown in this flow." },
+
+      { type: "heading", text: "If Vault cannot be used" },
+      { type: "paragraph", text: "Vault requests have bounded timeouts and retry transient failures up to three times by default." },
+      { type: "paragraph", text: "If Vault cannot be reached, takes too long to respond, or returns a server error, the request stops with **503 Service Unavailable**. The service does not fall back to another credential, another provider, or an environment variable." },
+      { type: "paragraph", text: "Some Vault failures are currently less cleanly handled:" },
+      { type: "list", items: [
+        { text: "A missing credential location currently becomes an internal **500**." },
+        { text: "A Vault permission denial currently becomes an internal **500**." },
+        { text: "A Vault response that does not contain a usable `api_key` currently becomes an internal **500**." },
+        { text: "A malformed Vault response is treated as a Vault availability failure and returns **503**." },
+      ] },
+      { type: "paragraph", text: "These are configuration or integration problems, not caller mistakes. The API key itself is never included in the error response." },
+
+      { type: "heading", text: "What happens next" },
+      { type: "paragraph", text: "Once the provider has the credential it needs, the service can make the approved AI-provider call." },
+      { type: "paragraph", text: "The provider receives only the provider, model, endpoint, request settings, and credential needed for that one route. It does not reconsider authorization or select another deployment." },
+    ],
     paragraphs: [
       "The Execution Plan names a secret location, not the secret. Only now is the real value fetched — and only for providers that need one. This identity can only read; a separate admin identity is the only writer.",
     ],
   },
   DENYVAULT: {
-    title: "Vault Unavailable",
-    sub: "503 — no provider call. Streaming slot and token quota reservation are both freed on the way out.",
+    title: "Vault could not provide the credential",
+    sub: "503 · The service could not retrieve the approved API key, so the AI-provider call cannot start.",
+    blocks: [
+      { type: "paragraph", text: "The request passed access checks, route resolution, and capacity checks. The service then needed the API key required to contact the selected AI provider, but Vault could not provide it." },
+      { type: "paragraph", text: "This happens when Vault cannot be reached, takes too long to respond, or returns a server-side failure. The service retries temporary Vault failures up to three times by default before returning **503 Service Unavailable**." },
+      { type: "paragraph", text: "The service does not guess a credential, use a different provider, or fall back to another secret location. Without the approved credential, it cannot safely start the AI-provider call." },
+
+      { type: "heading", text: "What happens to capacity already reserved" },
+      { type: "paragraph", text: "By the time the service reaches Vault, shared token capacity has already been reserved." },
+      { type: "paragraph", text: "The service marks that reservation as failed and attempts to release it through the Token Manager. This prevents a Vault outage from unnecessarily holding shared token capacity for requests that never reached an AI provider." },
+      { type: "paragraph", text: "If this was a live-streaming chat, the process may also have claimed a streaming slot earlier. That local slot is returned even if the token-reporting call has its own problem." },
+      { type: "paragraph", text: "No AI-provider request is sent." },
+
+      { type: "heading", text: "What this response does and does not mean" },
+      { type: "paragraph", text: "A 503 means Vault could not provide a usable response at this time. Retrying later may help." },
+      { type: "paragraph", text: "It does not mean that the credential location is definitely wrong." },
+      { type: "paragraph", text: "A missing credential location, a denied Vault read, or a Vault record without a usable API key currently produces an internal 500 instead. Those are configuration problems that retrying will not correct." },
+    ],
     paragraphs: [
       "Without a credential the outbound call cannot start. Cleanup still runs so capacity is not left held.",
     ],
   },
   CALLBOX: {
-    title: "10 · Call The Model Provider",
-    sub: "→ OpenAI, Anthropic, Bedrock, … — one internal contract for every vendor.",
+    title: "10 · Send the request to the selected AI provider",
+    sub: "The first step that sends the approved request outside this service to the selected AI provider.",
+    blocks: [
+      { type: "paragraph", text: "Everything before this point decided whether the request is allowed and prepared the exact route it must use. This is the first step that sends information outside this service to an AI provider such as OpenAI, Anthropic, Azure OpenAI, Bedrock, or a locally hosted model." },
+      { type: "paragraph", text: "The service sends the request only to the provider, model, endpoint, and credential already selected by the earlier steps. It does not search for another deployment, substitute a cheaper model, or fall back to another provider if this call fails." },
+
+      { type: "heading", text: "One request format inside, different formats outside" },
+      { type: "paragraph", text: "The application has one common request format for chat, embedding, and reranking. Each provider has its own API format, authentication headers, endpoint paths, and response shape." },
+      { type: "paragraph", text: "At this boundary, the service translates the common request into the selected provider's format." },
+      { type: "paragraph", text: "For example, the service may send a chat request to OpenAI's chat endpoint, send the same conversation in Anthropic's messages format, or send a cloud-provider request using its own signing method. The caller does not need to know those differences." },
+      { type: "paragraph", text: "When the provider responds, the service translates its provider-specific response back into the application's common response format." },
+
+      { type: "heading", text: "What is sent to the provider" },
+      { type: "paragraph", text: "The outbound request contains only the information needed for the approved AI call:" },
+      { type: "list", items: [
+        { text: "The selected model." },
+        { text: "The client's input, such as chat messages, embedding text, or a reranking query and documents." },
+        { text: "The approved provider endpoint." },
+        { text: "The credential required by that provider." },
+        { text: "Request settings such as temperature, maximum output length, stop sequences, and sampling settings." },
+      ] },
+      { type: "paragraph", text: "The provider receives no PostgreSQL connection details, no tenant membership data, no sign-in password, and no unrelated credentials." },
+
+      { type: "heading", text: "An important current behavior" },
+      { type: "paragraph", text: "The fixed execution plan supplies default temperature and maximum-output settings." },
+      { type: "paragraph", text: "However, when a chat request includes its own temperature or maximum-output value, the provider adapters currently use the caller's value instead of the default from the plan." },
+      { type: "paragraph", text: "The caller-provided maximum output is not currently capped against the plan's maximum output value. Meanwhile, the Token Manager reserves capacity using the plan's maximum output value." },
+      { type: "paragraph", text: "This creates a known mismatch: a caller can ask the provider for a larger response than the shared token-capacity step reserved. The service should eventually enforce the plan's maximum as an upper limit, not merely use it as a default." },
+
+      { type: "heading", text: "Protection when a provider is unhealthy" },
+      { type: "paragraph", text: "Each application process keeps a separate circuit breaker for each provider." },
+      { type: "paragraph", text: "A circuit breaker is like an electrical fuse. When a provider has repeatedly failed, the service temporarily stops sending it more requests. This prevents many slow failures from consuming connections and making the rest of the application less responsive." },
+      { type: "paragraph", text: "By default, five consecutive provider failures open the circuit for 60 seconds. While the circuit is open, the service returns **503 Service Unavailable** with a retry hint and does not contact that provider." },
+      { type: "paragraph", text: "A provider problem in one application process does not automatically open the circuit in every other process." },
+
+      { type: "heading", text: "If the provider rejects or cannot complete the request" },
+      { type: "paragraph", text: "The service translates provider failures into stable responses:" },
+      { type: "list", items: [
+        { label: "422", text: "A request the provider rejects as invalid, including an unavailable model." },
+        { label: "429", text: "A provider rate limit." },
+        { label: "504 Gateway Timeout", text: "A provider timeout." },
+        { label: "503 Service Unavailable", text: "A provider outage or an open circuit." },
+        { label: "502 Bad Gateway", text: "A rejected provider credential or an unexpected provider response." },
+      ] },
+      { type: "paragraph", text: "The service does not automatically retry the AI request or choose another provider. Repeating a generation request could create duplicate output and duplicate cost, so a retry must be a deliberate caller decision." },
+
+      { type: "heading", text: "What happens after the call" },
+      { type: "paragraph", text: "For a normal request, the complete provider response moves to the response step." },
+      { type: "paragraph", text: "For a live-streaming chat, pieces of the response begin moving to the caller as the provider produces them. Once that streaming response begins, later provider failures must be reported inside the stream because the HTTP success response has already started." },
+      { type: "paragraph", text: "Whether the call succeeds, fails, or the caller disconnects, the later cleanup step records the outcome and settles the token reservation." },
+    ],
     paragraphs: [
       "This is the step that leaves the company's infrastructure. Every vendor dialect is translated behind one shared contract. A circuit breaker refuses further calls to a repeatedly failing provider for a cooling-off window.",
     ],
   },
 
   SEND: {
-    title: "11 · Send The Response",
-    sub: "Stream (SSE) or one JSON body. After the first byte, HTTP status is already 200.",
+    title: "11 · Send the response to the client",
+    sub: "A normal request returns one JSON response. A live-streaming chat uses Server-Sent Events to deliver pieces as they arrive.",
+    blocks: [
+      { type: "paragraph", text: "The provider has produced a response, and the service now delivers it to the caller in one of two formats." },
+      { type: "paragraph", text: "A normal chat request, embedding request, or reranking request receives one complete JSON response. The caller waits until the provider has finished, then receives the entire result at once." },
+      { type: "paragraph", text: "A live-streaming chat uses **SSE**, short for **Server-Sent Events**. SSE is still an HTTP response, but the service keeps that response open and sends small named events as new pieces of the provider's response become available." },
+
+      { type: "heading", text: "What the client receives during a live stream" },
+      { type: "paragraph", text: "The response has the content type `text/event-stream`." },
+      { type: "paragraph", text: "As the provider generates text, the service sends `text_delta` events. Each event contains the newly available piece of text, along with:" },
+      { type: "list", items: [
+        { text: "The conversation identifier." },
+        { text: "A sequence number that increases for each event." },
+        { text: "The request identifier, when available." },
+      ] },
+      { type: "paragraph", text: "Some events carry stream metadata instead of text, such as usage or completion information." },
+      { type: "paragraph", text: "When the provider is quiet for a while, the service sends an SSE heartbeat comment. A heartbeat is not new AI text. It simply keeps browsers, proxies, and load balancers aware that the connection is still alive. The default heartbeat interval is 15 seconds." },
+      { type: "paragraph", text: "When the response finishes normally, the service sends one final `complete` event with a status of `completed`." },
+
+      { type: "heading", text: "Why early failures look different" },
+      { type: "paragraph", text: "The service prepares the route, checks capacity, and obtains the provider credential before it starts the SSE response." },
+      { type: "paragraph", text: "If one of those earlier steps fails, the service can still return a normal HTTP error such as 403, 429, 503, or 504. No response has begun yet." },
+      { type: "paragraph", text: "Once the SSE response begins, the HTTP success status has already been sent to the client. A later provider failure cannot replace that status with a new HTTP error response." },
+      { type: "paragraph", text: "Instead, if the client is still connected, the service sends an SSE `error` event with a safe error code, then sends the final `complete` event with a status of `failed`." },
+      { type: "paragraph", text: "If the client disconnects, it cannot receive those final events. The service still performs cleanup in the next step." },
+
+      { type: "heading", text: "What happens next" },
+      { type: "paragraph", text: "After a normal JSON response or the end of an SSE stream, the service closes provider work, settles token usage, and returns any streaming capacity that was reserved." },
+    ],
     paragraphs: [
       "Streaming: pieces reach the caller as the provider produces them. Non-streaming: one complete reply. Everything upstream was resolved first so early failures could still be clean HTTP errors.",
       "Once headers and the first chunk are sent, a provider failure cannot change the status code — that is the mid-stream box below.",
     ],
   },
   MIDSTREAM: {
-    title: "Mid-Stream Failure",
-    sub: "Keep chunks already received. SSE error + complete if still connected. Cleanup always runs.",
+    title: "The provider failed while sending a live response",
+    sub: "The client already received some live text, but the provider could not finish the response.",
+    blocks: [
+      { type: "paragraph", text: "A live-streaming response sends text to the client little by little." },
+      { type: "paragraph", text: "For example, instead of waiting for the whole AI response, the client may receive:" },
+      { type: "code", language: "text", text: "Hello\nHello, how can\nHello, how can I help you today?" },
+      { type: "paragraph", text: "A mid-stream failure means something went wrong after some of that text had already been sent." },
+      { type: "paragraph", text: "The client may have received part of the response, but the provider could not finish it." },
+
+      { type: "heading", text: "Why the service cannot send a new HTTP error" },
+      { type: "paragraph", text: "When streaming begins, the service has already told the client, \"I am starting a successful response.\"" },
+      { type: "paragraph", text: "That successful HTTP response has already started. The service cannot later replace it with a normal error page or change it to a 503 response." },
+      { type: "paragraph", text: "Instead, the service uses the open SSE connection to tell the client that the live response ended early." },
+
+      { type: "heading", text: "What the client receives" },
+      { type: "paragraph", text: "If the client is still connected, it receives:" },
+      { type: "code", language: "text", text: "1. The text already received.\n2. An error event saying that the stream ended unexpectedly.\n3. A final complete event saying that the stream failed." },
+      { type: "paragraph", text: "The text already received is not removed. However, it may be incomplete." },
+      { type: "paragraph", text: "For example, the client may have received:" },
+      { type: "code", language: "text", text: "The refund will be processed within" },
+      { type: "paragraph", text: "but never receive the rest of the sentence." },
+      { type: "paragraph", text: "The application showing this response can decide whether to display the partial text, hide it, or offer a Retry button." },
+
+      { type: "heading", text: "What happens inside the service" },
+      { type: "paragraph", text: "The service stops the unfinished provider response, records that the request failed, reports any known token usage, and returns the streaming capacity that this response was using." },
+      { type: "paragraph", text: "If the client disconnected before the failure happened, it cannot receive the error message or final event. The service still performs the same cleanup." },
+
+      { type: "heading", text: "Why the service does not retry automatically" },
+      { type: "paragraph", text: "An automatic retry could create two different responses for the same request." },
+      { type: "paragraph", text: "For example, the client may already have received part of one response, then receive a different second response after the retry. The provider may also charge for both attempts." },
+      { type: "paragraph", text: "For that reason, the service stops the failed stream and lets the caller decide whether to send a new request." },
+
+      { type: "heading", text: "When a normal error response is still possible" },
+      { type: "paragraph", text: "This box applies only after live text has started reaching the client." },
+      { type: "paragraph", text: "If the provider fails before streaming begins, the service can still return a normal HTTP error response such as 503 or 504." },
+    ],
     paragraphs: [
       "HTTP status stays 200 — headers were already sent. If the client is still connected it receives an SSE error event, then complete with status failed. If it disconnected, it gets no final event; cleanup still records disconnected.",
       "Usage reconciliation reports the largest cumulative LLM-token counts observed before failure. If the provider had not emitted usage yet, exact partial usage is unknown and the gateway passes none — it cannot prove what the provider billed.",
     ],
   },
   DONE: {
-    title: "12 · Release The Streaming Slot · Report Token Usage",
-    sub: "Always runs once. Give back this process's streaming slot if we took one; tell Token Manager how much text was really used (or none if unknown).",
+    title: "12 · Close the request, settle token usage, and release capacity",
+    sub: "Close provider work, report the final outcome, and return any local streaming capacity held for this request.",
+    blocks: [
+      { type: "paragraph", text: "Every AI request eventually reaches an ending point. It may complete successfully, fail while the provider is working, be cancelled, or lose its client connection." },
+      { type: "paragraph", text: "This step closes the work opened earlier so that no provider stream, token reservation, or local streaming capacity remains unnecessarily held." },
+
+      { type: "heading", text: "For a live-streaming response" },
+      { type: "paragraph", text: "Step 11 already began the SSE response to the client." },
+      { type: "paragraph", text: "When that stream ends, fails, or the client disconnects, the service closes the provider stream. This stops unnecessary provider work when nobody can receive the remaining response." },
+      { type: "paragraph", text: "The service gives provider-stream cleanup a limited amount of time. If the provider does not close in time, the service records the problem and continues with the remaining cleanup. A broken provider cleanup must not permanently consume capacity in this application process." },
+      { type: "paragraph", text: "The cleanup path is protected so that it runs once even when several events happen close together, such as a provider failure followed by an SSE connection closing." },
+
+      { type: "heading", text: "Returning the streaming slot" },
+      { type: "paragraph", text: "Only live-streaming chat claimed a streaming slot in Step 8a." },
+      { type: "paragraph", text: "After the service has attempted to report the outcome, it returns that temporary slot to this process. The count of active live streams goes down by one." },
+      { type: "paragraph", text: "The slot return is guaranteed to run even when token reporting fails. An accounting problem must not make the process appear permanently full." },
+      { type: "paragraph", text: "Normal chat, embedding, and reranking requests never claimed a streaming slot, so they have no slot to return." },
+
+      { type: "heading", text: "Settling token usage" },
+      { type: "paragraph", text: "Before the provider call, the Token Manager received an estimate of the token capacity needed for this request." },
+      { type: "paragraph", text: "After the request ends, the service reports the final outcome:" },
+      { type: "list", items: [
+        { label: "completed", text: "The provider finished normally." },
+        { label: "failed", text: "The provider returned an error." },
+        { label: "cancelled", text: "The request was cancelled." },
+        { label: "disconnected", text: "The streaming client went away." },
+      ] },
+      { type: "paragraph", text: "When the provider reports token usage, the service also sends the actual input and output totals to the Token Manager." },
+      { type: "paragraph", text: "A streaming provider can report cumulative usage more than once. The service keeps the largest input and output totals it observed. It does not add every update together because each later total may already include the earlier tokens." },
+      { type: "paragraph", text: "If a provider never reports usage, the service records that the actual usage is unknown instead of inventing a number." },
+
+      { type: "heading", text: "The cleanup order for a live stream" },
+      { type: "code", language: "text", text: "1. Close the provider stream.\n2. Report the final outcome and known token usage.\n3. Return this process's streaming slot." },
+      { type: "paragraph", text: "The third step runs even if the second one encounters an error." },
+      { type: "paragraph", text: "For a successful non-streaming request, token reporting is part of completing the request. If that reporting fails, the service does not claim that the request completed cleanly." },
+
+      { type: "heading", text: "Why this matters" },
+      { type: "paragraph", text: "The shared token-capacity step reserved an estimate before the provider call. This step settles that reservation after the real outcome is known." },
+      { type: "paragraph", text: "It prevents completed, failed, cancelled, and disconnected requests from leaving unnecessary provider work, token reservations, or live-streaming capacity behind." },
+    ],
     paragraphs: [
       "If this was a streaming chat, this process's open-streaming-slot count goes down by one. Token Manager is told the real input and output sizes when known, and the reservation closes as completed, failed, cancelled, or disconnected.",
       "We reserved an estimate before the call; we settle the books after — whether the call went well or not.",
     ],
   },
   GAP: {
-    title: "What's Not Measured Yet",
-    sub: "No bill reconciliation against the vendor. No check that the answer was any good.",
+    title: "What the system does not verify yet",
+    sub: "The system records operational activity, but it does not yet reconcile provider charges or evaluate whether AI responses are correct and useful.",
+    blocks: [
+      { type: "paragraph", text: "The service does measure some important things." },
+      { type: "paragraph", text: "Before an AI call, it estimates token usage and reserves shared capacity. After the call, it records the token totals reported by the provider when those totals are available." },
+      { type: "paragraph", text: "However, recording a provider's reported usage is not the same as independently proving what the provider later charged." },
+
+      { type: "heading", text: "Provider charges are not reconciled" },
+      { type: "paragraph", text: "The system does not currently compare its recorded token usage with a provider invoice, billing export, or usage dashboard." },
+      { type: "paragraph", text: "For example, the service may record that a request used 1,200 tokens because the provider reported 1,200 tokens in its response. At the end of the month, there is no automated job that checks whether the provider's bill also recorded 1,200 tokens for that request or whether the total across all requests matches the invoice." },
+      { type: "paragraph", text: "This means the system can manage its own capacity estimates, but it cannot yet automatically detect billing differences caused by missing provider usage, delayed reports, partial failures, provider-side counting differences, or an integration defect." },
+
+      { type: "heading", text: "Response quality is not evaluated" },
+      { type: "paragraph", text: "The system also does not decide whether an AI response was useful, correct, safe, complete, or relevant to the caller's question." },
+      { type: "paragraph", text: "A response can arrive quickly, use the expected number of tokens, and contain no technical error while still being wrong." },
+      { type: "paragraph", text: "For example, an AI model might confidently say that a refund takes three days when the real policy says ten days. The request would pass every step in this flow because the system currently checks whether the response was delivered, not whether its content was true." },
+
+      { type: "heading", text: "Why this matters" },
+      { type: "paragraph", text: "Operational success and response quality are different things." },
+      { type: "code", language: "text", text: "Operational success:\nThe request was allowed, capacity was available, the provider responded,\nand cleanup completed.\n\nResponse quality:\nThe content was accurate, useful, safe, and appropriate for the task." },
+      { type: "paragraph", text: "The first is measured by the current system. The second is not." },
+
+      { type: "heading", text: "Possible future improvements" },
+      { type: "paragraph", text: "Provider billing can be reconciled by periodically comparing recorded request usage with provider billing exports or usage APIs." },
+      { type: "paragraph", text: "Response quality can be monitored by sampling selected responses, collecting user feedback, and evaluating results against task-specific expectations." },
+      { type: "paragraph", text: "Neither capability exists in the current implementation. This card is a reminder that a technically successful AI request is not automatically a trustworthy or valuable response." },
+    ],
     paragraphs: [
       "Nothing here checks that reported LLM-token usage matches what the provider charged, and nothing checks whether the answer was any good. A fast, confident wrong answer passes every check on this diagram.",
       "Both are solvable — periodic reconciliation, output sampling — but neither exists today.",
