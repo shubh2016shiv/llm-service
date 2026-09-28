@@ -1,15 +1,16 @@
 """
-Cache and pub/sub adapters.
+Redis-backed adapters.
 
-The package separates three concerns that happen to use the same Redis server:
+The package separates four concerns that happen to use the same Redis server:
 
     RedisConnectionManager -> connection lifecycle, retry, health, and metrics
     RedisCache             -> key-value cache commands
     RedisPubSub            -> transient event publishing and subscriptions
+    SignInAttemptLimiter   -> failed sign-in budgets per username
 
-The application creates one connection manager and injects it into both
-adapters. This keeps their public APIs focused without creating duplicate
-connection pools.
+The application creates one connection manager and injects it into the three
+capability adapters. This keeps their public APIs focused without creating
+duplicate connection pools.
 
 Suggested reading order (for learning this package from scratch)
 ----------------------------------------------------------------
@@ -27,6 +28,8 @@ Read the files in this order — each one builds on the one before it:
 
     3. ``redis_cache.py``       Key-value cache operations.
     4. ``redis_pubsub.py``      Event publishing and subscription recovery.
+    5. ``sign_in_attempt_limiter.py``
+                                Failed sign-in counting and lockout windows.
 
 If any line in these files still reads like jargon, it is a bug in the
 comments — not in you. Fix it right there.
@@ -36,7 +39,7 @@ comments — not in you. Fix it right there.
 # so callers can write ``from app.adapters.cache import CONFIG_CHANGES_CHANNEL``.
 from app.adapters.cache.channels import CONFIG_CHANGES_CHANNEL
 
-# Export the three distinct Redis capabilities from one discoverable package.
+# Export the four distinct Redis capabilities from one discoverable package.
 from app.adapters.cache.redis_cache import RedisCache
 from app.adapters.cache.redis_connection import RedisConnectionManager
 from app.adapters.cache.redis_pubsub import RedisPubSub

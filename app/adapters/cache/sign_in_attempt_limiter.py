@@ -31,14 +31,24 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, cast
+
+from app.adapters.cache.redis_connection import BACKEND_ERRORS
 
 if TYPE_CHECKING:
+    from redis.asyncio import Redis
+
     from app.adapters.cache.redis_connection import RedisConnectionManager
 
 logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "signin:fail"
+
+_INCREMENT_AND_EXPIRE_SCRIPT = """
+local attempt_count = redis.call('INCR', KEYS[1])
+redis.call('EXPIRE', KEYS[1], ARGV[1])
+return attempt_count
+"""
 
 
 class AttemptBudget(NamedTuple):
@@ -101,15 +111,30 @@ class SignInAttemptLimiter:
         key = self._key(username)
         try:
             raw_count = await client.get(key)
-            if raw_count is None or int(raw_count) < self._max_attempts:
+            if raw_count is None:
                 return AttemptBudget(allowed=True, retry_after_seconds=0)
-            # A key can lose its TTL only through operator intervention; treat
-            # a missing one as a full window rather than reporting "retry in
-            # -1 seconds" to the caller.
+            try:
+                attempt_count = int(raw_count)
+            except ValueError:
+                await self._discard_corrupt_counter(client, key)
+                return AttemptBudget(allowed=True, retry_after_seconds=0)
+            if attempt_count < self._max_attempts:
+                return AttemptBudget(allowed=True, retry_after_seconds=0)
             remaining_ttl = await client.ttl(key)
-            retry_after = remaining_ttl if remaining_ttl > 0 else self._window_seconds
-            return AttemptBudget(allowed=False, retry_after_seconds=int(retry_after))
-        except (ValueError, OSError) as exc:
+            if remaining_ttl == -2:
+                return AttemptBudget(allowed=True, retry_after_seconds=0)
+            if remaining_ttl == -1:
+                # Older deployments could increment a counter before failing
+                # to add its expiry. Repair that legacy state so the lockout
+                # remains enforced but can never become permanent.
+                expiry_was_set = await client.expire(key, self._window_seconds)
+                if not expiry_was_set:
+                    return AttemptBudget(allowed=True, retry_after_seconds=0)
+                remaining_ttl = self._window_seconds
+            if remaining_ttl <= 0:
+                return AttemptBudget(allowed=True, retry_after_seconds=0)
+            return AttemptBudget(allowed=False, retry_after_seconds=int(remaining_ttl))
+        except BACKEND_ERRORS as exc:
             self._connection.handle_error("signin_limiter_check", exc)
             return AttemptBudget(allowed=True, retry_after_seconds=0)
 
@@ -123,8 +148,15 @@ class SignInAttemptLimiter:
             # The expiry is set on every failure, so a run of attempts extends
             # the lockout instead of letting it lapse mid-attack. A sliding
             # window is the point: it is what makes sustained guessing futile.
-            attempt_count = await client.incr(key)
-            await client.expire(key, self._window_seconds)
+            attempt_count = cast(
+                "int",
+                await client.eval(  # type: ignore[no-untyped-call]
+                    _INCREMENT_AND_EXPIRE_SCRIPT,
+                    1,
+                    key,
+                    self._window_seconds,
+                ),
+            )
             logger.warning(
                 "Failed sign-in recorded",
                 extra={
@@ -133,7 +165,7 @@ class SignInAttemptLimiter:
                     "window_seconds": self._window_seconds,
                 },
             )
-        except (ValueError, OSError) as exc:
+        except BACKEND_ERRORS as exc:
             self._connection.handle_error("signin_limiter_record", exc)
 
     async def clear(self, username: str) -> None:
@@ -143,8 +175,17 @@ class SignInAttemptLimiter:
             return
         try:
             await client.delete(self._key(username))
-        except (ValueError, OSError) as exc:
+        except BACKEND_ERRORS as exc:
             self._connection.handle_error("signin_limiter_clear", exc)
+
+    async def _discard_corrupt_counter(self, client: Redis[bytes], key: str) -> None:
+        """Remove invalid counter data without misreporting a Redis outage."""
+        self._connection.count("signin_limiter_check", "corrupt")
+        logger.warning("Corrupt sign-in attempt counter discarded")
+        try:
+            await client.delete(key)
+        except BACKEND_ERRORS as exc:
+            self._connection.handle_error("signin_limiter_check", exc)
 
     @staticmethod
     def _key(username: str) -> str:

@@ -14,7 +14,11 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
-from app.adapters.cache.redis_connection import BACKEND_ERRORS, RedisConnectionManager
+from app.adapters.cache.redis_connection import (
+    BACKEND_ERRORS,
+    CLEANUP_ERRORS,
+    RedisConnectionManager,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -111,7 +115,7 @@ def _extract_payload(raw_message: object) -> str | None:
 
 async def _release_pubsub(pubsub: PubSub, channel: str) -> None:
     """Unsubscribe and return the dedicated connection to its pool."""
-    with contextlib.suppress(*BACKEND_ERRORS):
+    with contextlib.suppress(*CLEANUP_ERRORS):
         await pubsub.unsubscribe(channel)
-    with contextlib.suppress(*BACKEND_ERRORS):
+    with contextlib.suppress(*CLEANUP_ERRORS):
         await pubsub.aclose()  # type: ignore[attr-defined]

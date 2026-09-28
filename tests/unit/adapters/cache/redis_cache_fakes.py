@@ -76,6 +76,9 @@ class FakeAsyncRedis:
         *,
         ping_errors: int = 0,
         command_error: Exception | None = None,
+        delete_error: Exception | None = None,
+        aclose_error: Exception | None = None,
+        ttl_result: int | None = None,
         subscriber_count: int = 0,
         pubsub_scripts: Iterable[Sequence[PubSubScriptItem]] | None = None,
         pubsub_drop_event: asyncio.Event | None = None,
@@ -87,19 +90,29 @@ class FakeAsyncRedis:
                 models a Redis that is down and later comes back.
             command_error: Exception raised by every data command. Connection
                 errors model an outage; a ``TypeError`` models a caller defect.
+            delete_error: Exception raised only by ``delete()``.
+            aclose_error: Exception raised while closing the client.
+            ttl_result: Optional scripted result for every ``ttl()`` call.
             subscriber_count: Value returned by ``publish``.
             pubsub_scripts: One frame script per ``pubsub()`` call.
             pubsub_drop_event: Optional event handed to every pub/sub handle so
                 ``aclose()`` can wake a listener parked inside ``listen()``.
         """
         self.values: dict[str, bytes] = {}
+        self.expirations: dict[str, int] = {}
         self.remaining_ping_errors = ping_errors
         self.command_error = command_error
+        self.delete_error = delete_error
+        self.aclose_error = aclose_error
+        self.ttl_result = ttl_result
         self.subscriber_count = subscriber_count
         self.pubsub_scripts = [list(script) for script in (pubsub_scripts or [])]
         self.pubsub_drop_event = pubsub_drop_event
         self.published_messages: list[tuple[str, str]] = []
         self.pubsub_handles: list[FakePubSub] = []
+        self.eval_calls: list[tuple[str, int, tuple[object, ...]]] = []
+        self.incr_count = 0
+        self.expire_count = 0
         self.ping_count = 0
         self.aclose_count = 0
 
@@ -122,26 +135,69 @@ class FakeAsyncRedis:
         return [self.values.get(key) for key in keys]
 
     async def set(self, key: str, value: bytes, ex: int | None = None) -> bool:
-        """Store one value, ignoring expiry because tests never wait for it."""
+        """Store one value and remember its configured expiry."""
         self._raise_scripted_command_error()
         self.values[key] = value
+        if ex is None:
+            self.expirations.pop(key, None)
+        else:
+            self.expirations[key] = ex
         return True
+
+    async def incr(self, key: str) -> int:
+        """Increment an integer value using Redis-compatible byte storage."""
+        self._raise_scripted_command_error()
+        self.incr_count += 1
+        incremented_value = int(self.values.get(key, b"0")) + 1
+        self.values[key] = str(incremented_value).encode()
+        return incremented_value
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        """Remember a key's remaining lifetime when the key exists."""
+        self._raise_scripted_command_error()
+        self.expire_count += 1
+        if key not in self.values:
+            return False
+        self.expirations[key] = seconds
+        return True
+
+    async def ttl(self, key: str) -> int:
+        """Return Redis-style TTL sentinel values or the configured lifetime."""
+        self._raise_scripted_command_error()
+        if self.ttl_result is not None:
+            return self.ttl_result
+        if key not in self.values:
+            return -2
+        return self.expirations.get(key, -1)
 
     async def delete(self, key: str) -> int:
         """Remove one key and report how many keys were removed."""
         self._raise_scripted_command_error()
-        return int(self.values.pop(key, None) is not None)
+        if self.delete_error is not None:
+            raise self.delete_error
+        removed = self.values.pop(key, None) is not None
+        self.expirations.pop(key, None)
+        return int(removed)
 
     async def eval(
         self,
-        _script: str,
+        script: str,
         key_count: int,
         *keys_and_arguments: object,
     ) -> int:
-        """Emulate the conditional-write Lua contract used by RedisCache."""
+        """Emulate the atomic Lua contracts used by the Redis adapters."""
+        self.eval_calls.append((script, key_count, keys_and_arguments))
         self._raise_scripted_command_error()
         keys = [str(value) for value in keys_and_arguments[:key_count]]
         arguments = keys_and_arguments[key_count:]
+        if "redis.call('INCR'" in script and "redis.call('EXPIRE'" in script:
+            expiry_argument = arguments[0]
+            if not isinstance(expiry_argument, (bytes, int, str)):
+                raise TypeError("increment-and-expire TTL must be an integer-compatible value")
+            incremented_value = int(self.values.get(keys[0], b"0")) + 1
+            self.values[keys[0]] = str(incremented_value).encode()
+            self.expirations[keys[0]] = int(expiry_argument)
+            return incremented_value
         comparison_count = key_count - 1
         for index, comparison_key in enumerate(keys[1:]):
             presence_flag = arguments[index * 2]
@@ -173,6 +229,8 @@ class FakeAsyncRedis:
     async def aclose(self) -> None:
         """Record the pool close and wake any listener parked on it."""
         self.aclose_count += 1
+        if self.aclose_error is not None:
+            raise self.aclose_error
         for handle in self.pubsub_handles:
             if handle.drop_event is not None:
                 handle.drop_event.set()

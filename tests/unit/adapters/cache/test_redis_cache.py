@@ -306,6 +306,68 @@ async def test_get_propagates_caller_type_errors_instead_of_reporting_a_miss(
         await cache.get(CACHE_KEY)
 
 
+@pytest.mark.asyncio
+async def test_get_propagates_redis_data_errors_instead_of_reporting_a_miss(
+    install_client,
+) -> None:
+    """Invalid caller data is a defect, not an unavailable Redis backend."""
+    install_client(FakeAsyncRedis(command_error=redis.DataError("invalid value")))
+    cache = build_cache()
+    await cache._connection.connect()
+
+    with pytest.raises(redis.DataError, match="invalid value"):
+        await cache.get(CACHE_KEY)
+    assert cache._connection.stats()["degraded"] == 0
+
+
+@pytest.mark.asyncio
+async def test_conditional_set_propagates_redis_response_errors(
+    install_client,
+) -> None:
+    """Malformed Lua and WRONGTYPE responses must surface instead of disabling caching."""
+    install_client(FakeAsyncRedis(command_error=redis.ResponseError("bad script")))
+    cache = build_cache()
+    await cache._connection.connect()
+
+    with pytest.raises(redis.ResponseError, match="bad script"):
+        await cache.set_if_values_match("grant", b"authorized", {}, ttl_seconds=60)
+    stats = cache._connection.stats()
+    assert stats.get("set_if_values_match.error", 0) == 0
+    assert stats["degraded"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_returns_none_and_degrades_on_invalid_redis_response(
+    install_client,
+) -> None:
+    """A malformed wire response remains an operational backend failure."""
+    install_client(FakeAsyncRedis(command_error=redis.InvalidResponse("bad frame")))
+    cache = build_cache()
+    await cache._connection.connect()
+
+    value = await cache.get(CACHE_KEY)
+
+    assert value is None
+    assert cache._connection.stats()["get.error"] == 1
+    assert cache._connection.stats()["degraded"] == 1
+
+
+@pytest.mark.asyncio
+async def test_close_suppresses_redis_response_errors_from_discarded_client(
+    install_client,
+) -> None:
+    """Cleanup remains best-effort even though command response errors propagate."""
+    client = FakeAsyncRedis(aclose_error=redis.ResponseError("close failed"))
+    install_client(client)
+    cache = build_cache()
+    await cache._connection.connect()
+
+    await cache._connection.close()
+
+    assert cache._connection.is_closed is True
+    assert client.aclose_count == 1
+
+
 # ── Observability ────────────────────────────────────────────────────────────
 
 

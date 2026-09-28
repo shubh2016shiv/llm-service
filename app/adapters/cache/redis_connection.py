@@ -84,14 +84,23 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────
 
 # Group 1 — errors that mean "Redis itself failed": it is down, the network
-# broke, or the reply never arrived. These are normal life, NOT bugs in our
-# code, so we catch them and keep serving without the cache.
+# broke, a command timed out, or the wire response was invalid. These are
+# normal operational failures, so adapters keep serving without the cache.
 #
-# Group 2 is everything else: TypeError, ValueError, AttributeError, and
-# friends. Those mean WE made a mistake in our own code. We must NOT catch
-# them, because swallowing them would hide real bugs and report them as
-# ordinary "cache miss" lies.
-BACKEND_ERRORS: Final = (redis.RedisError, OSError)
+# Group 2 contains command and caller defects: redis.ResponseError,
+# redis.DataError, TypeError, ValueError, and friends. Redis received a bad
+# command or our caller supplied bad data. These must surface instead of being
+# disguised as ordinary cache misses.
+BACKEND_ERRORS: Final = (
+    redis.ConnectionError,
+    redis.TimeoutError,
+    redis.InvalidResponse,
+    OSError,
+)
+
+# Once a client or pub/sub handle is already being discarded, every Redis
+# error is safe to ignore. Cleanup must not replace the failure that caused it.
+CLEANUP_ERRORS: Final = (redis.RedisError, OSError)
 
 # A smaller list inside Group 1: errors that mean "this particular
 # connection is now useless" — the plug was pulled. These force us to drop
@@ -100,7 +109,12 @@ BACKEND_ERRORS: Final = (redis.RedisError, OSError)
 # Deliberately NOT in this list: redis.ResponseError ("Redis answered, but
 # the command was wrong"). A wrong command is OUR bug, not a reason to
 # throw away a healthy connection.
-_CONNECTION_ERRORS: Final = (redis.ConnectionError, redis.TimeoutError, OSError)
+_CONNECTION_ERRORS: Final = (
+    redis.ConnectionError,
+    redis.TimeoutError,
+    redis.InvalidResponse,
+    OSError,
+)
 
 # ─────────────────────────────────────────────────────────────────────────
 # Default numbers
@@ -338,14 +352,14 @@ class RedisConnectionManager:
         with self._sync_client_lock:
             if self._sync_redis is not None:
                 # Ignore errors while closing — we are throwing it away.
-                with contextlib.suppress(*BACKEND_ERRORS):
+                with contextlib.suppress(*CLEANUP_ERRORS):
                     self._sync_redis.close()
                 self._sync_redis = None
 
     def handle_error(self, operation: str, error: BaseException) -> None:
         """Record one failed Redis operation and react to it.
 
-        Called by redis_cache.py every time a Redis command fails.
+        Called by the Redis-backed adapters whenever an infrastructure command fails.
 
         Two things can happen:
           1. If the error means "the connection itself is broken" (the plug
@@ -437,7 +451,7 @@ class RedisConnectionManager:
             self._schedule_retry()
             self._mark_degraded("connect", error)
             # Throw the failed client away (ignore errors while doing so).
-            with contextlib.suppress(*BACKEND_ERRORS):
+            with contextlib.suppress(*CLEANUP_ERRORS):
                 await client.aclose()  # type: ignore[attr-defined]
             return None
         # It answered! Make this client the official one.
@@ -468,7 +482,7 @@ class RedisConnectionManager:
         if self._redis is None:  # nothing to hang up
             return
         # Errors while hanging up are fine — we are discarding it anyway.
-        with contextlib.suppress(*BACKEND_ERRORS):
+        with contextlib.suppress(*CLEANUP_ERRORS):
             # Note: the type-checking library still expects close(), but
             # redis-py 5 renamed it to aclose() for async clients. The
             # method really exists at runtime, so this is safe.
@@ -478,9 +492,11 @@ class RedisConnectionManager:
     def _schedule_retry(self) -> None:
         """Move the next allowed dial into the future, and double the wait.
 
-        First failure -> wait 1s, then 2s, 4s, 8s, ... up to the ceiling
-        (30s by default). This "wait, then wait longer" rule is what stops
-        a dead Redis from turning every request into a slow, doomed dial.
+        Each failure waits for a random duration in the latter half of the
+        current retry window, then doubles that window up to the ceiling.
+        With the defaults the ranges are 0.5-1s, then 1-2s, 2-4s, and so on
+        up to the 30-second ceiling. This prevents a dead Redis from turning
+        every request into a slow, doomed dial.
         """
         # Spread replicas across the latter half of the retry window so they
         # do not all reconnect at the same instant after an outage.

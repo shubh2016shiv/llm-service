@@ -48,6 +48,6 @@ Why nobody inside this app listens to this channel today (on purpose):
     strictly needed yet. The channel exists for the future: if we ever add
     a small private in-memory cache per copy (a local notebook sitting in
     front of the shared Redis), those copies will subscribe to this channel
-    to learn which notes to throw away. Use ``RedisCache.subscribe`` when
+    to learn which notes to throw away. Use ``RedisPubSub.subscribe`` when
     that day comes.
 """
