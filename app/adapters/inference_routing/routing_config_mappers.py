@@ -29,7 +29,9 @@ from app.schemas.enums import (
 def convert_tenant_row(row: dict[str, Any]) -> TenantConfig:
     """Validate one tenant SQL projection and return the routing model."""
     raw_provider_names = row.get("allowed_provider_names")
-    allowed_provider_names = frozenset(raw_provider_names) if raw_provider_names else None
+    allowed_provider_names = (
+        frozenset(raw_provider_names) if raw_provider_names is not None else None
+    )
     return TenantConfig(
         tenant_id=UUID(str(row["tenant_id"])),
         tenant_name=str(row["tenant_name"]),
@@ -59,5 +61,8 @@ def convert_entitlement_row(row: dict[str, Any]) -> UserEntitlementConfig:
         cloud_provider=row.get("cloud_provider"),
         cloud_region=row.get("cloud_region"),
         extra_config=dict(row.get("extra_config") or {}),
+        # WHY: today's SQL returns only active rows, but keeping this mapper
+        # status-aware preserves the security boundary if that query changes
+        # or another adapter caller reuses this conversion.
         is_active=UserEntitlementStatus(str(row["status"])) == UserEntitlementStatus.ACTIVE,
     )

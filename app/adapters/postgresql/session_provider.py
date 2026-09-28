@@ -48,6 +48,15 @@ from contextlib import asynccontextmanager
 # runtime — imports under it exist purely for type hints.
 from typing import TYPE_CHECKING
 
+# The SQLAlchemy failures that mean "no usable answer arrived". TimeoutError is
+# aliased because it shadows the builtin of the same name.
+from sqlalchemy.exc import (
+    DisconnectionError,
+    InterfaceError,
+    OperationalError,
+)
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
 # SQLAlchemy's async toolkit, piece by piece:
 #   AsyncEngine        = the pool itself.
 #   AsyncSession       = one short-lived line + the work done on it.
@@ -63,6 +72,8 @@ from sqlalchemy.ext.asyncio import (
 # text = wrap a raw SQL string (used only for the one-line health check).
 from sqlalchemy.sql import text
 
+from app.core.exceptions import DatabaseUnavailableError
+
 # Names used only in type hints, so they are imported only for the checker.
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -70,6 +81,20 @@ if TYPE_CHECKING:
     from app.core.settings.models import DatabaseConfig
 
 logger = logging.getLogger(__name__)
+
+# Availability failures: the database never gave a usable answer, so a retry may
+# succeed and the caller deserves 503 rather than 500. Their siblings under
+# DatabaseError — IntegrityError, ProgrammingError, DataError — mean the database
+# answered and refused the work, so they are deliberately left to travel as-is
+# and keep their existing 400/409/500 answers.
+_UNAVAILABLE_DATABASE_ERRORS = (
+    OperationalError,  # server unreachable, or it closed the connection
+    InterfaceError,  # the connection itself is broken
+    SQLAlchemyTimeoutError,  # pool exhausted while waiting for a free connection
+    # Normally consumed by SQLAlchemy's pool retry machinery. Retained
+    # defensively for dialect or checkout-hook paths that may expose it.
+    DisconnectionError,
+)
 
 
 class PostgresSessionProvider:
@@ -201,25 +226,33 @@ class PostgresSessionProvider:
         # Stamp out a session for this block. The ``async with`` on the
         # factory guarantees the session is closed on the way out, even
         # if the block raises (or the task is cancelled).
-        async with self._session_factory() as session:
-            self._stats["session.opened"] += 1
-            try:
-                yield session  # hand the line to the caller's block
-                # The block ended normally -> make its changes permanent.
-                await session.commit()
-                self._stats["transaction.committed"] += 1
-            except BaseException:
-                # The block raised -> undo its changes.
+        try:
+            async with self._session_factory() as session:
+                self._stats["session.opened"] += 1
                 try:
-                    await session.rollback()
-                    self._stats["transaction.rolled_back"] += 1
+                    yield session  # hand the line to the caller's block
+                    # The block ended normally -> make its changes permanent.
+                    await session.commit()
+                    self._stats["transaction.committed"] += 1
                 except BaseException:
-                    # The rollback itself failed (for example the
-                    # connection died). Log it, but do NOT let it replace
-                    # the caller's original error.
-                    self._stats["transaction.rollback_failed"] += 1
-                    logger.exception("PostgreSQL transaction rollback failed")
-                raise  # the original error keeps travelling
+                    # The block raised -> undo its changes.
+                    try:
+                        await session.rollback()
+                        self._stats["transaction.rolled_back"] += 1
+                    except BaseException:
+                        # The rollback itself failed (for example the
+                        # connection died). Log it, but do NOT let it replace
+                        # the caller's original error.
+                        self._stats["transaction.rollback_failed"] += 1
+                        logger.exception("PostgreSQL transaction rollback failed")
+                    raise  # the original error keeps travelling
+        except _UNAVAILABLE_DATABASE_ERRORS as exc:
+            # One translation point for every database read and write in the
+            # app: this is an async context manager, so a failure inside the
+            # caller's block is thrown back in at the ``yield`` above and
+            # lands here too — not just a failure to check out a connection.
+            self._stats["session.unavailable"] += 1
+            raise DatabaseUnavailableError("database session") from exc
 
     async def health_check(self) -> bool:
         """Answer "can PostgreSQL run a query right now?" with True/False.

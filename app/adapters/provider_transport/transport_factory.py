@@ -31,9 +31,10 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from app.core.settings.models.provider_config import ProviderType
+
 if TYPE_CHECKING:
     from app.core.settings.models.global_config import HTTPPoolConfig
-    from app.core.settings.models.provider_config import ProviderType
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,8 @@ class ProviderTransportFactory:
 
         Returns:
             - ``httpx.AsyncClient`` for REST providers.
-            - ``aioboto3.Session`` for AWS SDK providers.
+            - An opaque SDK session object for AWS providers. At runtime this
+              is ``aioboto3.Session`` when the optional dependency is installed.
 
         Raises:
             ValueError: If provider_type is unsupported.
@@ -114,8 +116,6 @@ class ProviderTransportFactory:
             Keeping provider-type branching in one place makes it obvious which
             transport stack each integration uses and simplifies future updates.
         """
-        from app.core.settings.models.provider_config import ProviderType
-
         if self._rest_client is None:
             raise RuntimeError("ProviderTransportFactory is closed and cannot create transports.")
 
