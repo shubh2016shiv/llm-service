@@ -16,6 +16,14 @@ class DatabaseConfig(BaseModel):
 
     Algorithm: validate safe pool bounds before the database session manager
     constructs its engine.
+
+    Sizing math an operator needs before scaling replicas: one process opens at most
+    ``pool_size + max_overflow`` connections. With N replicas of this service, that is
+    ``N * (pool_size + max_overflow)`` connections against PostgreSQL's own
+    ``max_connections`` limit (100 by default). Exceeding it does not corrupt anything —
+    a caller blocked past ``database_pool_timeout_seconds`` gets a clean 503
+    (``DatabaseUnavailableError``) rather than an opaque failure — but it does mean the
+    service degrades under load well before the pool settings alone would suggest.
     """
 
     database_url: SecretStr = Field(
@@ -30,7 +38,12 @@ class DatabaseConfig(BaseModel):
     database_max_overflow: int = Field(
         default=20,
         ge=0,
-        description="Extra connections beyond pool_size allowed to overflow.",
+        le=200,
+        description=(
+            "Extra connections beyond pool_size allowed to overflow. "
+            "pool_size + max_overflow is the total connections one process may open; "
+            "multiply by replica count and compare against PostgreSQL's max_connections."
+        ),
     )
     database_pool_recycle_seconds: int = Field(
         default=1800,
