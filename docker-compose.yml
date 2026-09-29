@@ -202,6 +202,7 @@ services:
       STREAM_HEARTBEAT_INTERVAL_SECONDS: ${STREAM_HEARTBEAT_INTERVAL_SECONDS:-15}
       STREAM_CAPACITY_RETRY_AFTER_SECONDS: ${STREAM_CAPACITY_RETRY_AFTER_SECONDS:-1}
       STREAM_CLEANUP_TIMEOUT_SECONDS: ${STREAM_CLEANUP_TIMEOUT_SECONDS:-5}
+      STREAM_MAX_DURATION_SECONDS: ${STREAM_MAX_DURATION_SECONDS:-600}
       APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
       # Guest superuser: an unauthenticated session for local development, so a
       # fresh stack can be administered before any password exists. Defaults to
