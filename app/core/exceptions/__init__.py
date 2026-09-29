@@ -21,6 +21,7 @@ from app.core.exceptions.authentication import (
 )
 from app.core.exceptions.authorization import AuthorizationGrantCacheUnavailableError
 from app.core.exceptions.base import LLMServiceError
+from app.core.exceptions.database import DatabaseUnavailableError
 from app.core.exceptions.llm_provider import (
     AuthenticationError,
     ExpiredTokenError,
@@ -46,7 +47,13 @@ from app.core.exceptions.management_api import (
     ResourceNotFoundError,
     TenantAccessDeniedError,
 )
-from app.core.exceptions.secret_backend import SecretBackendUnavailableError
+from app.core.exceptions.secret_backend import (
+    InvalidSecretValueError,
+    SecretAccessDeniedError,
+    SecretBackendUnavailableError,
+    SecretReadError,
+    SecretReferenceNotFoundError,
+)
 from app.core.exceptions.streaming import StreamCapacityExceededError
 from app.core.exceptions.tenant import TenantError, TenantNotFoundError, TenantSuspendedError
 from app.core.exceptions.tenant_deployment import (
@@ -65,6 +72,7 @@ __all__ = [
     "AuthorizationGrantCacheUnavailableError",
     "ConcurrentRequestLimitError",
     "ConfigurationError",
+    "DatabaseUnavailableError",
     "DeploymentError",
     "DeploymentInactiveError",
     "DeploymentNotFoundError",
@@ -73,6 +81,7 @@ __all__ = [
     "InvalidAPIKeyError",
     "InvalidCredentialsError",
     "InvalidRequestError",
+    "InvalidSecretValueError",
     "InvalidStateTransitionError",
     "LLMServiceError",
     "ManagementError",
@@ -90,7 +99,10 @@ __all__ = [
     "RequestsPerMinuteExceededError",
     "ResourceConflictError",
     "ResourceNotFoundError",
+    "SecretAccessDeniedError",
     "SecretBackendUnavailableError",
+    "SecretReadError",
+    "SecretReferenceNotFoundError",
     "ServiceDownError",
     "SignInError",
     "StreamCapacityExceededError",

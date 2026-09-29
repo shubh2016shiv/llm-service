@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 
 class CircuitBreakerPolicyConfig(BaseModel):
@@ -33,3 +38,12 @@ class ProviderCircuitBreakerConfig(BaseModel):
     def policy_for(self, provider_name: str) -> CircuitBreakerPolicyConfig:
         """Return a provider override when present, otherwise the default policy."""
         return self.providers.get(provider_name, self.default)
+
+    def validate_provider_names(self, provider_names: Collection[str]) -> None:
+        """Reject overrides that cannot match the loaded provider catalog."""
+        unknown_provider_names = sorted(set(self.providers).difference(provider_names))
+        if unknown_provider_names:
+            formatted_names = ", ".join(unknown_provider_names)
+            raise ValueError(
+                f"Circuit-breaker overrides reference unknown providers: {formatted_names}"
+            )

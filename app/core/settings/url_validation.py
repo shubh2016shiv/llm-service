@@ -52,8 +52,9 @@ def validate_provider_endpoint_url(value: str) -> str:
     """Require a clean HTTP(S) base URL suitable for outbound provider calls.
 
     Private network hosts remain allowed because self-hosted vLLM is a supported
-    deployment. Embedded credentials and fragments are never legitimate base
-    endpoint configuration and are rejected to reduce leakage and ambiguity.
+    deployment. Embedded credentials, queries, and fragments are never
+    legitimate base endpoint configuration. A query or fragment would also
+    swallow operation paths appended by provider adapters.
     """
     validate_service_url(
         value,
@@ -63,6 +64,6 @@ def validate_provider_endpoint_url(value: str) -> str:
     parsed = urlsplit(value)
     if parsed.username or parsed.password:
         raise ValueError("api_endpoint_url cannot contain embedded credentials")
-    if parsed.fragment:
-        raise ValueError("api_endpoint_url cannot contain a URL fragment")
+    if parsed.query or parsed.fragment:
+        raise ValueError("api_endpoint_url cannot contain a query or fragment")
     return value.rstrip("/")

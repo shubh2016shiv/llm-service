@@ -195,6 +195,23 @@ _TRUNCATED: Final[str] = "[TRUNCATED]"
 _MAX_REDACT_DEPTH: Final[int] = 6
 
 
+def _is_redactable_container(value: object) -> bool:
+    """Return whether ``value`` can contain nested key/value log fields.
+
+    This one predicate is used both before recursion starts and while recursion
+    is already in progress. Keeping the rule in one place prevents a container
+    such as ``deque`` from being redacted when nested but skipped at the top
+    level of ``extra``.
+    """
+    if isinstance(value, Mapping):
+        return True
+    if isinstance(value, (set, frozenset)):
+        return True
+    # Strings and byte strings implement Sequence, but walking them would split
+    # them into individual characters or integers instead of finding fields.
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
 class RedactFilter(logging.Filter):
     """Replaces the value of any field whose *name* matches a redact key.
 
@@ -206,6 +223,11 @@ class RedactFilter(logging.Filter):
     interpolated into the message string (``logger.info(f"key={k}")``) is not
     detected. If a project needs value-pattern scanning, add a second filter —
     do not weaken this one with heuristics that produce false positives.
+
+    Arbitrary objects are also treated as opaque: this filter does not inspect
+    their attributes, and the formatter may fall back to ``str(object)``.
+    Callers must pass sensitive structured data as mappings/sequences under
+    meaningful field names rather than hiding it inside a custom ``__str__``.
 
     Example:
         >>> handler.addFilter(RedactFilter(DEFAULT_REDACT_KEYS | {"prompt"}))
@@ -227,7 +249,7 @@ class RedactFilter(logging.Filter):
                 continue
             if key.lower() in self._redact_keys:
                 setattr(record, key, _REDACTED)
-            elif isinstance(value, (Mapping, list, tuple, set, frozenset)):
+            elif _is_redactable_container(value):
                 # WHY a rebuilt copy rather than in-place mutation: the caller
                 # still holds a reference to the dict it passed as `extra`.
                 # Redacting in place would destroy application data, turning a
@@ -250,11 +272,10 @@ class RedactFilter(logging.Filter):
                 for key, item in value.items()
             }
 
-        # WHY exclude str/bytes: they are Sequences, and recursing into a string
-        # yields an infinite regress of one-character strings.
-        if isinstance(value, (list, tuple, set, frozenset)) or (
-            isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
-        ):
+        # Mapping was handled above, so a remaining redactable container is a
+        # sequence or set. JSON has only arrays, therefore rebuilding it as a
+        # list also gives sets and tuples a safe serializable representation.
+        if _is_redactable_container(value):
             return [self._redact_value(item, depth + 1) for item in value]
 
         return value
