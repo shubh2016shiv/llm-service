@@ -22,7 +22,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import SecretStr
 
-from app.core.exceptions import ConfigurationError
+from app.core.exceptions import (
+    ConfigurationError,
+    InvalidSecretValueError,
+    SecretAccessDeniedError,
+    SecretReferenceNotFoundError,
+)
 from app.core.settings.models.provider_config import AuthMode, ProviderImplementation
 from app.providers.cloud.azure_openai_provider import AzureOpenAIProvider
 from app.providers.cloud.bedrock_provider import BedrockProvider
@@ -177,10 +182,17 @@ class ProviderRegistry:
         auth_mode = context.provider_static_config.auth.mode
         if auth_mode in {AuthMode.AWS_SIGV4, AuthMode.NONE}:
             return None
-        plaintext = await self._secret_store.get_secret(
-            context.secret_reference,
-            tenant_id=str(context.tenant_id),
-        )
+        try:
+            plaintext = await self._secret_store.get_secret(
+                context.secret_reference,
+                tenant_id=str(context.tenant_id),
+            )
+        except KeyError as exc:
+            raise SecretReferenceNotFoundError(context.secret_reference) from exc
+        except ValueError as exc:
+            raise InvalidSecretValueError(context.secret_reference) from exc
+        except PermissionError as exc:
+            raise SecretAccessDeniedError(context.secret_reference) from exc
         return SecretStr(plaintext)
 
     @staticmethod
