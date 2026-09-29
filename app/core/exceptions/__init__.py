@@ -54,7 +54,7 @@ from app.core.exceptions.secret_backend import (
     SecretReadError,
     SecretReferenceNotFoundError,
 )
-from app.core.exceptions.streaming import StreamCapacityExceededError
+from app.core.exceptions.streaming import StreamCapacityExceededError, StreamDurationExceededError
 from app.core.exceptions.tenant import TenantError, TenantNotFoundError, TenantSuspendedError
 from app.core.exceptions.tenant_deployment import (
     DeploymentError,
@@ -106,6 +106,7 @@ __all__ = [
     "ServiceDownError",
     "SignInError",
     "StreamCapacityExceededError",
+    "StreamDurationExceededError",
     "TenantAccessDeniedError",
     "TenantError",
     "TenantNotFoundError",

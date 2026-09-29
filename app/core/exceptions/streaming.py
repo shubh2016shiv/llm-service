@@ -8,7 +8,18 @@ translation are application concerns. The reusable SSE protocol modules do not
 depend on this service's exception hierarchy.
 """
 
+from app.core.exceptions.base import LLMServiceError
 from app.core.exceptions.llm_provider import ProviderUnavailableError
+
+
+class StreamDurationExceededError(LLMServiceError):
+    """Raised after an open stream reaches its absolute lifetime limit."""
+
+    error_code = "STREAM_DURATION_EXCEEDED"
+
+    def __init__(self) -> None:
+        """Create a safe post-header failure without exposing timing internals."""
+        super().__init__("The stream reached its maximum allowed duration.")
 
 
 class StreamCapacityExceededError(ProviderUnavailableError):
