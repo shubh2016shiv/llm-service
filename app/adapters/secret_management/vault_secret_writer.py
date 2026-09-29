@@ -86,6 +86,33 @@ class VaultSecretWriter:
         )
         return path.strip("/")
 
+    async def delete_secret(self, secret_reference: str, *, tenant_id: str) -> None:
+        """Permanently destroy every version stored at one secret reference.
+
+        For compensating cleanup only: undoing a write whose owning database row failed
+        to save. Never call this on a reference a live deployment or entitlement still
+        points at — it removes the entire version history, not just the latest one.
+        """
+        path = self._vault.metadata_path(secret_reference)
+        response = await self._vault.request("DELETE", path, secret_reference=secret_reference)
+        if response.status_code in (204, 404):
+            return
+        if response.status_code in {401, 403}:
+            raise PermissionError(
+                f"Vault permission denied deleting secret reference {secret_reference!r}. "
+                "Check the write service-account policy."
+            )
+        if response.status_code >= 400:
+            raise ValueError(
+                f"Vault rejected deleting secret reference {secret_reference!r} "
+                f"with HTTP {response.status_code}."
+            )
+        response.raise_for_status()
+        logger.debug(
+            "Secret deleted from Vault",
+            extra={"secret_reference": secret_reference, "tenant_id": tenant_id},
+        )
+
     async def aclose(self) -> None:
         """Close owned networking resources; safe to call more than once."""
         await self._vault.aclose()

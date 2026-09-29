@@ -234,6 +234,17 @@ class VaultClient:
         safe_reference = normalize_vault_path(reference, field_name="secret reference")
         return f"/v1/{self._mount_path}/data/{self._kv_prefix}/{safe_reference}"
 
+    def metadata_path(self, reference: str) -> str:
+        """Build the KV-v2 metadata URL used to permanently destroy every version at a path.
+
+        Unlike ``kv_path`` (one version, read/write), a DELETE against this URL removes
+        the path's entire version history. Only safe to call on a reference that is not
+        shared with anything else — this client's callers only ever use it on freshly
+        minted, version-unique paths (see ``VaultSecretWriter.delete_secret``).
+        """
+        safe_reference = normalize_vault_path(reference, field_name="secret reference")
+        return f"/v1/{self._mount_path}/metadata/{self._kv_prefix}/{safe_reference}"
+
     async def request(
         self,
         method: str,
@@ -257,6 +268,8 @@ class VaultClient:
                         headers={"X-Vault-Token": token},
                         json=json,
                     )
+                elif method == "DELETE":
+                    response = await client.delete(path, headers={"X-Vault-Token": token})
                 else:
                     raise ValueError(f"Unsupported Vault HTTP method: {method!r}")
                 if (
