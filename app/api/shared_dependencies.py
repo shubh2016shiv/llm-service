@@ -12,7 +12,6 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 
-from app.adapters.cache import RedisCache
 from app.adapters.postgresql import PostgresSessionProvider
 from app.auth.authorization import AuthorizationGrantCache, TenantAccessService
 from app.core.settings.loader import ConfigLoader
@@ -93,15 +92,12 @@ CredentialWriterDependency = Annotated[
 
 
 def get_inference_authorization_cache(request: Request) -> AuthorizationGrantCache:
-    """Build a request-light cache façade around the process Redis adapter."""
+    """Use source-of-truth authorization until invalidation is transaction-safe."""
     settings = get_application_settings()
     return AuthorizationGrantCache(
-        backend=optional_app_state(
-            request,
-            "redis_cache",
-            RedisCache,
-            hint="Ensure the lifespan configured the Redis cache adapter.",
-        ),
+        # Management writes commit before Redis invalidation. A failed
+        # invalidation could otherwise preserve an obsolete allow grant.
+        backend=None,
         ttl_seconds=settings.inference_authorization_cache_ttl_seconds,
     )
 

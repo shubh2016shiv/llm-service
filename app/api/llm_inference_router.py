@@ -47,7 +47,6 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, status
-from fastapi.responses import StreamingResponse
 
 from app.api.exception_handlers import translate_inference_error
 from app.api.inference_dependencies import (
@@ -69,6 +68,7 @@ from app.schemas.responses_schema import (
 )
 from app.services import InferenceService
 from app.streaming.chat_chunk_adapter import adapt_chat_chunks, map_llm_stream_error
+from app.streaming.managed_response import ManagedStreamingResponse
 from app.streaming.sse_delivery import SSEStreamDelivery
 
 logger = logging.getLogger(__name__)
@@ -174,7 +174,7 @@ async def chat_completion(
     inference_service: Annotated[InferenceService, Depends(_get_inference_service)],
     inference_context: Annotated[InferenceAccessContext, Depends(require_inference_access)],
     resolved_route: Annotated[ResolvedRoute, Depends(require_chat_route)],
-) -> ChatResponse | StreamingResponse:
+) -> ChatResponse | ManagedStreamingResponse:
     """Execute chat completion in JSON or streaming mode.
 
     Args:
@@ -205,17 +205,24 @@ async def chat_completion(
                 float,
                 hint="Initialize streaming settings during application startup.",
             )
+            cleanup_timeout = require_app_state(
+                http_request,
+                "stream_cleanup_timeout_seconds",
+                float,
+                hint="Initialize streaming settings during application startup.",
+            )
             delivery = SSEStreamDelivery(
                 heartbeat_interval_seconds=heartbeat_interval,
+                cleanup_timeout_seconds=cleanup_timeout,
                 error_mapper=map_llm_stream_error,
             )
-            return StreamingResponse(
+            return ManagedStreamingResponse(
                 delivery.stream(
                     adapt_chat_chunks(chunks),
                     thread_id=body.thread_id,
                     request_id=request_id,
                 ),
-                media_type="text/event-stream",
+                source=chunks,
                 headers={
                     "Cache-Control": "no-cache, no-transform",
                     "X-Accel-Buffering": "no",
