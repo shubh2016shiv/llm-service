@@ -81,7 +81,7 @@ def classify_error(
         This function always returns a domain error object so callers can
         apply consistent retry/HTTP-mapping logic without exception-family checks.
     """
-    if isinstance(exc, httpx.TimeoutException):
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
         return ProviderTimeoutError(provider_name=provider_name, timeout_seconds=timeout_seconds)
 
     if isinstance(exc, httpx.HTTPStatusError):

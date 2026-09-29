@@ -114,11 +114,13 @@ class ProviderRegistry:
         """Evict one route so its next call re-reads the credential."""
         async with self._lock:
             self._providers.pop(route_fingerprint, None)
+            self._inflight.pop(route_fingerprint, None)
 
     async def clear(self) -> None:
         """Drop every cached provider during controlled operational refreshes."""
         async with self._lock:
             self._providers.clear()
+            self._inflight.clear()
 
     def _read_fresh_entry(self, cache_key: str) -> BaseProvider[Any] | None:
         """Return and promote a fresh LRU entry; remove an expired one."""
@@ -141,9 +143,12 @@ class ProviderRegistry:
             provider = await self._build_provider(context)
         except Exception:
             async with self._lock:
-                self._inflight.pop(cache_key, None)
+                if self._inflight.get(cache_key) is asyncio.current_task():
+                    self._inflight.pop(cache_key, None)
             raise
         async with self._lock:
+            if self._inflight.get(cache_key) is not asyncio.current_task():
+                return provider
             self._inflight.pop(cache_key, None)
             self._providers[cache_key] = _ProviderCacheEntry(
                 provider=provider,

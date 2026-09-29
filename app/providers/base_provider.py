@@ -313,6 +313,27 @@ class BaseProvider[TransportT](ABC):
         prefix = auth.header_prefix or "Bearer"
         return {header_name: f"{prefix} {self._api_key.get_secret_value()}"}
 
+    def _merge_extra_headers(self, headers: dict[str, str]) -> dict[str, str]:
+        """Add configured headers without allowing auth or HTTP framing overrides."""
+        reserved = {
+            "authorization",
+            "proxy-authorization",
+            "api-key",
+            "x-api-key",
+            "anthropic-version",
+            "host",
+            "content-type",
+            "content-length",
+            "transfer-encoding",
+            "connection",
+        }
+        reserved.update(name.casefold() for name in headers)
+        for name, value in self._context.extra_headers.items():
+            if name.casefold() in reserved:
+                raise ValueError("Configured provider headers contain a reserved header")
+            headers[name] = value
+        return headers
+
     def _emit_structured_log(
         self,
         operation: str,
