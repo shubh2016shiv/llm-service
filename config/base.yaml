@@ -41,9 +41,6 @@ provider_circuit_breakers:
     azure_openai:
       failure_threshold: 3
       reset_timeout_seconds: 30
-    gcp_vertex:
-      failure_threshold: 3
-      reset_timeout_seconds: 30
-    aws_bedrock:
+    bedrock:
       failure_threshold: 3
       reset_timeout_seconds: 45
