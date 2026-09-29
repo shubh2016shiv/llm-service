@@ -75,6 +75,7 @@ async def configure_runtime(
         stack,
     )
     app.state.stream_heartbeat_interval_seconds = settings.stream_heartbeat_interval_seconds
+    app.state.stream_cleanup_timeout_seconds = settings.stream_cleanup_timeout_seconds
 
 
 def _load_provider_config(settings: ApplicationSettings) -> tuple[ConfigLoader, GlobalConfig]:
