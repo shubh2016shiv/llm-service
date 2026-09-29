@@ -118,7 +118,7 @@ class SignInService:
         self._limiter = attempt_limiter
         self._guest_enabled = guest_enabled
         self._guest_user_id = guest_user_id
-        self._guest_role = guest_role
+        self._guest_role: UserRole = guest_role
 
     @property
     def guest_enabled(self) -> bool:
