@@ -29,7 +29,11 @@ from uuid import UUID
 
 from app.core.exceptions import ManagementValidationError, ResourceNotFoundError
 from app.schemas.enums import ProviderCatalogAuthMode
-from app.services.credential_encoding import build_credential_path, encode_credential
+from app.services.credential_encoding import (
+    build_credential_path,
+    delete_orphaned_secret,
+    encode_credential,
+)
 from app.services.management_helpers import (
     Row,
     clean_row,
@@ -113,8 +117,14 @@ class UserEntitlementService:
                 created_by_user_id=current_user.user_id,
                 **payload,
             )
-        except ValueError as exc:
-            raise_clean_validation_error(exc)
+        except BaseException as exc:
+            if request.credential is not None:
+                await delete_orphaned_secret(
+                    self._credential_writer, secret_reference, str(request.tenant_id)
+                )
+            if isinstance(exc, ValueError):
+                raise_clean_validation_error(exc)
+            raise
         await self._invalidate_entitlement_route(clean_row(row))
         return clean_row(row)
 
@@ -137,7 +147,9 @@ class UserEntitlementService:
                 "Entitlement provider_id must match its source deployment."
             )
         if str(deployment["model_id"]) != str(model_id):
-            raise ManagementValidationError("Entitlement model_id must match its source deployment.")
+            raise ManagementValidationError(
+                "Entitlement model_id must match its source deployment."
+            )
         return deployment
 
     @staticmethod
@@ -208,12 +220,22 @@ class UserEntitlementService:
 
         Tenant admin check is evaluated against the entitlement's existing
         tenant association to prevent unauthorized cross-tenant updates.
+
+        Concurrency semantics, stated deliberately: this is per-field last-write-wins.
+        There is no version column or ETag, and nothing here is read-compute-written —
+        ``build_dynamic_update_query`` writes only the fields the caller actually set, so
+        two admins editing different fields concurrently never clobber each other. Two
+        admins editing the *same* field concurrently will have the later write silently
+        win, with no conflict signal to either caller.
         """
         existing = await self.get_entitlement(user_id, entitlement_id, current_user)
         tenant_id = UUID(str(existing["tenant_id"]))
         await self._access.ensure_tenant_admin(tenant_id, current_user)
-        update_fields = request.model_dump(exclude_unset=True, exclude={"credential", "extra_config"})
+        update_fields = request.model_dump(
+            exclude_unset=True, exclude={"credential", "extra_config"}
+        )
         extra_config = request.extra_config if "extra_config" in request.model_fields_set else None
+        secret_reference: str | None = None
         if "credential" in request.model_fields_set:
             deployment = await self._require_entitlement_source(
                 tenant_id,
@@ -239,11 +261,23 @@ class UserEntitlementService:
         try:
             row = await self._entitlements.update_entitlement(
                 entitlement_id=entitlement_id,
+                tenant_id=tenant_id,
+                user_id=user_id,
                 **update_fields,
             )
-        except ValueError as exc:
-            raise_clean_validation_error(exc)
+        except BaseException as exc:
+            if secret_reference is not None and request.credential is not None:
+                await delete_orphaned_secret(
+                    self._credential_writer, secret_reference, str(tenant_id)
+                )
+            if isinstance(exc, ValueError):
+                raise_clean_validation_error(exc)
+            raise
         if row is None:
+            if secret_reference is not None and request.credential is not None:
+                await delete_orphaned_secret(
+                    self._credential_writer, secret_reference, str(tenant_id)
+                )
             raise ResourceNotFoundError("UserEntitlement", str(entitlement_id))
         await self._invalidate_entitlement_route(clean_row(row))
         return clean_row(row)
@@ -254,7 +288,9 @@ class UserEntitlementService:
         """Delete an entitlement after tenant-admin authorization checks."""
         existing = await self.get_entitlement(user_id, entitlement_id, current_user)
         await self._access.ensure_tenant_admin(UUID(str(existing["tenant_id"])), current_user)
-        deleted = await self._entitlements.delete_entitlement(entitlement_id)
+        deleted = await self._entitlements.delete_entitlement(
+            entitlement_id, UUID(str(existing["tenant_id"])), user_id
+        )
         if not deleted:
             raise ResourceNotFoundError("UserEntitlement", str(entitlement_id))
         await self._invalidate_entitlement_route(existing)
