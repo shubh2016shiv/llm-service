@@ -173,7 +173,7 @@ class RoleGuard:
         # safe to share across every request).
         self._permitted_roles: frozenset[str] = frozenset(permitted_roles)
 
-    def __call__(
+    async def __call__(
         self,
         current_user: Annotated[AuthTokenPayload, Depends(get_current_user)],
     ) -> AuthTokenPayload:
@@ -230,7 +230,7 @@ class RoleGuard:
 # ---------------------------------------------------------------------------
 
 require_developer = RoleGuard(sorted(platform_roles_at_or_above("developer")))
-"""Admit any authenticated caller with a valid access token."""
+"""Admit developers and every higher platform role."""
 
 require_operator = RoleGuard(sorted(platform_roles_at_or_above("operator")))
 """Admit operators and everything above them."""

@@ -113,4 +113,9 @@ def _timestamp(raw_value: object, claim_name: str) -> datetime:
     """Convert a NumericDate claim while producing a useful malformed-token error."""
     if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
         raise ValueError(f"Token claim {claim_name!r} must be a numeric timestamp")
-    return datetime.fromtimestamp(raw_value, tz=UTC)
+    try:
+        return datetime.fromtimestamp(raw_value, tz=UTC)
+    except (OverflowError, OSError) as exc:
+        raise ValueError(
+            f"Token claim {claim_name!r} is outside the supported timestamp range"
+        ) from exc
