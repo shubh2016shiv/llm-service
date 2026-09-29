@@ -200,6 +200,15 @@ class StreamingConfig(BaseModel):
         le=30.0,
         description="Bound provider iterator cleanup during disconnect handling.",
     )
+    stream_max_duration_seconds: float = Field(
+        default=600.0,
+        ge=30.0,
+        le=3600.0,
+        description=(
+            "Absolute lifetime limit for one SSE stream. Unlike an idle timeout, "
+            "receiving provider chunks does not reset this deadline."
+        ),
+    )
 
 
 class ProviderRuntimeConfig(BaseModel):
