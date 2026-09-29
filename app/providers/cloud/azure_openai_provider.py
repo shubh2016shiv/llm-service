@@ -30,8 +30,9 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from app.core.exceptions import ProviderError
+from app.core.exceptions import ProviderError, ProviderInternalError
 from app.providers.base_provider import BaseProvider
+from app.providers.embedding_order import ordered_embeddings
 from app.schemas.responses_schema import (
     ChatResponse,
     ChatStreamChunk,
@@ -95,6 +96,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
         payload["stream_options"] = {"include_usage": True}
         url = self._build_url("chat/completions")
         t0 = time.monotonic()
+        saw_done = False
         try:
             async with self._http_client.stream(
                 "POST",
@@ -108,8 +110,14 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
                     if line.startswith("data: "):
                         chunk_data = line.removeprefix("data: ")
                         if chunk_data == "[DONE]":
+                            saw_done = True
                             break
                         yield self._parse_stream_chunk(json.loads(chunk_data))
+            if not saw_done:
+                raise ProviderInternalError(
+                    "Provider stream closed before its completion marker.",
+                    provider_name=self._static.provider_name,
+                )
             latency_ms = int((time.monotonic() - t0) * 1000)
             self._emit_structured_log("chat.stream_generate", latency_ms)
         except httpx.HTTPStatusError as exc:
@@ -143,7 +151,9 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
                 status_code=response.status_code,
                 usage=data.get("usage"),
             )
-            return self._parse_embed_response(data)
+            return self._parse_embed_response(
+                data, len(request.input) if isinstance(request.input, list) else 1
+            )
         except httpx.HTTPStatusError as exc:
             raise self._handle_provider_error(exc) from exc
 
@@ -196,8 +206,7 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
             "api-key": self._api_key.get_secret_value(),
             "Content-Type": "application/json",
         }
-        headers.update(self._context.extra_headers)
-        return headers
+        return self._merge_extra_headers(headers)
 
     def _build_url(self, path: str) -> str:
         """Build the Azure OpenAI endpoint URL.
@@ -296,9 +305,9 @@ class AzureOpenAIProvider(BaseProvider[httpx.AsyncClient]):
         )
 
     @staticmethod
-    def _parse_embed_response(data: dict[str, Any]) -> EmbedResponse:
+    def _parse_embed_response(data: dict[str, Any], expected_count: int) -> EmbedResponse:
         """Parse Azure embeddings response into normalized ``EmbedResponse``."""
-        embeddings = [item["embedding"] for item in data["data"]]
+        embeddings = ordered_embeddings(data, expected_count)
         usage_raw = data.get("usage", {})
         usage = (
             Usage(

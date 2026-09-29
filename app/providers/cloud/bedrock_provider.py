@@ -26,13 +26,14 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import TYPE_CHECKING, Any, cast
 
 from botocore.config import Config
 
-from app.core.exceptions import ProviderError
+from app.core.exceptions import ProviderError, ProviderInternalError
 from app.providers.base_provider import BaseProvider
 from app.schemas.responses_schema import (
     ChatResponse,
@@ -108,6 +109,7 @@ class BedrockProvider(BaseProvider[object]):
         """Invoke Bedrock Converse stream API and yield normalized chunks."""
         payload = self._build_converse_stream_payload(request)
         t0 = time.monotonic()
+        saw_message_stop = False
         try:
             async with self._bedrock_session.client(
                 "bedrock-runtime",
@@ -116,11 +118,24 @@ class BedrockProvider(BaseProvider[object]):
             ) as client:
                 stream_response = await client.converse_stream(**payload)
                 stream = stream_response.get("stream")
-                if stream:
-                    async for event in stream:
-                        yield self._parse_converse_stream_event(event)
+                if stream is None:
+                    raise ProviderInternalError(
+                        "Provider returned no streaming body.",
+                        provider_name=self._static.provider_name,
+                    )
+                async for event in stream:
+                    if "messageStop" in event:
+                        saw_message_stop = True
+                    yield self._parse_converse_stream_event(event)
+            if not saw_message_stop:
+                raise ProviderInternalError(
+                    "Provider stream closed before its completion marker.",
+                    provider_name=self._static.provider_name,
+                )
             latency_ms = int((time.monotonic() - t0) * 1000)
             self._emit_structured_log("chat.stream_generate", latency_ms)
+        except ProviderError:
+            raise
         except Exception as exc:
             raise self._handle_provider_error(exc) from exc
 
@@ -131,27 +146,49 @@ class BedrockProvider(BaseProvider[object]):
     async def _embed(self, request: EmbedRequest) -> EmbedResponse:
         """Invoke Bedrock model endpoint for embeddings and normalize output."""
         t0 = time.monotonic()
+        inputs = [request.input] if isinstance(request.input, str) else request.input
+        embeddings: list[list[float]] = []
+        token_counts: list[int] = []
         try:
-            async with self._bedrock_session.client(
-                "bedrock-runtime",
-                region_name=self._resolve_aws_region(),
-                config=self._client_config(),
-            ) as client:
-                # Bedrock uses InvokeModel for embeddings (pre-Converse API)
-                body = self._build_embed_body(request)
-                response = await client.invoke_model(
-                    modelId=self._context.model_name,
-                    body=json.dumps(body),
-                    contentType="application/json",
-                )
-                response_body = json.loads(await response["body"].read())
+            async with asyncio.timeout(self._effective_timeout()):
+                async with self._bedrock_session.client(
+                    "bedrock-runtime",
+                    region_name=self._resolve_aws_region(),
+                    config=self._client_config(),
+                ) as client:
+                    for input_text in inputs:
+                        response = await client.invoke_model(
+                            modelId=self._context.model_name,
+                            body=json.dumps({"inputText": input_text}),
+                            contentType="application/json",
+                        )
+                        response_body = json.loads(await response["body"].read())
+                        vectors = self._extract_embeddings(response_body)
+                        if len(vectors) != 1:
+                            raise ProviderInternalError(
+                                "Provider returned an unexpected embedding count.",
+                                provider_name=self._static.provider_name,
+                            )
+                        embeddings.extend(vectors)
+                        token_count = response_body.get("inputTextTokenCount")
+                        if isinstance(token_count, int) and not isinstance(token_count, bool):
+                            token_counts.append(token_count)
             latency_ms = int((time.monotonic() - t0) * 1000)
             self._emit_structured_log("embed", latency_ms)
+            total_tokens = sum(token_counts)
             return EmbedResponse(
-                embeddings=self._extract_embeddings(response_body),
+                embeddings=embeddings,
                 model=self._context.model_name,
-                usage=Usage(),
+                usage=(
+                    Usage(
+                        prompt_tokens=total_tokens, completion_tokens=0, total_tokens=total_tokens
+                    )
+                    if len(token_counts) == len(inputs)
+                    else None
+                ),
             )
+        except ProviderError:
+            raise
         except Exception as exc:
             raise self._handle_provider_error(exc) from exc
 
@@ -202,7 +239,7 @@ class BedrockProvider(BaseProvider[object]):
 
     def _build_converse_payload(self, request: ChatRequest) -> dict[str, object]:
         """Build Bedrock Converse request payload from domain chat request."""
-        return {
+        payload: dict[str, object] = {
             "modelId": self._context.model_name,
             "messages": self._convert_messages_to_bedrock(request),
             "inferenceConfig": {
@@ -218,6 +255,17 @@ class BedrockProvider(BaseProvider[object]):
                 ),
             },
         }
+        inference_config = cast("dict[str, object]", payload["inferenceConfig"])
+        if request.top_p is not None:
+            inference_config["topP"] = request.top_p
+        if request.stop:
+            inference_config["stopSequences"] = request.stop
+        system_prompts = [
+            message.content for message in request.messages if message.role == "system"
+        ]
+        if system_prompts:
+            payload["system"] = [{"text": prompt} for prompt in system_prompts]
+        return payload
 
     def _build_converse_stream_payload(self, request: ChatRequest) -> dict[str, object]:
         """Build Bedrock Converse stream payload (currently same base fields)."""
@@ -225,11 +273,6 @@ class BedrockProvider(BaseProvider[object]):
         inference_config = cast("dict[str, object]", payload.get("inferenceConfig", {}))
         payload["inferenceConfig"] = {**inference_config}
         return payload
-
-    def _build_embed_body(self, request: EmbedRequest) -> dict[str, object]:
-        """Build Bedrock embedding invoke-model body from domain embed request."""
-        input_text = request.input if isinstance(request.input, str) else request.input[0]
-        return {"inputText": input_text}
 
     @staticmethod
     def _convert_messages_to_bedrock(request: ChatRequest) -> list[dict[str, object]]:
