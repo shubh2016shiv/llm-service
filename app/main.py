@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         level=settings.log_level,
         format="text" if settings.app_environment == "development" else "json",
         environment=settings.app_environment,
+        service_name=settings.service_name,
     )
     async with AsyncExitStack() as stack:
         await configure_runtime(app, settings, stack)

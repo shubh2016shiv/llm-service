@@ -81,7 +81,8 @@ def _load_provider_config(settings: ApplicationSettings) -> tuple[ConfigLoader, 
     """Validate all provider YAML before opening any connection pool."""
     loader = ConfigLoader(config_dir=settings.config_dir, environment=settings.app_environment)
     global_config = loader.load_global_config()
-    loader.load_all_provider_configs()
+    provider_configs = loader.load_all_provider_configs()
+    global_config.provider_circuit_breakers.validate_provider_names(provider_configs.keys())
     loader.load_all_cloud_configs()
     if settings.stream_max_concurrent_per_worker > global_config.http_pool.max_connections:
         raise RuntimeError("STREAM_MAX_CONCURRENT_PER_WORKER exceeds provider HTTP pool capacity")
@@ -206,11 +207,11 @@ def _wire_inference(
         routing_config_reader=reader,
         config_loader=loader,
     )
+    circuit_breakers = ProviderCircuitBreakerRegistry(global_config.provider_circuit_breakers)
+    app.state.provider_circuit_breaker_registry = circuit_breakers
     registry = ProviderRegistry(
         transport_factory=transport,
-        circuit_breaker_registry=ProviderCircuitBreakerRegistry(
-            global_config.provider_circuit_breakers
-        ),
+        circuit_breaker_registry=circuit_breakers,
         secret_store=store,
         cache_ttl_seconds=settings.provider_cache_ttl_seconds,
         max_cached_providers=settings.provider_cache_max_entries,
@@ -218,12 +219,17 @@ def _wire_inference(
     # Cached providers retain plaintext credentials; clear them before closing
     # the transports and secret store registered earlier on the exit stack.
     stack.push_async_callback(registry.clear)
+    stream_capacity = WorkerStreamCapacityLimiter(
+        max_concurrent=settings.stream_max_concurrent_per_worker,
+        retry_after_seconds=settings.stream_capacity_retry_after_seconds,
+    )
+    # Retain the same limiter used by inference so diagnostics report the real
+    # worker bulkhead rather than a second, disconnected counter.
+    app.state.stream_capacity_limiter = stream_capacity
     app.state.inference_service = InferenceService(
         token_manager_client=token_manager,
         provider_registry=registry,
-        stream_admission=WorkerStreamCapacityLimiter(
-            max_concurrent=settings.stream_max_concurrent_per_worker,
-            retry_after_seconds=settings.stream_capacity_retry_after_seconds,
-        ),
+        stream_admission=stream_capacity,
         stream_cleanup_timeout_seconds=settings.stream_cleanup_timeout_seconds,
+        stream_max_duration_seconds=settings.stream_max_duration_seconds,
     )
