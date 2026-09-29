@@ -29,7 +29,11 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from app.core.exceptions import ResourceNotFoundError
-from app.services.credential_encoding import build_credential_path, encode_credential
+from app.services.credential_encoding import (
+    build_credential_path,
+    delete_orphaned_secret,
+    encode_credential,
+)
 from app.services.management_helpers import (
     Row,
     clean_row,
@@ -102,8 +106,14 @@ class TenantDeploymentService:
                 created_by_user_id=current_user.user_id,
                 **payload,
             )
-        except ValueError as exc:
-            raise_clean_validation_error(exc)
+        except BaseException as exc:
+            if request.credential is not None:
+                await delete_orphaned_secret(
+                    self._credential_writer, secret_reference, str(tenant_id)
+                )
+            if isinstance(exc, ValueError):
+                raise_clean_validation_error(exc)
+            raise
         await self._invalidate(tenant_id, request.deployment_key)
         return clean_row(row)
 
@@ -155,11 +165,21 @@ class TenantDeploymentService:
 
         Updated values take effect promptly because both authorization and
         config caches are invalidated using the current deployment key.
+
+        Concurrency semantics, stated deliberately: this is per-field last-write-wins.
+        There is no version column or ETag, and nothing here is read-compute-written —
+        ``build_dynamic_update_query`` writes only the fields the caller actually set, so
+        two admins editing different fields concurrently never clobber each other. Two
+        admins editing the *same* field concurrently will have the later write silently
+        win, with no conflict signal to either caller.
         """
         await self._access.ensure_tenant_admin(tenant_id, current_user)
         existing = await self.get_deployment(tenant_id, deployment_id, current_user)
-        update_fields = request.model_dump(exclude_unset=True, exclude={"credential", "extra_config"})
+        update_fields = request.model_dump(
+            exclude_unset=True, exclude={"credential", "extra_config"}
+        )
         extra_config = request.extra_config if "extra_config" in request.model_fields_set else None
+        secret_reference: str | None = None
         if "credential" in request.model_fields_set:
             provider_id = UUID(str(existing["provider_id"]))
             auth_mode = await self._references.get_provider_auth_mode(provider_id)
@@ -180,11 +200,22 @@ class TenantDeploymentService:
         try:
             row = await self._deployments.update_deployment(
                 deployment_id=deployment_id,
+                tenant_id=tenant_id,
                 **update_fields,
             )
-        except ValueError as exc:
-            raise_clean_validation_error(exc)
+        except BaseException as exc:
+            if secret_reference is not None and request.credential is not None:
+                await delete_orphaned_secret(
+                    self._credential_writer, secret_reference, str(tenant_id)
+                )
+            if isinstance(exc, ValueError):
+                raise_clean_validation_error(exc)
+            raise
         if row is None:
+            if secret_reference is not None and request.credential is not None:
+                await delete_orphaned_secret(
+                    self._credential_writer, secret_reference, str(tenant_id)
+                )
             raise ResourceNotFoundError("TenantDeployment", str(deployment_id))
         await self._invalidate(tenant_id, str(existing.get("deployment_key")))
         return clean_row(row)
@@ -195,7 +226,7 @@ class TenantDeploymentService:
         """Mark a deployment as active and invalidate dependent caches."""
         await self._access.ensure_tenant_admin(tenant_id, current_user)
         existing = await self.get_deployment(tenant_id, deployment_id, current_user)
-        row = await self._deployments.set_active(deployment_id)
+        row = await self._deployments.set_active(deployment_id, tenant_id)
         if row is None:
             raise ResourceNotFoundError("TenantDeployment", str(deployment_id))
         await self._invalidate(tenant_id, str(existing.get("deployment_key")))
@@ -211,7 +242,7 @@ class TenantDeploymentService:
         """
         await self._access.ensure_tenant_admin(tenant_id, current_user)
         existing = await self.get_deployment(tenant_id, deployment_id, current_user)
-        row = await self._deployments.set_maintenance(deployment_id)
+        row = await self._deployments.set_maintenance(deployment_id, tenant_id)
         if row is None:
             raise ResourceNotFoundError("TenantDeployment", str(deployment_id))
         await self._invalidate(tenant_id, str(existing.get("deployment_key")))
@@ -223,7 +254,7 @@ class TenantDeploymentService:
         """Delete a deployment and immediately clear related cached routes."""
         await self._access.ensure_tenant_admin(tenant_id, current_user)
         existing = await self.get_deployment(tenant_id, deployment_id, current_user)
-        deleted = await self._deployments.delete_deployment(deployment_id)
+        deleted = await self._deployments.delete_deployment(deployment_id, tenant_id)
         if not deleted:
             raise ResourceNotFoundError("TenantDeployment", str(deployment_id))
         await self._invalidate(tenant_id, str(existing.get("deployment_key")))

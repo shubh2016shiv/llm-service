@@ -142,6 +142,7 @@ class TenantMembershipService:
         try:
             row = await self._memberships.update_membership(
                 membership_id=membership_id,
+                tenant_id=tenant_id,
                 **request.model_dump(exclude_unset=True),
             )
         except ValueError as exc:
@@ -157,7 +158,7 @@ class TenantMembershipService:
         """Delete a membership after tenant-admin authorization checks."""
         await self._access.ensure_tenant_admin(tenant_id, current_user)
         existing = await self.get_tenant_membership(tenant_id, membership_id, current_user)
-        deleted = await self._memberships.delete_membership_by_id(membership_id)
+        deleted = await self._memberships.delete_membership_by_id(membership_id, tenant_id)
         if not deleted:
             raise ResourceNotFoundError("TenantMembership", str(membership_id))
         await self._invalidate_membership_scope(tenant_id, UUID(str(existing["user_id"])))
