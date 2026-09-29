@@ -33,7 +33,7 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
 import httpx
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 _IAM_DEFAULT_REFERENCE = "iam:default"
 
 
+@runtime_checkable
 class CredentialWriter(Protocol):
     """Persists a credential payload out-of-band and hands back its path.
 
