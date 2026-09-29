@@ -176,7 +176,18 @@ class ModelCatalogPersistence(BasePersistence):
                 return dict(row)
         except (ValueError, RuntimeError):
             raise
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc,
+                {
+                    "uq_model_catalog_provider_model_version": (
+                        "Model version is already registered for this provider."
+                    )
+                },
+            )
+            self.raise_for_foreign_key_violation(
+                exc, {"model_catalog_provider_id_fkey": ("Provider", str(provider_id))}
+            )
             logger.error(
                 "ModelCatalogPersistence: create_model failed — name=%s", model_name, exc_info=True
             )
@@ -378,7 +389,15 @@ class ModelCatalogPersistence(BasePersistence):
                     self.log_operation("UPDATE", model_id)
                     return dict(row)
                 return None
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc,
+                {
+                    "uq_model_catalog_provider_model_version": (
+                        "Model version is already registered for this provider."
+                    )
+                },
+            )
             logger.error(
                 "ModelCatalogPersistence: update_model failed — id=%s", model_id, exc_info=True
             )

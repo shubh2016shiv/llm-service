@@ -210,7 +210,7 @@ LIST_USER_ENTITLEMENTS_SQL = """
     FROM user_entitlements
     WHERE tenant_id = :tenant_id
       AND user_id = :user_id
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, entitlement_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -234,7 +234,7 @@ LIST_TENANT_ENTITLEMENTS_SQL = """
         updated_at
     FROM user_entitlements
     WHERE tenant_id = :tenant_id
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, entitlement_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -316,6 +316,8 @@ GET_ROUTING_ENTITLEMENT_FOR_ROUTE_SQL = """
 DELETE_ENTITLEMENT_BY_ID_SQL = """
     DELETE FROM user_entitlements
     WHERE entitlement_id = :entitlement_id
+      AND tenant_id = :tenant_id
+      AND user_id = :user_id
 """
 
 REVOKE_USER_ENTITLEMENTS_SQL = """

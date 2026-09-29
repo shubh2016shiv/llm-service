@@ -137,7 +137,10 @@ class TenantPersistence(BasePersistence):
                 return dict(row)
         except (ValueError, RuntimeError):
             raise
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc, {"tenants_tenant_slug_key": "Tenant slug is already registered."}
+            )
             logger.error(
                 "TenantPersistence: create_tenant failed — slug=%s", tenant_slug, exc_info=True
             )
@@ -303,7 +306,10 @@ class TenantPersistence(BasePersistence):
                     self.log_operation("UPDATE", tenant_id)
                     return dict(row)
                 return None
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc, {"tenants_tenant_slug_key": "Tenant slug is already registered."}
+            )
             logger.error(
                 "TenantPersistence: update_tenant failed — id=%s", tenant_id, exc_info=True
             )

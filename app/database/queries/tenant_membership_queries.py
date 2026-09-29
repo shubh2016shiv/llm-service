@@ -90,7 +90,7 @@ LIST_MEMBERSHIPS_BY_TENANT_SQL = f"""
         {_TENANT_MEMBERSHIP_COLUMNS}
     FROM tenant_memberships
     WHERE tenant_id = :tenant_id
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, membership_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -99,7 +99,7 @@ LIST_MEMBERSHIPS_BY_USER_SQL = f"""
         {_TENANT_MEMBERSHIP_COLUMNS}
     FROM tenant_memberships
     WHERE user_id = :user_id
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, membership_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -109,7 +109,7 @@ LIST_ACTIVE_MEMBERSHIPS_BY_TENANT_SQL = f"""
     FROM tenant_memberships
     WHERE tenant_id = :tenant_id
       AND status = 'active'
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, membership_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -119,7 +119,7 @@ LIST_MEMBERSHIPS_BY_TENANT_AND_ROLE_SQL = f"""
     FROM tenant_memberships
     WHERE tenant_id = :tenant_id
       AND tenant_role = :tenant_role
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, membership_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -159,7 +159,7 @@ def build_tenant_membership_list_query(
             {_TENANT_MEMBERSHIP_COLUMNS}
         FROM tenant_memberships
         WHERE {" AND ".join(where_clauses)}
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, membership_id
         LIMIT :limit OFFSET :offset
     """
     return sql, params
@@ -186,7 +186,7 @@ def build_tenant_membership_count_query(
 
 DELETE_MEMBERSHIP_BY_ID_SQL = """
     DELETE FROM tenant_memberships
-    WHERE membership_id = :membership_id
+    WHERE membership_id = :membership_id AND tenant_id = :tenant_id
 """
 
 DELETE_MEMBERSHIP_BY_TENANT_AND_USER_SQL = """

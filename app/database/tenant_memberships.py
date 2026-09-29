@@ -118,6 +118,10 @@ class TenantMembershipPersistence(BasePersistence):
         except (ValueError, RuntimeError):
             raise
         except Exception as exc:
+            self.raise_for_unique_violation(
+                exc,
+                {"uq_tenant_memberships_tenant_user": "User already belongs to this tenant."},
+            )
             self.raise_for_foreign_key_violation(
                 exc,
                 {
@@ -268,11 +272,13 @@ class TenantMembershipPersistence(BasePersistence):
     async def update_membership(
         self,
         membership_id: UUID,
+        tenant_id: UUID,
         tenant_role: str | None = None,
         status: str | None = None,
     ) -> dict[str, Any] | None:
         """Update role or status on a membership. Returns updated row or None."""
         self.validate_uuid(membership_id, "membership_id")
+        self.validate_uuid(tenant_id, "tenant_id")
 
         update_fields: dict[str, Any] = {}
         if tenant_role is not None:
@@ -283,13 +289,14 @@ class TenantMembershipPersistence(BasePersistence):
             update_fields["status"] = status
 
         if not update_fields:
-            return await self.get_membership_by_id(membership_id)
+            row = await self.get_membership_by_id(membership_id)
+            return row if row and str(row["tenant_id"]) == str(tenant_id) else None
 
         sql, params = self.build_dynamic_update_query(
             table_name="tenant_memberships",
             update_fields=update_fields,
-            where_clause="membership_id = :membership_id",
-            where_parameters={"membership_id": str(membership_id)},
+            where_clause="membership_id = :membership_id AND tenant_id = :tenant_id",
+            where_parameters={"membership_id": str(membership_id), "tenant_id": str(tenant_id)},
             returning_columns=TENANT_MEMBERSHIP_COLUMN_NAMES,
         )
 
@@ -309,29 +316,39 @@ class TenantMembershipPersistence(BasePersistence):
             )
             raise
 
-    async def promote_to_admin(self, membership_id: UUID) -> dict[str, Any] | None:
+    async def promote_to_admin(
+        self, membership_id: UUID, tenant_id: UUID
+    ) -> dict[str, Any] | None:
         """Set the membership tenant_role to 'admin'."""
-        return await self.update_membership(membership_id=membership_id, tenant_role="admin")
+        return await self.update_membership(
+            membership_id=membership_id, tenant_id=tenant_id, tenant_role="admin"
+        )
 
-    async def suspend_membership(self, membership_id: UUID) -> dict[str, Any] | None:
+    async def suspend_membership(
+        self, membership_id: UUID, tenant_id: UUID
+    ) -> dict[str, Any] | None:
         """Set membership status to 'suspended'."""
-        return await self.update_membership(membership_id=membership_id, status="suspended")
+        return await self.update_membership(
+            membership_id=membership_id, tenant_id=tenant_id, status="suspended"
+        )
 
     # =========================================================================
     # DELETE
     # =========================================================================
 
-    async def delete_membership_by_id(self, membership_id: UUID) -> bool:
+    async def delete_membership_by_id(self, membership_id: UUID, tenant_id: UUID) -> bool:
         """Delete a membership by its UUID.
 
         Returns:
             True if deleted; False if not found.
         """
         self.validate_uuid(membership_id, "membership_id")
+        self.validate_uuid(tenant_id, "tenant_id")
         try:
             async with self.get_session() as session:
                 result = await session.execute(
-                    text(DELETE_MEMBERSHIP_BY_ID_SQL), {"membership_id": str(membership_id)}
+                    text(DELETE_MEMBERSHIP_BY_ID_SQL),
+                    {"membership_id": str(membership_id), "tenant_id": str(tenant_id)},
                 )
                 deleted = getattr(result, "rowcount", 0) > 0
                 if deleted:

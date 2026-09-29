@@ -190,7 +190,7 @@ def build_user_list_query(
             {_USER_SAFE_COLUMNS}
         FROM users
         WHERE {" AND ".join(where_clauses)}
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, user_id
         LIMIT :limit OFFSET :offset
     """
     return sql, parameters

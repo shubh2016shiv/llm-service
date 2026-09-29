@@ -115,7 +115,7 @@ LIST_TENANTS_SQL = f"""
     SELECT
         {_TENANT_COLUMNS}
     FROM tenants
-    ORDER BY tenant_name
+    ORDER BY tenant_name, tenant_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -124,7 +124,7 @@ LIST_TENANTS_BY_STATUS_SQL = f"""
         {_TENANT_COLUMNS}
     FROM tenants
     WHERE status = :status
-    ORDER BY tenant_name
+    ORDER BY tenant_name, tenant_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -133,7 +133,7 @@ LIST_TENANTS_BY_TIER_SQL = f"""
         {_TENANT_COLUMNS}
     FROM tenants
     WHERE tier = :tier
-    ORDER BY tenant_name
+    ORDER BY tenant_name, tenant_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -174,7 +174,7 @@ def build_tenant_list_query(
     """
     if where_clauses:
         sql = f"{sql} WHERE {' AND '.join(where_clauses)}"
-    sql = f"{sql} ORDER BY tenant_name LIMIT :limit OFFSET :offset"
+    sql = f"{sql} ORDER BY tenant_name, tenant_id LIMIT :limit OFFSET :offset"
     return sql, params
 
 

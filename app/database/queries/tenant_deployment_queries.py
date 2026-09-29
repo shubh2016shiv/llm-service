@@ -241,7 +241,7 @@ LIST_DEPLOYMENTS_BY_TENANT_SQL = f"""
     SELECT {_DEPLOYMENT_SAFE_COLUMNS}
     FROM tenant_deployments
     WHERE tenant_id = :tenant_id
-    ORDER BY routing_priority DESC, deployment_name
+    ORDER BY routing_priority DESC, deployment_name, deployment_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -250,7 +250,7 @@ LIST_ACTIVE_DEPLOYMENTS_BY_TENANT_SQL = f"""
     FROM tenant_deployments
     WHERE tenant_id = :tenant_id
       AND status = 'active'
-    ORDER BY routing_priority DESC, deployment_name
+    ORDER BY routing_priority DESC, deployment_name, deployment_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -259,7 +259,7 @@ LIST_DEPLOYMENTS_BY_PROVIDER_SQL = f"""
     FROM tenant_deployments
     WHERE tenant_id = :tenant_id
       AND provider_id = :provider_id
-    ORDER BY routing_priority DESC, deployment_name
+    ORDER BY routing_priority DESC, deployment_name, deployment_id
     LIMIT :limit OFFSET :offset
 """
 
@@ -270,7 +270,7 @@ LIST_ACTIVE_DEPLOYMENTS_BY_PROVIDER_AND_MODEL_SQL = f"""
       AND provider_id = :provider_id
       AND model_id = :model_id
       AND status = 'active'
-    ORDER BY routing_priority DESC, deployment_name
+    ORDER BY routing_priority DESC, deployment_name, deployment_id
 """
 
 # ── Aggregate ─────────────────────────────────────────────────────────────────
@@ -304,7 +304,7 @@ def build_tenant_deployment_list_query(
         SELECT {_DEPLOYMENT_SAFE_COLUMNS}
         FROM tenant_deployments
         WHERE {" AND ".join(where_clauses)}
-        ORDER BY routing_priority DESC, deployment_name
+        ORDER BY routing_priority DESC, deployment_name, deployment_id
         LIMIT :limit OFFSET :offset
     """
     return sql, params
@@ -331,5 +331,5 @@ def build_tenant_deployment_count_query(
 
 DELETE_DEPLOYMENT_BY_ID_SQL = """
     DELETE FROM tenant_deployments
-    WHERE deployment_id = :deployment_id
+    WHERE deployment_id = :deployment_id AND tenant_id = :tenant_id
 """

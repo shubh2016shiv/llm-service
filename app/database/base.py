@@ -490,13 +490,40 @@ class BasePersistence:
         """Raise MissingReferencedResourceError when an integrity error is a known FK miss."""
         if not isinstance(exc, IntegrityError):
             return
-        message = str(getattr(exc, "orig", exc)).lower()
-        if "foreign key" not in message:
+        original = getattr(exc, "orig", exc)
+        cause = getattr(original, "__cause__", None)
+        message = str(original).lower()
+        sqlstate = getattr(original, "sqlstate", None) or getattr(cause, "sqlstate", None)
+        if sqlstate != "23503" and "foreign key" not in message:
             return
-        constraint_name = str(getattr(getattr(exc, "orig", None), "constraint_name", "")).lower()
+        constraint_name = str(
+            getattr(original, "constraint_name", None)
+            or getattr(cause, "constraint_name", "")
+        ).lower()
         for expected_constraint, resource in constraint_map.items():
             resource_name, resource_id = resource
             if constraint_name == expected_constraint.lower():
                 raise MissingReferencedResourceError(resource_name, resource_id) from exc
-            if expected_constraint.lower() in message:
+            if f'"{expected_constraint.lower()}"' in message:
                 raise MissingReferencedResourceError(resource_name, resource_id) from exc
+
+    def raise_for_unique_violation(
+        self,
+        exc: Exception,
+        constraint_map: Mapping[str, str],
+    ) -> None:
+        """Map a known database uniqueness race to a stable conflict error."""
+        if not isinstance(exc, IntegrityError):
+            return
+        original = getattr(exc, "orig", exc)
+        cause = getattr(original, "__cause__", None)
+        message = str(original).lower()
+        sqlstate = getattr(original, "sqlstate", None) or getattr(cause, "sqlstate", None)
+        if sqlstate != "23505" and "unique constraint" not in message:
+            return
+        constraint_name = getattr(original, "constraint_name", None) or getattr(
+            cause, "constraint_name", None
+        )
+        for expected_name, public_message in constraint_map.items():
+            if constraint_name == expected_name or f'"{expected_name.lower()}"' in message:
+                raise DuplicateResourceError(public_message) from exc

@@ -190,7 +190,15 @@ class UserPersistence(BasePersistence):
                 return dict(created_user)
         except (ValueError, RuntimeError):
             raise
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc,
+                {
+                    "users_email_key": "Email is already registered.",
+                    "users_username_key": "Username is already taken.",
+                    "users_pkey": "User ID is already registered.",
+                },
+            )
             logger.error("UserPersistence: create_user failed — user_id=%s", user_id, exc_info=True)
             raise
 
@@ -464,7 +472,14 @@ class UserPersistence(BasePersistence):
                     "UserPersistence: update_user — user not found — user_id=%s", user_id
                 )
                 return None
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc,
+                {
+                    "users_email_key": "Email is already registered.",
+                    "users_username_key": "Username is already taken.",
+                },
+            )
             logger.error("UserPersistence: update_user failed — user_id=%s", user_id, exc_info=True)
             raise
 

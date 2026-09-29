@@ -286,7 +286,38 @@ class UserEntitlementPersistence(BasePersistence):
                 return dict(created_row)
         except (ValueError, RuntimeError):
             raise
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc,
+                {
+                    "uq_user_entitlements_one_active_route": (
+                        "An active entitlement already exists for this user and route."
+                    ),
+                    "uq_user_entitlements_name_per_user": (
+                        "Entitlement name already exists for this tenant and user."
+                    ),
+                },
+            )
+            self.raise_for_foreign_key_violation(
+                exc,
+                {
+                    "user_entitlements_tenant_id_fkey": ("Tenant", str(tenant_id)),
+                    "user_entitlements_user_id_fkey": ("User", str(user_id)),
+                    "user_entitlements_provider_id_fkey": ("Provider", str(provider_id)),
+                    "user_entitlements_created_by_user_id_fkey": (
+                        "User",
+                        str(created_by_user_id),
+                    ),
+                    "fk_user_entitlements_tenant_deployment": (
+                        "TenantDeployment",
+                        deployment_key,
+                    ),
+                    "fk_user_entitlements_provider_model": (
+                        "Model",
+                        str(model_id),
+                    ),
+                },
+            )
             logger.error(
                 "UserEntitlementPersistence: create_entitlement failed — user_id=%s",
                 user_id,
@@ -542,6 +573,8 @@ class UserEntitlementPersistence(BasePersistence):
     async def update_entitlement(
         self,
         entitlement_id: UUID,
+        tenant_id: UUID,
+        user_id: UUID,
         api_endpoint_url: str | None = None,
         secret_reference: str | None = None,
         status: str | None = None,
@@ -556,6 +589,8 @@ class UserEntitlementPersistence(BasePersistence):
             Updated row dict (without secret_reference) or None if not found.
         """
         self.validate_uuid(entitlement_id, "entitlement_id")
+        self.validate_uuid(tenant_id, "tenant_id")
+        self.validate_uuid(user_id, "user_id")
         if status is not None:
             self.validate_enum_member(UserEntitlementStatus, status, "status")
         if api_endpoint_url is not None:
@@ -584,13 +619,27 @@ class UserEntitlementPersistence(BasePersistence):
                 "UserEntitlementPersistence: update_entitlement called with no fields — id=%s",
                 entitlement_id,
             )
-            return await self.get_entitlement_by_id(entitlement_id)
+            row = await self.get_entitlement_by_id(entitlement_id)
+            return (
+                row
+                if row
+                and str(row["tenant_id"]) == str(tenant_id)
+                and str(row["user_id"]) == str(user_id)
+                else None
+            )
 
         sql, params = self.build_dynamic_update_query(
             table_name="user_entitlements",
             update_fields=update_fields,
-            where_clause="entitlement_id = :entitlement_id",
-            where_parameters={"entitlement_id": str(entitlement_id)},
+            where_clause=(
+                "entitlement_id = :entitlement_id AND tenant_id = :tenant_id "
+                "AND user_id = :user_id"
+            ),
+            where_parameters={
+                "entitlement_id": str(entitlement_id),
+                "tenant_id": str(tenant_id),
+                "user_id": str(user_id),
+            },
             returning_columns=ENTITLEMENT_SAFE_COLUMN_NAMES,
         )
 
@@ -606,7 +655,18 @@ class UserEntitlementPersistence(BasePersistence):
                     entitlement_id,
                 )
                 return None
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc,
+                {
+                    "uq_user_entitlements_one_active_route": (
+                        "An active entitlement already exists for this user and route."
+                    ),
+                    "uq_user_entitlements_name_per_user": (
+                        "Entitlement name already exists for this tenant and user."
+                    ),
+                },
+            )
             logger.error(
                 "UserEntitlementPersistence: update_entitlement failed — id=%s",
                 entitlement_id,
@@ -618,18 +678,26 @@ class UserEntitlementPersistence(BasePersistence):
     # DELETE / REVOKE
     # =========================================================================
 
-    async def delete_entitlement(self, entitlement_id: UUID | str) -> bool:
+    async def delete_entitlement(
+        self, entitlement_id: UUID | str, tenant_id: UUID, user_id: UUID
+    ) -> bool:
         """Permanently delete an entitlement row.
 
         Returns:
             True if the row existed and was deleted; False if not found.
         """
         self.validate_uuid(entitlement_id, "entitlement_id")
+        self.validate_uuid(tenant_id, "tenant_id")
+        self.validate_uuid(user_id, "user_id")
         try:
             async with self.get_session() as session:
                 result = await session.execute(
                     text(DELETE_ENTITLEMENT_BY_ID_SQL),
-                    {"entitlement_id": str(entitlement_id)},
+                    {
+                        "entitlement_id": str(entitlement_id),
+                        "tenant_id": str(tenant_id),
+                        "user_id": str(user_id),
+                    },
                 )
                 deleted = getattr(result, "rowcount", 0) > 0
                 if deleted:

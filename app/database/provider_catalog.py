@@ -136,7 +136,10 @@ class ProviderCatalogPersistence(BasePersistence):
                 return dict(row)
         except (ValueError, RuntimeError):
             raise
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc, {"provider_catalog_provider_name_key": "Provider name is already registered."}
+            )
             logger.error(
                 "ProviderCatalogPersistence: create_provider failed — name=%s",
                 provider_name,
@@ -287,7 +290,10 @@ class ProviderCatalogPersistence(BasePersistence):
                     self.log_operation("UPDATE", provider_id)
                     return dict(row)
                 return None
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc, {"provider_catalog_provider_name_key": "Provider name is already registered."}
+            )
             logger.error(
                 "ProviderCatalogPersistence: update_provider failed — id=%s",
                 provider_id,

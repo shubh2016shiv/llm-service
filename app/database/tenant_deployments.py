@@ -223,12 +223,21 @@ class TenantDeploymentPersistence(BasePersistence):
         except (ValueError, RuntimeError):
             raise
         except Exception as exc:
+            self.raise_for_unique_violation(
+                exc,
+                {
+                    "uq_tenant_deployments_tenant_key": "Deployment key already exists for this tenant.",
+                    "uq_tenant_deployments_one_default_per_provider": (
+                        "A default deployment already exists for this tenant and provider."
+                    ),
+                },
+            )
             self.raise_for_foreign_key_violation(
                 exc,
                 {
                     "tenant_deployments_tenant_id_fkey": ("Tenant", str(tenant_id)),
                     "tenant_deployments_provider_id_fkey": ("Provider", str(provider_id)),
-                    "tenant_deployments_model_id_fkey": ("Model", str(model_id)),
+                    "fk_tenant_deployments_provider_model": ("Model", str(model_id)),
                     "tenant_deployments_created_by_user_id_fkey": (
                         "User",
                         str(created_by_user_id),
@@ -446,6 +455,7 @@ class TenantDeploymentPersistence(BasePersistence):
     async def update_deployment(
         self,
         deployment_id: UUID,
+        tenant_id: UUID,
         deployment_name: str | None = None,
         status: str | None = None,
         api_endpoint_url: str | None = None,
@@ -467,6 +477,7 @@ class TenantDeploymentPersistence(BasePersistence):
     ) -> dict[str, Any] | None:
         """Partially update a deployment. Returns updated row (without secret_reference) or None."""
         self.validate_uuid(deployment_id, "deployment_id")
+        self.validate_uuid(tenant_id, "tenant_id")
 
         update_fields: dict[str, Any] = {}
 
@@ -522,13 +533,14 @@ class TenantDeploymentPersistence(BasePersistence):
             update_fields["extra_config"] = self.serialize_json(extra_config, "extra_config")
 
         if not update_fields:
-            return await self.get_deployment_by_id(deployment_id)
+            row = await self.get_deployment_by_id(deployment_id)
+            return row if row and str(row["tenant_id"]) == str(tenant_id) else None
 
         sql, params = self.build_dynamic_update_query(
             table_name="tenant_deployments",
             update_fields=update_fields,
-            where_clause="deployment_id = :deployment_id",
-            where_parameters={"deployment_id": str(deployment_id)},
+            where_clause="deployment_id = :deployment_id AND tenant_id = :tenant_id",
+            where_parameters={"deployment_id": str(deployment_id), "tenant_id": str(tenant_id)},
             returning_columns=DEPLOYMENT_SAFE_COLUMN_NAMES,
         )
 
@@ -540,7 +552,16 @@ class TenantDeploymentPersistence(BasePersistence):
                     self.log_operation("UPDATE", deployment_id)
                     return dict(row)
                 return None
-        except Exception:
+        except Exception as exc:
+            self.raise_for_unique_violation(
+                exc,
+                {
+                    "uq_tenant_deployments_tenant_key": "Deployment key already exists for this tenant.",
+                    "uq_tenant_deployments_one_default_per_provider": (
+                        "A default deployment already exists for this tenant and provider."
+                    ),
+                },
+            )
             logger.error(
                 "TenantDeploymentPersistence: update_deployment failed — id=%s",
                 deployment_id,
@@ -548,29 +569,35 @@ class TenantDeploymentPersistence(BasePersistence):
             )
             raise
 
-    async def set_maintenance(self, deployment_id: UUID) -> dict[str, Any] | None:
+    async def set_maintenance(self, deployment_id: UUID, tenant_id: UUID) -> dict[str, Any] | None:
         """Put a deployment into maintenance mode."""
-        return await self.update_deployment(deployment_id=deployment_id, status="maintenance")
+        return await self.update_deployment(
+            deployment_id=deployment_id, tenant_id=tenant_id, status="maintenance"
+        )
 
-    async def set_active(self, deployment_id: UUID) -> dict[str, Any] | None:
+    async def set_active(self, deployment_id: UUID, tenant_id: UUID) -> dict[str, Any] | None:
         """Return a deployment to active status."""
-        return await self.update_deployment(deployment_id=deployment_id, status="active")
+        return await self.update_deployment(
+            deployment_id=deployment_id, tenant_id=tenant_id, status="active"
+        )
 
     # =========================================================================
     # DELETE
     # =========================================================================
 
-    async def delete_deployment(self, deployment_id: UUID) -> bool:
+    async def delete_deployment(self, deployment_id: UUID, tenant_id: UUID) -> bool:
         """Delete a deployment. CASCADE removes linked user_entitlements.
 
         Returns:
             True if deleted; False if not found.
         """
         self.validate_uuid(deployment_id, "deployment_id")
+        self.validate_uuid(tenant_id, "tenant_id")
         try:
             async with self.get_session() as session:
                 result = await session.execute(
-                    text(DELETE_DEPLOYMENT_BY_ID_SQL), {"deployment_id": str(deployment_id)}
+                    text(DELETE_DEPLOYMENT_BY_ID_SQL),
+                    {"deployment_id": str(deployment_id), "tenant_id": str(tenant_id)},
                 )
                 deleted = getattr(result, "rowcount", 0) > 0
                 if deleted:
