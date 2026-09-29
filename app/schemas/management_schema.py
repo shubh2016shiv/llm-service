@@ -50,6 +50,7 @@ from app.schemas.enums import (
     UserAccountStatus,
     UserEntitlementStatus,
 )
+from app.schemas.identifier_constraints import KEBAB_IDENTIFIER_PATTERN
 from app.schemas.model_constraints import (
     MAX_TEMPERATURE,
     MAX_TOP_P,
@@ -75,7 +76,7 @@ KebabIdentifier = Annotated[
         strip_whitespace=True,
         min_length=1,
         max_length=128,
-        pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$",
+        pattern=KEBAB_IDENTIFIER_PATTERN,
     ),
 ]
 JsonObject = dict[str, object]

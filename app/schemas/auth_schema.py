@@ -29,6 +29,8 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.identifier_constraints import KEBAB_IDENTIFIER_PATTERN
+
 # The two role vocabularies. The ORDER here is just a list of allowed
 # words — the actual "who outranks whom" ranking lives in
 # role_hierarchy.py, which is the single source of truth for privilege.
@@ -77,7 +79,7 @@ class InferenceAccessContext(BaseModel):
     user_id: UUID = Field(description="Authenticated user receiving inference access.")
     deployment_key: str = Field(
         min_length=1,
-        pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$",
+        pattern=KEBAB_IDENTIFIER_PATTERN,
         description="Tenant-scoped deployment route key.",
     )
     deployment_id: UUID = Field(description="Resolved tenant deployment identifier.")
@@ -92,12 +94,17 @@ class AuthorizationGrantVersions(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # These sentinels preserve the existing cache protocol for scopes that have
-    # never been invalidated and therefore do not yet have a Redis marker.
-    tenant_version: str = Field(default="tenant:0", pattern=r"^tenant:\d+$")
-    membership_version: str = Field(default="membership:0", pattern=r"^membership:\d+$")
-    deployment_version: str = Field(default="deployment:0", pattern=r"^deployment:\d+$")
-    route_version: str = Field(default="route:0", pattern=r"^route:\d+$")
+    # The default value below is a sentinel for a scope that has never been
+    # invalidated (no Redis marker written yet). A real invalidation replaces
+    # it with an opaque "v:<uuid4>" marker (see authorization_grant_storage.py
+    # _advance_version) written via a single atomic SET, not a counter
+    # increment -- there is no read-modify-write, and no shared format between
+    # scopes. Versions are compared only for equality, so the field accepts
+    # any non-empty marker string rather than constraining its shape.
+    tenant_version: str = Field(default="tenant:0", min_length=1)
+    membership_version: str = Field(default="membership:0", min_length=1)
+    deployment_version: str = Field(default="deployment:0", min_length=1)
+    route_version: str = Field(default="route:0", min_length=1)
 
 
 class CachedAuthorizationGrant(BaseModel):
