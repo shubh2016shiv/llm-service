@@ -17,6 +17,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Literal
 
+from app.core.async_cleanup import wait_for_cleanup
 from app.core.exceptions import StreamDurationExceededError
 from app.schemas.responses_schema import ChatStreamChunk
 from app.services.stream_usage import StreamUsageAccumulator
@@ -50,6 +51,8 @@ class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
         """Capture the resources whose lifetime equals the client stream."""
         if max_duration_seconds <= 0:
             raise ValueError("max_duration_seconds must be positive")
+        if cleanup_timeout_seconds <= 0:
+            raise ValueError("cleanup_timeout_seconds must be positive")
         self._provider_chunks = provider_chunks.__aiter__()
         self._lease = lease
         self._finalize_callback = finalize
@@ -60,7 +63,7 @@ class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
         self._deadline = asyncio.get_running_loop().time() + max_duration_seconds
         self._usage = StreamUsageAccumulator()
         self._closed = False
-        self._finish_lock = asyncio.Lock()
+        self._cleanup_task: asyncio.Task[None] | None = None
 
     def __aiter__(self) -> StreamingInferenceSession:
         """Return this stateful object as its own async iterator."""
@@ -94,26 +97,32 @@ class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
 
     async def _finish(self, status: StreamTerminalStatus) -> None:
         """Run cleanup once, shielding it from the disconnect cancellation."""
-        async with self._finish_lock:
-            if self._closed:
-                return
+        if self._cleanup_task is None:
             self._closed = True
-            cleanup_task = asyncio.create_task(self._cleanup(status))
-            try:
-                await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError:
-                await cleanup_task
-                raise
+            self._cleanup_task = asyncio.create_task(self._cleanup(status))
+        try:
+            await wait_for_cleanup(self._cleanup_task)
+        except Exception:
+            logger.exception("Stream reservation cleanup failed", extra={"status": status})
+            if status == "completed":
+                raise  # Connected clients must not receive a false success event.
 
     async def _cleanup(self, status: StreamTerminalStatus) -> None:
         """Close the provider before reconciling quota and releasing capacity."""
-        await self._close_provider()
         try:
-            await self._finalize_callback(
-                status,
-                self._usage.prompt_tokens,
-                self._usage.completion_tokens,
-            )
+            await self._close_provider()
+        finally:
+            await self._finalize_and_release(status)
+
+    async def _finalize_and_release(self, status: StreamTerminalStatus) -> None:
+        """Bound accounting independently of provider closure and always free the slot."""
+        try:
+            async with asyncio.timeout(self._cleanup_timeout_seconds):
+                await self._finalize_callback(
+                    status,
+                    self._usage.prompt_tokens,
+                    self._usage.completion_tokens,
+                )
         finally:
             await self._lease.release()
 

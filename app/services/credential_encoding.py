@@ -33,16 +33,21 @@ Author: Shubham Singh
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
 import httpx
 
+from app.core.async_cleanup import wait_for_cleanup
 from app.core.exceptions import ManagementValidationError, SecretBackendUnavailableError
 from app.schemas.enums import ProviderCatalogAuthMode
 
 if TYPE_CHECKING:
     from app.schemas.management_schema import CredentialInput
+
+logger = logging.getLogger(__name__)
 
 _IAM_DEFAULT_REFERENCE = "iam:default"
 
@@ -62,6 +67,10 @@ class CredentialWriter(Protocol):
         self, path: str, *, tenant_id: str, fields: dict[str, str | None]
     ) -> str:
         """Store a credential payload and return its secret_reference."""
+        ...
+
+    async def delete_secret(self, secret_reference: str, *, tenant_id: str) -> None:
+        """Permanently remove a secret this writer created."""
         ...
 
 
@@ -133,6 +142,36 @@ async def encode_credential(
             reason=type(exc).__name__,
         ) from exc
     return secret_reference
+
+
+async def delete_orphaned_secret(
+    writer: CredentialWriter | None,
+    secret_reference: str,
+    tenant_id: str,
+) -> None:
+    """Best-effort cleanup of a secret already written before its DB row failed to save.
+
+    Never raises: a cleanup failure must not mask the original persistence error, and
+    one surviving orphaned secret is a smaller problem than losing the real failure
+    reason. Callers invoke this only in the failure branches of a persistence call that
+    followed a real ``encode_credential`` write — never on a path that was inherited or
+    never written (see the ``iam:default`` and deployment-inherited cases above).
+    """
+    if writer is None:
+        return
+
+    async def delete() -> None:
+        try:
+            async with asyncio.timeout(5):
+                await writer.delete_secret(secret_reference, tenant_id=tenant_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete orphaned credential after a persistence failure",
+                extra={"secret_reference": secret_reference},
+                exc_info=True,
+            )
+
+    await wait_for_cleanup(asyncio.create_task(delete()))
 
 
 def build_credential_path(*segments: str) -> str:

@@ -37,10 +37,11 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from app.core.async_cleanup import wait_for_cleanup
+from app.core.exceptions import InvalidRequestError
 from app.services.streaming_session import StreamingInferenceSession
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
     from uuid import UUID
 
     from app.clients.token_manager_client import (
@@ -53,7 +54,6 @@ if TYPE_CHECKING:
     from app.schemas.requests_schema import ChatRequest, EmbedRequest, RerankRequest
     from app.schemas.responses_schema import (
         ChatResponse,
-        ChatStreamChunk,
         EmbedResponse,
         RerankResponse,
     )
@@ -117,6 +117,7 @@ class InferenceService:
         "Usage reconciliation" means updating quota with real token counts
         rather than only pre-call estimates.
         """
+        self._validate_chat_token_limit(context, request)
         reservation = await self._token_manager.acquire_reservation(
             user_id=user_id,
             context=context,
@@ -148,12 +149,13 @@ class InferenceService:
         *,
         user_id: UUID,
         request_id: str | None = None,
-    ) -> AsyncIterator[ChatStreamChunk]:
+    ) -> StreamingInferenceSession:
         """Acquire capacity and return an exact-once managed provider stream.
 
         Preparation is eager so acquisition and provider-construction failures
         are translated to an HTTP error before SSE response headers are sent.
         """
+        self._validate_chat_token_limit(context, request)
         lease = await self._stream_admission.acquire()
         try:
             reservation = await self._token_manager.acquire_reservation(
@@ -168,28 +170,31 @@ class InferenceService:
         try:
             provider = await self._registry.get_provider(context)
             provider_chunks = provider.stream_generate(request)
-        except asyncio.CancelledError:
-            await self._finalize_preserving_original(reservation, status="cancelled")
-            await lease.release()
-            raise
-        except Exception:
-            await self._finalize_preserving_original(reservation, status="failed")
-            await lease.release()
-            raise
-        return StreamingInferenceSession(
-            provider_chunks=provider_chunks,
-            lease=lease,
-            cleanup_timeout_seconds=self._stream_cleanup_timeout_seconds,
-            max_duration_seconds=self._stream_max_duration_seconds,
-            finalize=lambda status, prompt_tokens, completion_tokens: (
-                self._finalize_preserving_original(
+            session = StreamingInferenceSession(
+                provider_chunks=provider_chunks,
+                lease=lease,
+                cleanup_timeout_seconds=self._stream_cleanup_timeout_seconds,
+                max_duration_seconds=self._stream_max_duration_seconds,
+                finalize=lambda status, prompt_tokens, completion_tokens: self._finalize(
                     reservation,
                     status=status,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
-                )
-            ),
-        )
+                ),
+            )
+        except asyncio.CancelledError:
+            try:
+                await self._finalize_preserving_original(reservation, status="cancelled")
+            finally:
+                await lease.release()
+            raise
+        except Exception:
+            try:
+                await self._finalize_preserving_original(reservation, status="failed")
+            finally:
+                await lease.release()
+            raise
+        return session
 
     async def execute_embed(
         self,
@@ -279,12 +284,42 @@ class InferenceService:
         best-effort cleanup. Propagating an accounting failure prevents the
         API from claiming success while quota state remains uncommitted.
         """
-        await self._token_manager.finalize_reservation(
-            reservation,
-            status=status,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
+        task = asyncio.create_task(
+            self._commit_finalization(
+                reservation,
+                status=status,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
         )
+        await wait_for_cleanup(task)
+
+    @staticmethod
+    def _validate_chat_token_limit(context: ResolvedRoute, request: ChatRequest) -> None:
+        """Reject a completion that exceeds the route's authorized model limit."""
+        if request.max_tokens is not None and request.max_tokens > context.effective_max_tokens:
+            raise InvalidRequestError(
+                context.provider_name,
+                "max_tokens",
+                f"must be at most {context.effective_max_tokens}",
+            )
+
+    async def _commit_finalization(
+        self,
+        reservation: TokenReservation,
+        *,
+        status: FinalizationStatus,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+    ) -> None:
+        """Put an overall deadline on accounting, including slow response trickles."""
+        async with asyncio.timeout(self._stream_cleanup_timeout_seconds):
+            await self._token_manager.finalize_reservation(
+                reservation,
+                status=status,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
 
     async def _finalize_preserving_original(
         self,
