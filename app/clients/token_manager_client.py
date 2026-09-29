@@ -116,7 +116,7 @@ class TokenManagerClient:
                 "model_name": context.model_name,
                 "input_data": _token_estimation_input(request),
                 "requested_completion_tokens": (
-                    context.effective_max_tokens
+                    request.max_tokens or context.effective_max_tokens
                     if isinstance(request, ChatRequest)
                     else 0
                 ),
