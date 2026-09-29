@@ -19,6 +19,10 @@ Quota reconciliation and provider cleanup live in
 `app/services/streaming_session.py`, because those business guarantees must
 also apply to WebSocket, gRPC, or CLI transports.
 
+That session also owns the absolute lifetime deadline. The deadline is a
+business resource limit, not an SSE formatting rule, so every future transport
+must receive the same protection.
+
 ## Delivery algorithm
 
 ```text
@@ -29,6 +33,7 @@ producer event iterator
 wait up to heartbeat interval
     |-- timeout --------> emit SSE comment; keep the same read alive
     |-- event ----------> attach thread_id + sequence; emit named SSE event
+    |-- lifetime ends --> close source; emit safe error + complete(failed)
     |-- source ends ----> emit one complete event
     |-- source fails ---> emit safe error, then complete(status=failed)
     `-- client leaves --> cancel read, close source, emit nothing else
@@ -37,6 +42,21 @@ wait up to heartbeat interval
 There is no token queue. A slow client pauses the async generator and therefore
 pauses new producer reads. This is natural backpressure and bounds application
 memory to one pending read per connection.
+
+## Idle timeout versus total duration
+
+These limits solve different problems:
+
+- A provider read timeout stops a provider that sends nothing.
+- Heartbeats keep a quiet client/proxy connection alive while that provider
+  read remains pending.
+- `stream_max_duration_seconds` stops the whole stream after one fixed amount
+  of wall-clock time, even when the provider keeps sending chunks.
+
+The total-duration deadline is calculated once. A new chunk does not reset it.
+When it expires, the session closes the provider, reconciles usage, releases
+its worker-capacity lease, and emits `STREAM_DURATION_EXCEEDED` followed by
+`complete(status=failed)`.
 
 ## Text output
 
@@ -127,6 +147,11 @@ access to another caller's conversation.
 - Drain workers during deployment so existing streams can finish.
 - Track active streams, rejected admissions, first-event latency, duration,
   disconnects, and terminal status.
+- Scrape `/health/diagnostics` from every worker. Its capacity and adapter
+  counters are process-local, not totals for the whole deployment.
+- Alert on a sustained high active/max stream ratio, open provider circuits,
+  or degraded PostgreSQL/Redis flags. A brief full worker is still healthy and
+  should answer new stream admissions with 503 + Retry-After.
 - Do not put Redis or Kafka in the token hot path. Use them only for durable
   replay metadata or terminal audit events when those features are required.
 

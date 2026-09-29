@@ -17,6 +17,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Literal
 
+from app.core.exceptions import StreamDurationExceededError
 from app.schemas.responses_schema import ChatStreamChunk
 from app.services.stream_usage import StreamUsageAccumulator
 
@@ -44,12 +45,19 @@ class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
         lease: StreamCapacityLease,
         finalize: FinalizeCallback,
         cleanup_timeout_seconds: float,
+        max_duration_seconds: float = 600.0,
     ) -> None:
         """Capture the resources whose lifetime equals the client stream."""
+        if max_duration_seconds <= 0:
+            raise ValueError("max_duration_seconds must be positive")
         self._provider_chunks = provider_chunks.__aiter__()
         self._lease = lease
         self._finalize_callback = finalize
         self._cleanup_timeout_seconds = cleanup_timeout_seconds
+        # One fixed monotonic deadline is the important detail. Recomputing a
+        # timeout after each chunk would let a provider trickle forever while
+        # permanently holding its worker-capacity lease.
+        self._deadline = asyncio.get_running_loop().time() + max_duration_seconds
         self._usage = StreamUsageAccumulator()
         self._closed = False
         self._finish_lock = asyncio.Lock()
@@ -63,10 +71,14 @@ class StreamingInferenceSession(AsyncIterator[ChatStreamChunk]):
         if self._closed:
             raise StopAsyncIteration
         try:
-            chunk = await anext(self._provider_chunks)
+            async with asyncio.timeout_at(self._deadline):
+                chunk = await anext(self._provider_chunks)
         except StopAsyncIteration:
             await self._finish("completed")
             raise
+        except TimeoutError as exc:
+            await self._finish("failed")
+            raise StreamDurationExceededError from exc
         except asyncio.CancelledError:
             await self._finish("disconnected")
             raise

@@ -82,13 +82,17 @@ class InferenceService:
         provider_registry: ProviderRegistry,
         stream_admission: WorkerStreamCapacityLimiter,
         stream_cleanup_timeout_seconds: float = 5.0,
+        stream_max_duration_seconds: float = 600.0,
     ) -> None:
         if stream_cleanup_timeout_seconds <= 0:
             raise ValueError("stream_cleanup_timeout_seconds must be positive")
+        if stream_max_duration_seconds <= 0:
+            raise ValueError("stream_max_duration_seconds must be positive")
         self._token_manager = token_manager_client
         self._registry = provider_registry
         self._stream_admission = stream_admission
         self._stream_cleanup_timeout_seconds = stream_cleanup_timeout_seconds
+        self._stream_max_duration_seconds = stream_max_duration_seconds
 
     async def execute_chat(
         self,
@@ -176,6 +180,7 @@ class InferenceService:
             provider_chunks=provider_chunks,
             lease=lease,
             cleanup_timeout_seconds=self._stream_cleanup_timeout_seconds,
+            max_duration_seconds=self._stream_max_duration_seconds,
             finalize=lambda status, prompt_tokens, completion_tokens: (
                 self._finalize_preserving_original(
                     reservation,

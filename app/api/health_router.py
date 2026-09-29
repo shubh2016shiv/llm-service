@@ -17,13 +17,14 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.adapters.cache import RedisConnectionManager
+from app.adapters.postgresql import PostgresSessionProvider
+from app.adapters.provider_transport import ProviderCircuitBreakerRegistry
 from app.core.settings.settings import ApplicationSettings
+from app.streaming.stream_capacity import WorkerStreamCapacityLimiter
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-    from app.adapters.cache import RedisConnectionManager
-    from app.adapters.postgresql import PostgresSessionProvider
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Health"])
@@ -74,6 +75,61 @@ async def readiness_check(request: Request) -> JSONResponse:
             name: "ok" if healthy else "unavailable" for name, healthy in statuses.items()
         }
     return JSONResponse(status_code=200 if ready else 503, content=content)
+
+
+@router.get("/health/diagnostics")
+async def operational_diagnostics(request: Request) -> dict[str, object]:
+    """Return non-secret, process-local counters for operator diagnosis.
+
+    This endpoint is deliberately separate from readiness. A worker at stream
+    capacity is healthy and should remain behind the load balancer; callers can
+    retry another worker using the 503/Retry-After admission response.
+    """
+    state = request.app.state
+    # Starlette's state container is intentionally dynamic. Narrow from
+    # ``object`` below so both readers and the type checker can see that every
+    # adapter method is called only after its concrete runtime type is proven.
+    limiter: object = getattr(state, "stream_capacity_limiter", None)
+    breakers: object = getattr(state, "provider_circuit_breaker_registry", None)
+    postgres: object = getattr(state, "postgres_session_provider", None)
+    redis: object = getattr(state, "redis_connection", None)
+
+    streaming: dict[str, object] = {"available": False}
+    if isinstance(limiter, WorkerStreamCapacityLimiter):
+        streaming = {
+            "available": True,
+            "active_streams": limiter.active_stream_count,
+            "max_concurrent_streams": limiter.max_concurrent_streams,
+        }
+
+    # Only aggregate breaker states. Provider names are useful internally but
+    # revealing the configured provider inventory is unnecessary for deciding
+    # whether this worker has open circuits.
+    circuit_counts = {"closed": 0, "open": 0, "half_open": 0}
+    circuits_available = False
+    if isinstance(breakers, ProviderCircuitBreakerRegistry):
+        circuits_available = True
+        for breaker_state in breakers.snapshot_states().values():
+            normalized_state = breaker_state.lower()
+            if normalized_state in circuit_counts:
+                circuit_counts[normalized_state] += 1
+
+    return {
+        "scope": "process-local",
+        "streaming": streaming,
+        "provider_circuits": {
+            "available": circuits_available,
+            "states": circuit_counts,
+        },
+        "postgresql": {
+            "available": isinstance(postgres, PostgresSessionProvider),
+            "counters": postgres.stats() if isinstance(postgres, PostgresSessionProvider) else {},
+        },
+        "redis": {
+            "available": isinstance(redis, RedisConnectionManager),
+            "counters": redis.stats() if isinstance(redis, RedisConnectionManager) else {},
+        },
+    }
 
 
 async def _probe(name: str, check: Callable[[], Awaitable[bool]] | None) -> bool:

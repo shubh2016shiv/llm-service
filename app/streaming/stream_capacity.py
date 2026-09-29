@@ -56,6 +56,11 @@ class WorkerStreamCapacityLimiter:
         """Return the number of slots currently owned by open streams."""
         return self._active
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Return the configured per-worker limit used as the gauge denominator."""
+        return self._max_concurrent
+
     async def acquire(self) -> StreamCapacityLease:
         """Acquire immediately or raise instead of queueing an open socket."""
         async with self._lock:
