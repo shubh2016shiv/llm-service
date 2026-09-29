@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from app.core.exceptions import ProviderError
+from app.core.exceptions import ProviderError, ProviderInternalError
 from app.providers.base_provider import BaseProvider
 from app.schemas.responses_schema import ChatResponse, ChatStreamChunk, HealthStatus, Usage
 
@@ -87,6 +87,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
         payload = self._build_messages_payload(request)
         payload["stream"] = True
         t0 = time.monotonic()
+        saw_message_stop = False
         try:
             async with self._http_client.stream(
                 "POST",
@@ -99,7 +100,20 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):
                         chunk_data = line.removeprefix("data: ")
-                        yield self._parse_stream_event(json.loads(chunk_data))
+                        event = json.loads(chunk_data)
+                        if event.get("type") == "error":
+                            raise ProviderInternalError(
+                                "Provider reported a streaming error.",
+                                provider_name=self._static.provider_name,
+                            )
+                        if event.get("type") == "message_stop":
+                            saw_message_stop = True
+                        yield self._parse_stream_event(event)
+            if not saw_message_stop:
+                raise ProviderInternalError(
+                    "Provider stream closed before its completion marker.",
+                    provider_name=self._static.provider_name,
+                )
             latency_ms = int((time.monotonic() - t0) * 1000)
             self._emit_structured_log("chat.stream_generate", latency_ms)
         except httpx.HTTPStatusError as exc:
@@ -165,8 +179,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        headers.update(self._context.extra_headers)
-        return headers
+        return self._merge_extra_headers(headers)
 
     def _build_messages_payload(self, request: ChatRequest) -> dict[str, object]:
         """Build Anthropic messages payload from domain request fields.
@@ -247,10 +260,7 @@ class AnthropicProvider(BaseProvider[httpx.AsyncClient]):
             Usage(
                 prompt_tokens=usage_raw.get("input_tokens", 0),
                 completion_tokens=usage_raw.get("output_tokens", 0),
-                total_tokens=(
-                    usage_raw.get("input_tokens", 0)
-                    + usage_raw.get("output_tokens", 0)
-                ),
+                total_tokens=(usage_raw.get("input_tokens", 0) + usage_raw.get("output_tokens", 0)),
             )
             if usage_raw
             else None

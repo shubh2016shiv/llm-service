@@ -33,8 +33,9 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from app.core.exceptions import ProviderError
+from app.core.exceptions import ProviderError, ProviderInternalError
 from app.providers.base_provider import BaseProvider
+from app.providers.embedding_order import ordered_embeddings
 from app.schemas.responses_schema import (
     ChatResponse,
     ChatStreamChunk,
@@ -97,6 +98,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": True}
         t0 = time.monotonic()
+        saw_done = False
         try:
             async with self._http_client.stream(
                 "POST",
@@ -110,8 +112,14 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
                     if line.startswith("data: "):
                         chunk_data = line.removeprefix("data: ")
                         if chunk_data == "[DONE]":
+                            saw_done = True
                             break
                         yield self._parse_stream_chunk(json.loads(chunk_data))
+            if not saw_done:
+                raise ProviderInternalError(
+                    "Provider stream closed before its completion marker.",
+                    provider_name=self._static.provider_name,
+                )
             latency_ms = int((time.monotonic() - t0) * 1000)
             self._emit_structured_log("chat.stream_generate", latency_ms)
         except httpx.HTTPStatusError as exc:
@@ -142,7 +150,9 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
                 status_code=response.status_code,
                 usage=data.get("usage"),
             )
-            return self._parse_embed_response(data)
+            return self._parse_embed_response(
+                data, len(request.input) if isinstance(request.input, list) else 1
+            )
         except httpx.HTTPStatusError as exc:
             raise self._handle_provider_error(exc) from exc
 
@@ -195,8 +205,7 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
         """Build OpenAI auth/content headers plus resolved extra headers."""
         headers = self._build_auth_headers()
         headers["Content-Type"] = "application/json"
-        headers.update(self._context.extra_headers)
-        return headers
+        return self._merge_extra_headers(headers)
 
     def _build_chat_payload(self, request: ChatRequest) -> dict[str, object]:
         """Translate domain chat request into OpenAI chat-completions payload."""
@@ -282,9 +291,9 @@ class OpenAIProvider(BaseProvider[httpx.AsyncClient]):
         )
 
     @staticmethod
-    def _parse_embed_response(data: dict[str, Any]) -> EmbedResponse:
+    def _parse_embed_response(data: dict[str, Any], expected_count: int) -> EmbedResponse:
         """Parse OpenAI embeddings response into normalized ``EmbedResponse``."""
-        embeddings = [item["embedding"] for item in data["data"]]
+        embeddings = ordered_embeddings(data, expected_count)
         usage_raw = data.get("usage", {})
         usage = (
             Usage(
