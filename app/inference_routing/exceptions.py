@@ -18,6 +18,29 @@ class ResolutionError(LLMServiceError):
     error_code: str = "RESOLUTION_ERROR"
 
 
+class RoutingCatalogDriftError(ResolutionError):
+    """The database names a provider or model absent from the loaded catalog.
+
+    The caller did not choose these values; routing read them from an approved
+    entitlement. Treating this as a validation error would wrongly tell the
+    caller to repair a request only an operator can fix.
+    """
+
+    error_code: str = "ROUTING_CATALOG_DRIFT"
+
+    def __init__(self, provider_name: str, model_name: str | None = None) -> None:
+        if model_name is None:
+            message = f"Provider config not loaded for provider {provider_name!r}."
+        else:
+            message = (
+                f"Model {model_name!r} is not present in the loaded catalog "
+                f"for provider {provider_name!r}."
+            )
+        super().__init__(message)
+        self.provider_name = provider_name
+        self.model_name = model_name
+
+
 class ProviderNotAllowedError(ResolutionError):
     """The tenant policy forbids the entitlement's provider."""
 

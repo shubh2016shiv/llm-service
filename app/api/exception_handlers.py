@@ -62,6 +62,7 @@ from app.inference_routing.exceptions import (
     AuthorizedEntitlementUnavailableError,
     OperationNotSupportedError,
     ProviderNotAllowedError,
+    ResolutionError,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,11 @@ _INFERENCE_EXCEPTION_STATUS: dict[type[LLMServiceError], int] = {
     ProviderNotAllowedError: status.HTTP_403_FORBIDDEN,
     OperationNotSupportedError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     AuthorizedEntitlementUnavailableError: status.HTTP_403_FORBIDDEN,
+    # Resolution failures describe server-side routing decisions unless a
+    # subclass above deliberately gives them a caller-facing status. Keeping
+    # this base mapping explicit prevents a future subclass from acquiring a
+    # 500 merely by accident and makes that default reviewable in one place.
+    ResolutionError: status.HTTP_500_INTERNAL_SERVER_ERROR,
     ProviderUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
     ProviderTimeoutError: status.HTTP_504_GATEWAY_TIMEOUT,
     SecretBackendUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,

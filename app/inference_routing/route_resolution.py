@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 
 from app.core.exceptions import (
     ConfigurationError,
-    ModelNotSupportedError,
     TenantNotFoundError,
     TenantSuspendedError,
 )
@@ -29,6 +28,7 @@ from app.inference_routing.exceptions import (
     AuthorizedEntitlementUnavailableError,
     OperationNotSupportedError,
     ProviderNotAllowedError,
+    RoutingCatalogDriftError,
 )
 from app.inference_routing.route_builder import build_entitlement_route
 
@@ -109,12 +109,13 @@ class InferenceRouteResolver:
         try:
             provider = self._provider_catalog.load_provider_config(provider_name)
         except KeyError as error:
-            raise ConfigurationError(
-                f"Provider config not loaded for provider {provider_name!r}."
-            ) from error
+            # The provider and model came from the database entitlement, not
+            # from this HTTP request. A missing catalog entry is therefore a
+            # server/operator configuration problem, never a caller's 422.
+            raise RoutingCatalogDriftError(provider_name) from error
         model = provider.get_model_spec(model_name)
         if model is None:
-            raise ModelNotSupportedError(provider_name, model_name)
+            raise RoutingCatalogDriftError(provider_name, model_name)
         if not model.supports(ModelCapability(operation.value)):
             raise OperationNotSupportedError(provider_name, model_name, operation.value)
         return provider, model

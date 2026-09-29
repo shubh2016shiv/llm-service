@@ -40,20 +40,42 @@ def build_entitlement_route(
         effective_timeout_seconds=provider_config.default_timeout_seconds,
         effective_temperature=provider_config.default_temperature,
         effective_max_tokens=model_spec.max_output_tokens,
+        # Resolved catalog default, same as the effective_* fields above: provider-wide
+        # static headers (e.g. an API version) are carried on the route so execution never
+        # re-reads the catalog. Provider adapters merge this last, so it overrides any
+        # header an adapter hardcodes.
+        extra_headers=provider_config.extra_default_headers,
         extra_config=entitlement.extra_config,
         quota_key=str(entitlement.entitlement_id),
-        route_fingerprint=_route_fingerprint(entitlement, deployment_key),
+        route_fingerprint=_route_fingerprint(
+            entitlement,
+            provider_config,
+            model_spec,
+            deployment_key,
+        ),
     )
 
 
 def _route_fingerprint(
     entitlement: UserEntitlementConfig,
+    provider_config: ProviderStaticConfig,
+    model_spec: LLMModelSpec,
     deployment_key: str,
 ) -> str:
-    """Return a stable SHA-256 identity for cache-safe route comparison."""
+    """Return a stable SHA-256 identity for every input captured by a route.
+
+    Provider instances are cached by this value. Including the catalog inputs
+    means a future config reload cannot reuse an old provider after headers,
+    timeouts, endpoints, or model limits have changed.
+    """
     payload = {
         "deployment_key": deployment_key,
         "entitlement": entitlement.model_dump(mode="json"),
+        # These objects are immutable today, but including them makes the cache
+        # key correct by construction instead of relying on "loaded once" as
+        # an undocumented assumption.
+        "provider_config": provider_config.model_dump(mode="json"),
+        "model_spec": model_spec.model_dump(mode="json"),
     }
     normalized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
