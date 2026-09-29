@@ -63,12 +63,16 @@ class SSEStreamDelivery:
         self,
         *,
         heartbeat_interval_seconds: float,
+        cleanup_timeout_seconds: float = 5.0,
         error_mapper: StreamErrorMapper | None = None,
     ) -> None:
         """Configure heartbeat cadence and optional application error mapping."""
         if heartbeat_interval_seconds <= 0:
             raise ValueError("heartbeat_interval_seconds must be positive")
+        if cleanup_timeout_seconds <= 0:
+            raise ValueError("cleanup_timeout_seconds must be positive")
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._cleanup_timeout_seconds = cleanup_timeout_seconds
         self._error_mapper = error_mapper or _default_error_event
 
     async def stream(
@@ -199,8 +203,8 @@ class SSEStreamDelivery:
             )
             return _default_error_event(exc)
 
-    @staticmethod
     async def _close_source(
+        self,
         iterator: AsyncIterator[StreamEventPayload],
         state: _DeliveryState,
         thread_id: UUID,
@@ -208,7 +212,14 @@ class SSEStreamDelivery:
         """Cancel the outstanding read and close the source on every exit path."""
         if state.pending_read is not None and not state.pending_read.done():
             state.pending_read.cancel()
-            await asyncio.gather(state.pending_read, return_exceptions=True)
+            done, pending = await asyncio.wait(
+                {state.pending_read}, timeout=self._cleanup_timeout_seconds
+            )
+            if pending:
+                state.pending_read.add_done_callback(self._observe_pending_read)
+                logger.warning("SSE source read did not stop after cancellation")
+            elif done:
+                self._observe_pending_read(state.pending_read)
         if isinstance(iterator, AsyncClosable):
             try:
                 await iterator.aclose()
@@ -217,6 +228,12 @@ class SSEStreamDelivery:
                     "Failed to close SSE source iterator",
                     extra={"thread_id": str(thread_id)},
                 )
+
+    @staticmethod
+    def _observe_pending_read(task: asyncio.Future[StreamEventPayload]) -> None:
+        """Consume a late task failure after bounded disconnect cleanup."""
+        if not task.cancelled():
+            task.exception()
 
 
 def _default_error_event(exc: Exception) -> StreamEventPayload:
