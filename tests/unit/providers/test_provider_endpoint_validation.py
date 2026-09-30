@@ -14,6 +14,8 @@ from tests.unit.inference_routing.conftest import build_user_entitlement_config
         "file:///etc/passwd",
         "provider.example/v1",
         "https://user:password@provider.example/v1",
+        "https://provider.example/v1?trace=1",
+        "https://provider.example/v1?api-version=2026",
         "https://provider.example/v1#fragment",
     ],
 )

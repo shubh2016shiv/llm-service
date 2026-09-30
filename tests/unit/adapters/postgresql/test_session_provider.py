@@ -12,9 +12,14 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.sql import text
 
 from app.adapters.postgresql import PostgresSessionProvider
 from app.adapters.postgresql import session_provider as session_provider_module
+from app.api.exception_handlers import _INFERENCE_EXCEPTION_STATUS, _resolve_status
+from app.core.exceptions import DatabaseUnavailableError
 from app.core.settings.models.infrastructure_config import DatabaseConfig
 
 if TYPE_CHECKING:
@@ -93,6 +98,19 @@ class RecordingSession:
     async def rollback(self) -> None:
         """Record a rollback call."""
         self.rollback_called = True
+
+
+class UnavailableSession(RecordingSession):
+    """Fake session whose first database operation cannot check out a connection."""
+
+    def __init__(self, database_error: Exception) -> None:
+        """Store the availability failure raised by the first operation."""
+        super().__init__()
+        self.database_error = database_error
+
+    async def execute(self, _statement: object) -> None:
+        """Raise the configured lazy-checkout or connection failure."""
+        raise self.database_error
 
 
 class RecordingSessionFactory:
@@ -263,6 +281,65 @@ async def test_get_session_rolls_back_when_caller_is_cancelled() -> None:
 
     assert session.rollback_called is True
     assert provider.stats()["transaction.rolled_back"] == 1
+
+
+@pytest.mark.parametrize(
+    "database_error",
+    [
+        pytest.param(
+            OperationalError("SELECT 1", {}, Exception("connection refused")),
+            id="connection-refused",
+        ),
+        pytest.param(
+            SQLAlchemyTimeoutError("pool exhausted"),
+            id="pool-exhausted",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_session_translates_first_operation_outage_to_503_error(
+    database_error: Exception,
+) -> None:
+    """A lazy checkout failure must answer 503 rather than a generic 500."""
+    session = UnavailableSession(database_error)
+    provider = build_unconfigured_provider()
+    provider._session_factory = cast(
+        "async_sessionmaker[AsyncSession]",
+        RecordingSessionFactory(session),
+    )
+
+    with pytest.raises(DatabaseUnavailableError) as exc_info:
+        async with provider.get_session() as handed_session:
+            await handed_session.execute(text("SELECT 1"))
+
+    assert session.rollback_called is True
+    assert session.commit_called is False
+    assert provider.stats()["session.unavailable"] == 1
+    assert exc_info.value.__cause__ is database_error
+    assert _resolve_status(exc_info.value, _INFERENCE_EXCEPTION_STATUS) == 503
+
+
+@pytest.mark.asyncio
+async def test_get_session_does_not_translate_a_constraint_violation() -> None:
+    """A database that answered and refused the work keeps its own error.
+
+    IntegrityError is a sibling of OperationalError, not a subclass, so it must
+    travel untouched and keep being answered as a constraint violation.
+    """
+    session = RecordingSession()
+    provider = build_unconfigured_provider()
+    provider._session_factory = cast(
+        "async_sessionmaker[AsyncSession]",
+        RecordingSessionFactory(session),
+    )
+
+    with pytest.raises(IntegrityError):
+        async with provider.get_session():
+            raise IntegrityError("INSERT", {}, Exception("duplicate key"))
+
+    assert session.rollback_called is True
+    # stats() is a plain snapshot, so an untouched counter is absent entirely.
+    assert provider.stats().get("session.unavailable", 0) == 0
 
 
 @pytest.mark.asyncio

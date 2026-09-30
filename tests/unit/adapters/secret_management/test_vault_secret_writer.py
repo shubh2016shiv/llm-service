@@ -94,3 +94,79 @@ async def test_writer_rejects_empty_payload_before_network_write() -> None:
         )
 
     client.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_secret_succeeds_against_metadata_endpoint() -> None:
+    """A successful destroy hits the metadata path, not the data path."""
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=[_login_response()])
+    client.delete = AsyncMock(return_value=_response(status=204))
+    writer = VaultSecretWriter(
+        "http://vault.test",
+        "writer",
+        "password",
+        0.9,
+        http_client=cast("httpx.AsyncClient", client),
+    )
+
+    await writer.delete_secret("tenant-a/openai/versions/abc", tenant_id="tenant-a")
+
+    called_path = client.delete.await_args.args[0]
+    assert "/metadata/" in called_path
+    assert "/data/" not in called_path
+
+
+@pytest.mark.asyncio
+async def test_delete_secret_treats_already_gone_as_success() -> None:
+    """Cleaning up a reference that never landed (or was already cleaned) is not an error."""
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=[_login_response()])
+    client.delete = AsyncMock(return_value=_response(status=404))
+    writer = VaultSecretWriter(
+        "http://vault.test",
+        "writer",
+        "password",
+        0.9,
+        http_client=cast("httpx.AsyncClient", client),
+    )
+
+    await writer.delete_secret("tenant-a/openai/versions/abc", tenant_id="tenant-a")
+
+
+@pytest.mark.asyncio
+async def test_delete_secret_denied_raises_permission_error() -> None:
+    """A policy denial on delete must not look like a successful cleanup."""
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=[_login_response()])
+    client.delete = AsyncMock(return_value=_response(status=403))
+    writer = VaultSecretWriter(
+        "http://vault.test",
+        "writer",
+        "password",
+        0.9,
+        client_options=VaultClientOptions(request_max_attempts=1),
+        http_client=cast("httpx.AsyncClient", client),
+    )
+
+    with pytest.raises(PermissionError):
+        await writer.delete_secret("tenant-a/openai/versions/abc", tenant_id="tenant-a")
+
+
+@pytest.mark.asyncio
+async def test_delete_secret_exhausted_backend_failure_raises_domain_error() -> None:
+    """A persistent backend outage during cleanup uses the same stable 503-domain error."""
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=[_login_response()])
+    client.delete = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
+    writer = VaultSecretWriter(
+        "http://vault.test",
+        "writer",
+        "password",
+        0.9,
+        client_options=VaultClientOptions(request_max_attempts=1),
+        http_client=cast("httpx.AsyncClient", client),
+    )
+
+    with pytest.raises(SecretBackendUnavailableError):
+        await writer.delete_secret("tenant-a/openai/versions/abc", tenant_id="tenant-a")

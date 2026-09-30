@@ -13,6 +13,9 @@ from app.inference_routing.exceptions import (
 )
 from tests.unit.inference_routing.conftest import (
     ENTITLEMENT_ID,
+    PROVIDER_NAME,
+    FakeConfigLoader,
+    build_provider_static_config,
     build_tenant_config,
     build_user_entitlement_config,
 )
@@ -34,6 +37,26 @@ async def test_resolve_route_with_authorized_entitlement_returns_user_route() ->
     route = await build_route_resolver(reader).resolve_route(build_resolution_request())
 
     assert route.quota_key == str(ENTITLEMENT_ID)
+
+
+@pytest.mark.asyncio
+async def test_resolve_route_carries_provider_catalog_headers_onto_the_route() -> None:
+    """Headers configured in provider YAML reach the field adapters send from."""
+    reader = FakeInferenceRoutingConfigReader(
+        tenant=build_tenant_config(),
+        entitlement=build_user_entitlement_config(),
+    )
+    catalog = FakeConfigLoader(
+        {
+            PROVIDER_NAME: build_provider_static_config(
+                extra_default_headers={"OpenAI-Beta": "assistants=v2"},
+            )
+        }
+    )
+
+    route = await build_route_resolver(reader, catalog).resolve_route(build_resolution_request())
+
+    assert route.extra_headers == {"OpenAI-Beta": "assistants=v2"}
 
 
 @pytest.mark.asyncio

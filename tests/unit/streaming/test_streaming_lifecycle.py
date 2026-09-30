@@ -13,6 +13,7 @@ import pytest
 from app.core.exceptions import StreamCapacityExceededError
 from app.schemas.responses_schema import ChatStreamChunk, Usage
 from app.services.streaming_session import StreamingInferenceSession
+from app.streaming.chat_chunk_adapter import adapt_chat_chunks, map_llm_stream_error
 from app.streaming.sse_delivery import SSEStreamDelivery
 from app.streaming.sse_encoder import encode_sse_message
 from app.streaming.sse_message import SSEMessage
@@ -68,9 +69,7 @@ async def _failed_provider() -> AsyncIterator[ChatStreamChunk]:
 
 def _json_data(message: str) -> dict[str, object]:
     data = "\n".join(
-        line.removeprefix("data: ")
-        for line in message.splitlines()
-        if line.startswith("data: ")
+        line.removeprefix("data: ") for line in message.splitlines() if line.startswith("data: ")
     )
     payload = json.loads(data)
     assert isinstance(payload, dict)
@@ -199,10 +198,9 @@ async def test_delivery_associates_every_data_event_with_thread() -> None:
     """REQ: chunks and completion share one stable thread and increasing sequence."""
 
     async def events() -> AsyncIterator[StreamEventPayload]:
-        await asyncio.sleep(0.03)
         yield text_delta_event("hello")
 
-    delivery = SSEStreamDelivery(heartbeat_interval_seconds=0.01)
+    delivery = SSEStreamDelivery(heartbeat_interval_seconds=1)
     messages = [
         message
         async for message in delivery.stream(
@@ -212,7 +210,6 @@ async def test_delivery_associates_every_data_event_with_thread() -> None:
         )
     ]
 
-    assert any(message == ": heartbeat\n\n" for message in messages)
     data_messages = [message for message in messages if "data: " in message]
     payloads = [_json_data(message) for message in data_messages]
     assert [payload["thread_id"] for payload in payloads] == [str(THREAD_ID)] * 2
@@ -220,6 +217,107 @@ async def test_delivery_associates_every_data_event_with_thread() -> None:
     assert "event: text_delta" in data_messages[0]
     assert "event: complete" in data_messages[1]
     assert all("[DONE]" not in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_heartbeats_do_not_cancel_the_in_flight_source_read() -> None:
+    """REQ: repeated heartbeats preserve one pending read and its eventual event."""
+
+    async def delayed_event() -> AsyncIterator[StreamEventPayload]:
+        await asyncio.sleep(0.06)
+        yield text_delta_event("arrived")
+
+    delivery = SSEStreamDelivery(heartbeat_interval_seconds=0.01)
+    messages = [message async for message in delivery.stream(delayed_event(), thread_id=THREAD_ID)]
+
+    heartbeats = [message for message in messages if message == ": heartbeat\n\n"]
+    data_messages = [message for message in messages if "data: " in message]
+    assert len(heartbeats) >= 2
+    assert sum("event: text_delta" in message for message in data_messages) == 1
+    assert [payload["sequence"] for payload in map(_json_data, data_messages)] == [1, 2]
+    assert "event: complete" in data_messages[-1]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cleanup_is_bounded_when_source_ignores_cancellation() -> None:
+    """A provider read that suppresses cancellation cannot hold HTTP teardown."""
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+
+    class StubbornSource:
+        def __aiter__(self) -> StubbornSource:
+            return self
+
+        async def __anext__(self) -> StreamEventPayload:
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            return None
+
+    delivery = SSEStreamDelivery(
+        heartbeat_interval_seconds=1,
+        cleanup_timeout_seconds=0.01,
+    )
+    stream = delivery.stream(StubbornSource(), thread_id=THREAD_ID)
+    read = asyncio.create_task(anext(stream))
+    await started.wait()
+    read.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(read, timeout=0.5)
+    assert cancelled.is_set()
+    release.set()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_absolute_duration_stops_a_provider_that_keeps_trickling_chunks() -> None:
+    """REQ: regular chunks cannot retain quota and worker capacity forever."""
+    provider_closed = asyncio.Event()
+
+    async def trickling_provider() -> AsyncIterator[ChatStreamChunk]:
+        try:
+            while True:
+                await asyncio.sleep(0.01)
+                yield ChatStreamChunk(content="still-running")
+        finally:
+            provider_closed.set()
+
+    limiter = WorkerStreamCapacityLimiter(max_concurrent=1, retry_after_seconds=1)
+    lease = await limiter.acquire()
+    finalizer = RecordingFinalizer()
+    session = StreamingInferenceSession(
+        provider_chunks=trickling_provider(),
+        lease=lease,
+        finalize=finalizer,
+        cleanup_timeout_seconds=1,
+        max_duration_seconds=0.05,
+    )
+    delivery = SSEStreamDelivery(
+        heartbeat_interval_seconds=1,
+        error_mapper=map_llm_stream_error,
+    )
+
+    messages = [
+        message
+        async for message in delivery.stream(
+            adapt_chat_chunks(session),
+            thread_id=THREAD_ID,
+        )
+    ]
+
+    assert any("STREAM_DURATION_EXCEEDED" in message for message in messages)
+    assert _json_data(messages[-1])["data"] == {"status": "failed"}
+    assert finalizer.calls == [("failed", None, None)]
+    assert provider_closed.is_set()
+    assert limiter.active_stream_count == 0
 
 
 @pytest.mark.asyncio
@@ -236,9 +334,7 @@ async def test_delivery_supports_parsed_structured_output_deltas() -> None:
         )
 
     delivery = SSEStreamDelivery(heartbeat_interval_seconds=1)
-    messages = [
-        message async for message in delivery.stream(events(), thread_id=THREAD_ID)
-    ]
+    messages = [message async for message in delivery.stream(events(), thread_id=THREAD_ID)]
 
     payload = _json_data(messages[0])
     assert "event: structured_delta" in messages[0]
@@ -279,9 +375,7 @@ async def test_delivery_hides_unexpected_exception_text() -> None:
         raise RuntimeError("secret provider diagnostic")
 
     delivery = SSEStreamDelivery(heartbeat_interval_seconds=1)
-    messages = [
-        message async for message in delivery.stream(events(), thread_id=THREAD_ID)
-    ]
+    messages = [message async for message in delivery.stream(events(), thread_id=THREAD_ID)]
 
     assert any("event: error" in message for message in messages)
     assert all("secret provider diagnostic" not in message for message in messages)

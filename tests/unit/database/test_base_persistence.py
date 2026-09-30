@@ -9,8 +9,13 @@ from __future__ import annotations
 from enum import StrEnum
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
-from app.database.base import BasePersistence
+from app.database.base import (
+    BasePersistence,
+    DuplicateResourceError,
+    MissingReferencedResourceError,
+)
 
 
 class ExampleStatus(StrEnum):
@@ -149,3 +154,46 @@ def test_serialize_json_with_non_finite_number_raises_value_error(
     """REQ: JSON serialization rejects values PostgreSQL JSONB cannot store."""
     with pytest.raises(ValueError, match="JSON-serializable"):
         persistence.serialize_json({"temperature": float("nan")}, "metadata")
+
+
+def test_known_database_unique_violation_becomes_conflict(
+    persistence: BasePersistence,
+) -> None:
+    """REQ: a uniqueness race after preflight still has conflict semantics."""
+    error = IntegrityError(
+        "INSERT",
+        {},
+        Exception('duplicate key value violates unique constraint "uq_route"'),
+    )
+
+    with pytest.raises(DuplicateResourceError, match="Route already exists"):
+        persistence.raise_for_unique_violation(error, {"uq_route": "Route already exists"})
+
+
+def test_unknown_database_unique_violation_is_not_mislabeled(
+    persistence: BasePersistence,
+) -> None:
+    """REQ: only audited constraint names become a public conflict error."""
+    error = IntegrityError(
+        "INSERT",
+        {},
+        Exception('duplicate key value violates unique constraint "other_constraint"'),
+    )
+
+    persistence.raise_for_unique_violation(error, {"uq_route": "Route already exists"})
+
+
+def test_known_database_foreign_key_violation_becomes_missing_resource(
+    persistence: BasePersistence,
+) -> None:
+    """REQ: a deleted reference after preflight still has not-found semantics."""
+    error = IntegrityError(
+        "INSERT",
+        {},
+        Exception('violates foreign key constraint "fk_entitlement_deployment"'),
+    )
+
+    with pytest.raises(MissingReferencedResourceError, match="TenantDeployment"):
+        persistence.raise_for_foreign_key_violation(
+            error, {"fk_entitlement_deployment": ("TenantDeployment", "route")}
+        )

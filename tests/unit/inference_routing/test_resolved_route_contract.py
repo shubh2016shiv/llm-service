@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.exceptions import ConfigurationError, ModelNotSupportedError
 from app.core.settings.models.model_config import ModelCapability
-from app.inference_routing.exceptions import OperationNotSupportedError
+from app.inference_routing.exceptions import OperationNotSupportedError, RoutingCatalogDriftError
 from app.inference_routing.models import ResolvedRoute
 from app.schemas.enums import OperationType
 from tests.unit.inference_routing.conftest import (
@@ -28,10 +27,21 @@ from tests.unit.inference_routing.routing_fakes import (
 )
 
 EXPECTED_ROUTE_FIELDS = {
-    "tenant_id", "deployment_key", "provider_static_config", "provider_name",
-    "model_name", "api_endpoint_url", "cloud_region", "secret_reference",
-    "effective_timeout_seconds", "effective_temperature", "effective_max_tokens",
-    "extra_headers", "extra_config", "quota_key", "route_fingerprint",
+    "tenant_id",
+    "deployment_key",
+    "provider_static_config",
+    "provider_name",
+    "model_name",
+    "api_endpoint_url",
+    "cloud_region",
+    "secret_reference",
+    "effective_timeout_seconds",
+    "effective_temperature",
+    "effective_max_tokens",
+    "extra_headers",
+    "extra_config",
+    "quota_key",
+    "route_fingerprint",
 }
 
 
@@ -92,18 +102,49 @@ async def test_identical_routes_have_identical_fingerprints() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "changed_provider",
+    [
+        build_provider_static_config(extra_default_headers={"X-API-Version": "2026-09-29"}),
+        build_provider_static_config(default_timeout_seconds=45.0),
+        build_provider_static_config(
+            model_spec=build_model_spec().model_copy(update={"max_output_tokens": 2048})
+        ),
+    ],
+)
+async def test_catalog_changes_produce_a_new_route_fingerprint(changed_provider) -> None:
+    """Cached providers cannot survive changes to route-carrying catalog values."""
+    reader = build_entitlement_reader()
+    original = await build_route_resolver(reader).resolve_route(build_resolution_request())
+    changed = await build_route_resolver(
+        reader,
+        FakeConfigLoader({PROVIDER_NAME: changed_provider}),
+    ).resolve_route(build_resolution_request())
+
+    assert changed.route_fingerprint != original.route_fingerprint
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("loader", "model_name", "operation", "expected_error"),
     [
-        (FakeConfigLoader(), MODEL_NAME, OperationType.CHAT, ConfigurationError),
+        (FakeConfigLoader(), MODEL_NAME, OperationType.CHAT, RoutingCatalogDriftError),
         (
             FakeConfigLoader({PROVIDER_NAME: build_provider_static_config()}),
-            "missing-model", OperationType.CHAT, ModelNotSupportedError,
+            "missing-model",
+            OperationType.CHAT,
+            RoutingCatalogDriftError,
         ),
         (
-            FakeConfigLoader({PROVIDER_NAME: build_provider_static_config(
-                model_spec=build_model_spec(capabilities=frozenset({ModelCapability.EMBED}))
-            )}),
-            MODEL_NAME, OperationType.CHAT, OperationNotSupportedError,
+            FakeConfigLoader(
+                {
+                    PROVIDER_NAME: build_provider_static_config(
+                        model_spec=build_model_spec(capabilities=frozenset({ModelCapability.EMBED}))
+                    )
+                }
+            ),
+            MODEL_NAME,
+            OperationType.CHAT,
+            OperationNotSupportedError,
         ),
     ],
 )

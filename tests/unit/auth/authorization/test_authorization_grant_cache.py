@@ -191,6 +191,26 @@ async def test_store_grant_when_versions_change_does_not_cache_stale_context() -
 
 
 @pytest.mark.asyncio
+async def test_find_grant_after_invalidate_reads_the_opaque_marker_without_raising() -> None:
+    """REQ: reading a version marker written by invalidation must never raise.
+
+    Invalidation writes an opaque "v:<uuid4>" marker (authorization_grant_
+    storage._advance_version), not the "tenant:<n>" sentinel shape. A find_grant
+    call for a scope that was ever invalidated must decode that marker cleanly
+    instead of failing Pydantic validation.
+    """
+    backend = FakeAuthorizationGrantBackend()
+    cache = AuthorizationGrantCache(backend, CACHE_TTL_SECONDS)
+
+    await cache.invalidate_tenant(TENANT_ID)
+    lookup = await cache.find_grant(TENANT_ID, USER_ID, DEPLOYMENT_KEY)
+
+    assert lookup.context is None
+    assert lookup.observed_versions is not None
+    assert lookup.observed_versions.tenant_version.startswith("v:")
+
+
+@pytest.mark.asyncio
 async def test_invalidate_tenant_when_backend_write_fails_raises_typed_error() -> None:
     """REQ: authorization invalidation failure must be visible to management callers."""
     backend = FakeAuthorizationGrantBackend()

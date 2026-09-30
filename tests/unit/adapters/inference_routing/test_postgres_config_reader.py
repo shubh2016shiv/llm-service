@@ -7,13 +7,14 @@ from typing import Any
 import pytest
 
 from app.adapters.inference_routing import PostgresInferenceRoutingConfigReader
+from tests.unit.adapters.inference_routing.routing_row_fakes import (
+    entitlement_row,
+    tenant_row,
+)
 from tests.unit.inference_routing.conftest import (
-    API_ENDPOINT,
     ENTITLEMENT_ID,
-    MODEL_NAME,
     PROVIDER_NAME,
     TENANT_ID,
-    USER_ID,
 )
 from tests.unit.inference_routing.routing_fakes import build_resolution_request
 
@@ -41,29 +42,6 @@ def build_reader(persistence: FakeRoutingPersistence) -> PostgresInferenceRoutin
     return PostgresInferenceRoutingConfigReader(persistence, persistence)
 
 
-def tenant_row() -> dict[str, Any]:
-    """Build a realistic tenant routing projection."""
-    return {
-        "tenant_id": TENANT_ID, "tenant_name": "Acme", "tenant_slug": "acme",
-        "status": "active", "tier": "enterprise",
-        "rate_limit_requests_per_minute": 100,
-        "rate_limit_tokens_per_minute": 10_000,
-        "rate_limit_concurrent_requests": 5,
-        "allowed_provider_names": [PROVIDER_NAME],
-    }
-
-
-def entitlement_row() -> dict[str, Any]:
-    """Build a realistic entitlement routing projection."""
-    return {
-        "entitlement_id": ENTITLEMENT_ID, "user_id": USER_ID, "tenant_id": TENANT_ID,
-        "entitlement_name": "Personal route", "provider_name": PROVIDER_NAME,
-        "model_name": MODEL_NAME, "api_endpoint_url": API_ENDPOINT,
-        "secret_reference": "secret/user/openai-key", "cloud_provider": None,
-        "cloud_region": None, "extra_config": {"owner": "user"}, "status": "active",
-    }
-
-
 @pytest.mark.asyncio
 async def test_read_tenant_config_maps_database_projection() -> None:
     """Untrusted tenant rows cross the validated model boundary."""
@@ -75,6 +53,37 @@ async def test_read_tenant_config_maps_database_projection() -> None:
     assert tenant is not None
     assert tenant.is_active
     assert tenant.allowed_provider_names == frozenset({PROVIDER_NAME})
+
+
+@pytest.mark.asyncio
+async def test_read_tenant_config_null_allow_list_permits_every_provider() -> None:
+    """Database NULL means no restriction: every provider is permitted."""
+    persistence = FakeRoutingPersistence()
+    row = tenant_row()
+    row["allowed_provider_names"] = None
+    persistence.tenant_row = row
+
+    tenant = await build_reader(persistence).read_tenant_config(TENANT_ID)
+
+    assert tenant is not None
+    assert tenant.allowed_provider_names is None
+    assert tenant.allows_provider(PROVIDER_NAME)
+    assert tenant.allows_provider("some-other-provider")
+
+
+@pytest.mark.asyncio
+async def test_read_tenant_config_empty_allow_list_permits_no_provider() -> None:
+    """Database empty list means an empty permitted set, not 'no restriction'."""
+    persistence = FakeRoutingPersistence()
+    row = tenant_row()
+    row["allowed_provider_names"] = []
+    persistence.tenant_row = row
+
+    tenant = await build_reader(persistence).read_tenant_config(TENANT_ID)
+
+    assert tenant is not None
+    assert tenant.allowed_provider_names == frozenset()
+    assert not tenant.allows_provider(PROVIDER_NAME)
 
 
 @pytest.mark.asyncio

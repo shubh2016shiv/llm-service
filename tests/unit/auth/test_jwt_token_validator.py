@@ -131,12 +131,46 @@ async def test_get_current_user_rejects_refresh_token(
     assert excinfo.value.status_code == 401
 
 
-def test_role_guard_rejects_insufficient_role(test_settings: ApplicationSettings) -> None:
+@pytest.mark.asyncio
+@pytest.mark.parametrize("out_of_range_timestamp", [1e300, 99_999_999_999_999])
+async def test_get_current_user_rejects_out_of_range_timestamp_as_401(
+    test_settings: ApplicationSettings,
+    out_of_range_timestamp: float | int,
+) -> None:
+    """A signed but unrepresentable NumericDate is malformed, not a server error."""
+    credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=_encode_claims(test_settings, exp=out_of_range_timestamp),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await get_current_user(credentials)
+
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.headers == {"WWW-Authenticate": "Bearer"}
+    assert isinstance(excinfo.value.__cause__, ValueError)
+
+
+@pytest.mark.asyncio
+async def test_role_guard_rejects_insufficient_role(
+    test_settings: ApplicationSettings,
+) -> None:
     """An endpoint guard stops a caller outside its permitted role set."""
     guard = RoleGuard(["admin"])
     caller = validate_access_token(_encode_claims(test_settings, role="developer"))
 
     with pytest.raises(HTTPException) as excinfo:
-        guard(caller)
+        await guard(caller)
 
     assert excinfo.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_role_guard_returns_permitted_caller(test_settings: ApplicationSettings) -> None:
+    """Making the FastAPI dependency async preserves its successful result."""
+    guard = RoleGuard(["admin"])
+    caller = validate_access_token(_encode_claims(test_settings, role="admin"))
+
+    result = await guard(caller)
+
+    assert result is caller

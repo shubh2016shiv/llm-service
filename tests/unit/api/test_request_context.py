@@ -19,6 +19,14 @@ def test_valid_upstream_request_id_is_preserved() -> None:
     assert accepted is True
 
 
+def test_missing_request_id_is_generated_but_not_reported_as_accepted() -> None:
+    """The acceptance flag describes a supplied header, not normal absence."""
+    request_id, accepted = resolve_request_id(None)
+
+    assert accepted is False
+    assert UUID(request_id).version == 4
+
+
 @pytest.mark.parametrize(
     "unsafe_value",
     ["contains space", "line\nbreak", "x" * 129, ""],

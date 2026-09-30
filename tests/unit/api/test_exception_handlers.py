@@ -18,11 +18,25 @@ from app.api.exception_handlers import (
 from app.core.exceptions import (
     DeploymentInactiveError,
     DeploymentNotFoundError,
+    InvalidSecretValueError,
     ProviderError,
+    SecretAccessDeniedError,
+    SecretBackendUnavailableError,
+    SecretReferenceNotFoundError,
     TenantAccessDeniedError,
     TenantNotFoundError,
 )
-from app.inference_routing.exceptions import AuthorizedEntitlementUnavailableError
+from app.inference_routing.exceptions import (
+    AuthorizedEntitlementUnavailableError,
+    OperationNotSupportedError,
+    ProviderNotAllowedError,
+    ResolutionError,
+    RoutingCatalogDriftError,
+)
+
+
+class FutureResolutionError(ResolutionError):
+    """Stand in for a future routing failure with no dedicated HTTP mapping."""
 
 
 def test_translate_inference_error_with_tenant_access_denied_returns_403() -> None:
@@ -58,6 +72,34 @@ def test_translate_inference_error_known_mappings(exc: Exception, expected_statu
         translate_inference_error(exc)  # type: ignore[arg-type]
 
     assert exc_info.value.status_code == expected_status
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_status"),
+    [
+        (
+            RoutingCatalogDriftError("openai", "missing-model"),
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ),
+        (FutureResolutionError("future routing failure"), status.HTTP_500_INTERNAL_SERVER_ERROR),
+        (ProviderNotAllowedError("tenant-1", "openai"), status.HTTP_403_FORBIDDEN),
+        (
+            OperationNotSupportedError("openai", "embed-only", "chat"),
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+        ),
+        (AuthorizedEntitlementUnavailableError("entitlement-1"), status.HTTP_403_FORBIDDEN),
+    ],
+)
+def test_resolution_failures_have_deliberate_http_statuses(
+    exc: ResolutionError,
+    expected_status: int,
+) -> None:
+    """New resolution errors default to 500 while known client outcomes stay specific."""
+    with pytest.raises(HTTPException) as exc_info:
+        translate_inference_error(exc)
+
+    assert exc_info.value.status_code == expected_status
+    assert _resolve_status(exc, _FALLBACK_EXCEPTION_STATUS) == expected_status
 
 
 def test_translate_management_error_with_tenant_access_denied_returns_403() -> None:
@@ -107,6 +149,73 @@ def test_generic_provider_failure_maps_to_bad_gateway() -> None:
         translate_inference_error(exc)
 
     assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_status", "expected_error_code"),
+    [
+        (
+            SecretReferenceNotFoundError("secret/acme/openai"),
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "SECRET_REFERENCE_NOT_FOUND",
+        ),
+        (
+            InvalidSecretValueError("secret/acme/openai"),
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "INVALID_SECRET_VALUE",
+        ),
+        (
+            SecretAccessDeniedError("secret/acme/openai"),
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "SECRET_ACCESS_DENIED",
+        ),
+        (
+            SecretBackendUnavailableError(
+                "vault",
+                "secret/acme/openai",
+                "transport unavailable",
+            ),
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "SECRET_BACKEND_UNAVAILABLE",
+        ),
+    ],
+)
+def test_secret_read_failure_has_distinct_inference_http_contract(
+    exc: Exception,
+    expected_status: int,
+    expected_error_code: str,
+) -> None:
+    """Credential failures expose stable categories without becoming generic 500s."""
+    with pytest.raises(HTTPException) as exc_info:
+        translate_inference_error(exc)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == expected_status
+    assert exc_info.value.error_code == expected_error_code  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_status"),
+    [
+        (
+            SecretReferenceNotFoundError("secret/acme/openai"),
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ),
+        (
+            InvalidSecretValueError("secret/acme/openai"),
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ),
+        (
+            SecretAccessDeniedError("secret/acme/openai"),
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        ),
+    ],
+)
+def test_secret_read_failure_resolves_through_global_fallback_map(
+    exc: Exception,
+    expected_status: int,
+) -> None:
+    """Escaped credential failures retain their inference status globally."""
+    assert _resolve_status(exc, _FALLBACK_EXCEPTION_STATUS) == expected_status  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

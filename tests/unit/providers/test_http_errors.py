@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 
-from app.core.exceptions import RequestsPerMinuteExceededError
+from app.core.exceptions import ProviderTimeoutError, RequestsPerMinuteExceededError
 from app.providers.http_errors import classify_error
 
 
@@ -30,3 +30,10 @@ def test_classify_unknown_error_does_not_echo_raw_exception_text() -> None:
 
     assert "super-secret" not in str(result)
     assert result.details == {"exception_type": "RuntimeError"}
+
+
+def test_classify_local_timeout_as_provider_timeout() -> None:
+    """An overall batch deadline has the same public error as an SDK timeout."""
+    result = classify_error(TimeoutError(), "bedrock", timeout_seconds=3)
+
+    assert isinstance(result, ProviderTimeoutError)

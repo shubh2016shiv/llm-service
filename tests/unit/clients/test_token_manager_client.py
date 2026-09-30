@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -109,6 +110,37 @@ async def test_acquire_and_finalize_follow_token_manager_contract() -> None:
     assert release_claims["user_id"] == str(USER_ID)
     assert release_claims["tenant_id"] == str(route.tenant_id)
     assert requests[1].read().decode().find('"actual_completion_tokens":2') >= 0
+
+
+@pytest.mark.asyncio
+async def test_acquire_reserves_requested_completion_limit() -> None:
+    """A smaller caller limit must reduce the quota reservation."""
+    payloads: list[dict[str, object]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            201,
+            json={
+                "token_request_id": "reservation-1",
+                "allocation_status": "ACQUIRED",
+                "token_count": 17,
+                "api_endpoint_url": "https://api.openai.com/v1",
+            },
+        )
+
+    client = _client(httpx.MockTransport(handle))
+    await client.acquire_reservation(
+        user_id=USER_ID,
+        context=await _route(),
+        request=ChatRequest(
+            thread_id=THREAD_ID,
+            messages=[ChatMessage(role="user", content="hello")],
+            max_tokens=7,
+        ),
+    )
+
+    assert payloads[0]["requested_completion_tokens"] == 7
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 
+from app.core.exceptions import InvalidRequestError
 from app.schemas.requests_schema import ChatMessage, ChatRequest
 from app.schemas.responses_schema import ChatResponse, ChatStreamChunk, Usage
 from app.services.inference import InferenceService
@@ -130,6 +131,39 @@ class FailingFinalizationTokenManager(RecordingTokenManager):
         completion_tokens: int | None = None,
     ) -> None:
         raise RuntimeError("accounting unavailable")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_chat_limit_exceeding_route_is_rejected_before_reservation(
+    stream: bool,
+) -> None:
+    """An unauthorized completion limit consumes no quota or stream capacity."""
+    reader = FakeInferenceRoutingConfigReader(
+        tenant=build_tenant_config(),
+        entitlement=build_user_entitlement_config(),
+    )
+    route = await build_route_resolver(reader).resolve_route(build_resolution_request())
+    token_manager = RecordingTokenManager()
+    service = InferenceService(
+        cast("TokenManagerClient", token_manager),
+        cast("ProviderRegistry", FakeProviderRegistry()),
+        WorkerStreamCapacityLimiter(max_concurrent=2, retry_after_seconds=1),
+    )
+    request = ChatRequest(
+        thread_id=THREAD_ID,
+        messages=[ChatMessage(role="user", content="hello")],
+        max_tokens=route.effective_max_tokens + 1,
+        stream=stream,
+    )
+
+    with pytest.raises(InvalidRequestError, match="max_tokens"):
+        if stream:
+            await service.prepare_stream_chat(route, request, user_id=USER_ID)
+        else:
+            await service.execute_chat(route, request, user_id=USER_ID)
+
+    assert token_manager.acquire_calls == []
 
 
 @pytest.mark.asyncio

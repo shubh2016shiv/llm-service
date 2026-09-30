@@ -8,7 +8,13 @@ import pytest
 from aiobreaker import CircuitBreaker
 from pydantic import ValidationError
 
-from app.core.exceptions import ConfigurationError
+from app.core.exceptions import (
+    ConfigurationError,
+    InvalidSecretValueError,
+    SecretAccessDeniedError,
+    SecretReadError,
+    SecretReferenceNotFoundError,
+)
 from app.core.settings.models.provider_config import (
     AuthMode,
     ProviderAuthConfig,
@@ -59,6 +65,21 @@ class RecordingSecretStore:
         return f"secret-version-{self.read_count}"
 
 
+class FailingSecretStore:
+    """Raise one configured backend-vocabulary error on every secret read."""
+
+    def __init__(self, error_type: type[Exception], raw_reason: str) -> None:
+        """Store the backend error shape and start with no reads."""
+        self.error_type = error_type
+        self.raw_reason = raw_reason
+        self.read_count = 0
+
+    async def get_secret(self, reference: str, *, tenant_id: str) -> str:
+        """Record the attempted read and raise the configured backend error."""
+        self.read_count += 1
+        raise self.error_type(self.raw_reason)
+
+
 def build_route(fingerprint: str, *, implementation_class: str | None = None) -> ResolvedRoute:
     """Build the smallest valid execution route for registry behavior tests."""
     static = build_provider_static_config()
@@ -81,7 +102,7 @@ def build_route(fingerprint: str, *, implementation_class: str | None = None) ->
 
 
 def build_registry(
-    secret_store: RecordingSecretStore,
+    secret_store: RecordingSecretStore | FailingSecretStore,
     clock,
     *,
     max_entries: int = 2,
@@ -95,6 +116,37 @@ def build_registry(
         max_cached_providers=max_entries,
         clock=clock,
     )
+
+
+@pytest.mark.parametrize(
+    ("backend_error_type", "expected_error_type", "expected_error_code"),
+    [
+        (KeyError, SecretReferenceNotFoundError, "SECRET_REFERENCE_NOT_FOUND"),
+        (ValueError, InvalidSecretValueError, "INVALID_SECRET_VALUE"),
+        (PermissionError, SecretAccessDeniedError, "SECRET_ACCESS_DENIED"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_provider_translates_secret_read_error_and_retries_failed_build(
+    backend_error_type: type[Exception],
+    expected_error_type: type[SecretReadError],
+    expected_error_code: str,
+) -> None:
+    """Secret failures remain distinct, safe, and absent from the provider cache."""
+    raw_reason = "raw backend response with sensitive diagnostics"
+    secret_store = FailingSecretStore(backend_error_type, raw_reason)
+    registry = build_registry(secret_store, lambda: 0.0)
+    route = build_route("a" * 64)
+
+    for _ in range(2):
+        with pytest.raises(expected_error_type) as exc_info:
+            await registry.get_provider(route)
+
+        assert isinstance(exc_info.value.__cause__, backend_error_type)
+        assert exc_info.value.error_code == expected_error_code
+        assert raw_reason not in str(exc_info.value)
+
+    assert secret_store.read_count == 2
 
 
 @pytest.mark.asyncio
@@ -144,6 +196,35 @@ async def test_get_provider_with_concurrent_miss_builds_once() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("clear_all", [False, True])
+async def test_invalidated_inflight_build_cannot_repopulate_cache(clear_all: bool) -> None:
+    """A secret refresh cannot be overwritten by an older pending build."""
+    gate = asyncio.Event()
+    secret_store = RecordingSecretStore(gate)
+    registry = build_registry(secret_store, lambda: 0.0)
+    route = build_route("a" * 64)
+
+    old_request = asyncio.create_task(registry.get_provider(route))
+    while secret_store.read_count < 1:
+        await asyncio.sleep(0)
+
+    if clear_all:
+        await registry.clear()
+    else:
+        await registry.invalidate(route.route_fingerprint)
+
+    new_request = asyncio.create_task(registry.get_provider(route))
+    while secret_store.read_count < 2:
+        await asyncio.sleep(0)
+    gate.set()
+    old_provider, new_provider = await asyncio.gather(old_request, new_request)
+
+    assert old_provider is not new_provider
+    assert await registry.get_provider(route) is new_provider
+    assert secret_store.read_count == 2
+
+
+@pytest.mark.asyncio
 async def test_get_provider_over_capacity_evicts_least_recent_route() -> None:
     """High route cardinality remains bounded by deterministic LRU eviction."""
     secret_store = RecordingSecretStore()
@@ -189,9 +270,7 @@ async def test_get_bedrock_provider_uses_iam_without_secret_lookup() -> None:
             "auth": ProviderAuthConfig(mode=AuthMode.AWS_SIGV4),
         }
     )
-    route = route.model_copy(
-        update={"provider_name": "bedrock", "provider_static_config": static}
-    )
+    route = route.model_copy(update={"provider_name": "bedrock", "provider_static_config": static})
 
     await registry.get_provider(route)
 

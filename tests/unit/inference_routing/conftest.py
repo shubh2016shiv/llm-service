@@ -123,6 +123,7 @@ def build_provider_static_config(
     model_spec: LLMModelSpec | None = None,
     default_timeout_seconds: float = 60.0,
     default_temperature: float = 0.7,
+    extra_default_headers: dict[str, str] | None = None,
 ) -> ProviderStaticConfig:
     """Build a provider catalog entry containing one model."""
     spec = model_spec or build_model_spec()
@@ -144,6 +145,7 @@ def build_provider_static_config(
         models=(spec,),
         default_timeout_seconds=default_timeout_seconds,
         default_temperature=default_temperature,
+        extra_default_headers=extra_default_headers or {},
     )
 
 
