@@ -44,6 +44,7 @@ RUN groupadd --system appuser \
 COPY --from=builder /opt/venv /opt/venv
 COPY app ./app
 COPY config ./config
+COPY postgres_schema ./postgres_schema
 
 ENV APP_ENVIRONMENT=production \
     CONFIG_DIR=config \
