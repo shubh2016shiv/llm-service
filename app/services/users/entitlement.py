@@ -31,6 +31,8 @@ from app.core.exceptions import ManagementValidationError, ResourceNotFoundError
 from app.schemas.enums import ProviderCatalogAuthMode
 from app.services.credential_encoding import (
     build_credential_path,
+    compensate_rejected_credential_write,
+    credential_owner_segment,
     delete_orphaned_secret,
     encode_credential,
 )
@@ -102,7 +104,7 @@ class UserEntitlementService:
                     "user-entitlements",
                     str(request.tenant_id),
                     str(user_id),
-                    request.entitlement_name,
+                    credential_owner_segment(request.entitlement_name),
                 ),
                 str(request.tenant_id),
                 self._credential_writer,
@@ -119,8 +121,8 @@ class UserEntitlementService:
             )
         except BaseException as exc:
             if request.credential is not None:
-                await delete_orphaned_secret(
-                    self._credential_writer, secret_reference, str(request.tenant_id)
+                await compensate_rejected_credential_write(
+                    self._credential_writer, secret_reference, str(request.tenant_id), exc
                 )
             if isinstance(exc, ValueError):
                 raise_clean_validation_error(exc)
@@ -249,7 +251,7 @@ class UserEntitlementService:
                     "user-entitlements",
                     str(tenant_id),
                     str(user_id),
-                    str(existing["entitlement_name"]),
+                    credential_owner_segment(str(existing["entitlement_name"])),
                 ),
                 str(tenant_id),
                 self._credential_writer,
@@ -267,8 +269,8 @@ class UserEntitlementService:
             )
         except BaseException as exc:
             if secret_reference is not None and request.credential is not None:
-                await delete_orphaned_secret(
-                    self._credential_writer, secret_reference, str(tenant_id)
+                await compensate_rejected_credential_write(
+                    self._credential_writer, secret_reference, str(tenant_id), exc
                 )
             if isinstance(exc, ValueError):
                 raise_clean_validation_error(exc)

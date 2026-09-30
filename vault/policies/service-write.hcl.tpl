@@ -12,9 +12,18 @@
 #
 # Path convention: __MOUNT__/data/__PREFIX__/<anything you choose>
 #
-# No delete or list: rotation always writes a new KV version instead of
-# removing history, and this identity never needs to enumerate secrets.
+# Compensation may permanently remove a freshly minted, version-unique path
+# when the owning PostgreSQL write fails. It cannot delete arbitrary metadata
+# or list/read secret values. Older versions referenced by live rows are kept.
 
 path "__MOUNT__/data/__PREFIX__/*" {
   capabilities = ["create", "update"]
+}
+
+path "__MOUNT__/metadata/__PREFIX__/tenant-deployments/+/+/versions/+" {
+  capabilities = ["delete"]
+}
+
+path "__MOUNT__/metadata/__PREFIX__/user-entitlements/+/+/+/versions/+" {
+  capabilities = ["delete"]
 }

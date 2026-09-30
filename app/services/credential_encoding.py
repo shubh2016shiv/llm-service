@@ -34,11 +34,13 @@ Author: Shubham Singh
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import uuid4
 
 import httpx
+from sqlalchemy.exc import IntegrityError
 
 from app.core.async_cleanup import wait_for_cleanup
 from app.core.exceptions import ManagementValidationError, SecretBackendUnavailableError
@@ -131,16 +133,22 @@ async def encode_credential(
             tenant_id=tenant_id,
             fields=payload,
         )
-    except SecretBackendUnavailableError:
+    except BaseException as exc:
+        # A timeout or cancellation can arrive after Vault accepted the write.
+        # This path is unique and has not reached PostgreSQL, so deletion is safe
+        # even when the outcome of the write is unknown.
+        await delete_orphaned_secret(writer, versioned_path, tenant_id)
+        if isinstance(exc, (SecretBackendUnavailableError, asyncio.CancelledError)):
+            raise
+        if isinstance(exc, (PermissionError, ValueError, httpx.HTTPError)):
+            # Backend errors may contain URLs or paths. Preserve the original
+            # for logs through chaining, but publish only its type.
+            raise SecretBackendUnavailableError(
+                backend_name="credential-writer",
+                secret_reference=versioned_path,
+                reason=type(exc).__name__,
+            ) from exc
         raise
-    except (PermissionError, ValueError, httpx.HTTPError) as exc:
-        # Backend errors may contain URLs or paths. Preserve the original for
-        # logs through exception chaining, but publish only its type.
-        raise SecretBackendUnavailableError(
-            backend_name="credential-writer",
-            secret_reference=versioned_path,
-            reason=type(exc).__name__,
-        ) from exc
     return secret_reference
 
 
@@ -149,13 +157,13 @@ async def delete_orphaned_secret(
     secret_reference: str,
     tenant_id: str,
 ) -> None:
-    """Best-effort cleanup of a secret already written before its DB row failed to save.
+    """Best-effort cleanup of an unreferenced, freshly minted secret path.
 
     Never raises: a cleanup failure must not mask the original persistence error, and
     one surviving orphaned secret is a smaller problem than losing the real failure
-    reason. Callers invoke this only in the failure branches of a persistence call that
-    followed a real ``encode_credential`` write — never on a path that was inherited or
-    never written (see the ``iam:default`` and deployment-inherited cases above).
+    reason. Callers use this only before a database row could reference the path,
+    after a certain database rejection, or when an update returned no row. Never
+    use it on inherited paths or after an uncertain database commit.
     """
     if writer is None:
         return
@@ -174,12 +182,38 @@ async def delete_orphaned_secret(
     await wait_for_cleanup(asyncio.create_task(delete()))
 
 
+async def compensate_rejected_credential_write(
+    writer: CredentialWriter | None,
+    secret_reference: str,
+    tenant_id: str,
+    error: BaseException,
+) -> None:
+    """Delete only when the database definitely rejected the new reference.
+
+    A lost commit acknowledgement or cancellation during commit has an unknown
+    outcome. Deleting then could break a row that PostgreSQL actually saved.
+    Such paths are retained for the reference-checked reconciliation command.
+    """
+    if isinstance(error, (ValueError, IntegrityError)):
+        await delete_orphaned_secret(writer, secret_reference, tenant_id)
+        return
+    logger.warning(
+        "Credential retained after uncertain database write; reconcile its reference",
+        extra={"secret_reference": secret_reference, "tenant_id": tenant_id},
+    )
+
+
 def build_credential_path(*segments: str) -> str:
     """Join non-empty ownership segments into one normalized secret path."""
     normalized = [segment.strip("/") for segment in segments]
     if not normalized or any(not segment for segment in normalized):
         raise ValueError("Credential path segments must be non-empty.")
     return "/".join(normalized)
+
+
+def credential_owner_segment(name: str) -> str:
+    """Represent a user-chosen label as one safe, opaque Vault path segment."""
+    return "name-" + hashlib.sha256(name.encode("utf-8")).hexdigest()
 
 
 def _credential_payload(credential: CredentialInput) -> dict[str, str | None]:

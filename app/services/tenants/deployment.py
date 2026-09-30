@@ -31,6 +31,7 @@ from uuid import UUID
 from app.core.exceptions import ResourceNotFoundError
 from app.services.credential_encoding import (
     build_credential_path,
+    compensate_rejected_credential_write,
     delete_orphaned_secret,
     encode_credential,
 )
@@ -108,8 +109,8 @@ class TenantDeploymentService:
             )
         except BaseException as exc:
             if request.credential is not None:
-                await delete_orphaned_secret(
-                    self._credential_writer, secret_reference, str(tenant_id)
+                await compensate_rejected_credential_write(
+                    self._credential_writer, secret_reference, str(tenant_id), exc
                 )
             if isinstance(exc, ValueError):
                 raise_clean_validation_error(exc)
@@ -205,8 +206,8 @@ class TenantDeploymentService:
             )
         except BaseException as exc:
             if secret_reference is not None and request.credential is not None:
-                await delete_orphaned_secret(
-                    self._credential_writer, secret_reference, str(tenant_id)
+                await compensate_rejected_credential_write(
+                    self._credential_writer, secret_reference, str(tenant_id), exc
                 )
             if isinstance(exc, ValueError):
                 raise_clean_validation_error(exc)

@@ -19,4 +19,3 @@ htmlcov
 coverage.xml
 tests
 documents
-postgres_schema

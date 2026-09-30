@@ -82,7 +82,7 @@ real store looks exactly like a real one to the code reading it.
 | Account | Policy | Can | Cannot |
 |---|---|---|---|
 | Service (`VAULT_SERVICE_USERNAME`) | `<basename>-read` | read and list under the prefix | write, delete, or see other prefixes |
-| Admin (`VAULT_ADMIN_USERNAME`, optional) | `<basename>-write` | create and update under the prefix | read, delete, or list |
+| Admin (`VAULT_ADMIN_USERNAME`, optional) | `<basename>-write` | create and update under the prefix; delete only version-unique credential metadata paths for failed-write compensation | read, list, or delete other paths |
 
 Give the service account to whatever serves requests, and the admin account only
 to the component that creates credentials. A compromised request path then
@@ -197,7 +197,7 @@ report "already initialized / already unsealed / skipping" and exit 0.
 | **Change the prefix** | Change `VAULT_KV_PREFIX` in both the app and Compose, then rerun `vault-init` so the policies follow |
 | **Back up** | Back up `vault_data` and `vault_bootstrap` **to different places**. The data is useless without the key, and the key is a master key to the data |
 | **Restore** | Restore both volumes, then `docker compose up -d vault vault-init` |
-| **Restart the host** | Nothing to do: Vault starts sealed and `vault-init` unseals it. Anything that needs secrets should depend on `vault-init` completing |
+| **Vault container restarts** (Docker Desktop restart, host reboot, `docker restart llm_vault`) | Vault comes back **sealed** and stays sealed: `vault-init` runs only on `docker compose up`, and the `restart:` policy restarts `vault` alone. Every secret read and write then fails with `Secret backend 'vault' is unavailable ... HTTPStatusError`. Run `docker compose run --rm --no-deps vault-init` (or `docker compose up -d`) to unseal |
 
 > **Audit device caveat.** With an audit device on, Vault refuses requests it
 > cannot log. A full disk or an unwritable log path stops the stack rather than
@@ -248,4 +248,4 @@ read/write split is the part worth keeping.
 | Vault container never becomes healthy on Docker Desktop | Missing `SKIP_SETCAP: "true"` |
 | `address already in use` inside the Vault container | `-config` passed explicitly in `command:` |
 | Every request fails with an audit error | The audit log cannot be written: disk full, or `VAULT_AUDIT_LOG_PATH` is not writable by the `vault` user |
-| Vault is sealed after a Docker restart | Expected: it starts sealed every time. `vault-init` unseals it |
+| App reports `Secret backend 'vault' is unavailable ... HTTPStatusError`; `vault status` shows `Sealed true` | Vault restarted and nothing unsealed it. Run `docker compose run --rm --no-deps vault-init` |
