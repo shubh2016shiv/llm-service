@@ -4,8 +4,7 @@
    styles.css is the shared design system and is not edited. This
    file adapts it to this explorer: eight rail stages instead of
    seven, no illustrated sprite (a CSS motif per stage instead),
-   one extra diagram colour family, and the cross-cutting strip
-   that has no equivalent in the base sheet.
+   and one extra diagram colour family.
    ============================================================ */
 
 /* ---------- hero: no stat-card column ---------- */
@@ -22,7 +21,7 @@
 .hero-zone2 { grid-template-columns: minmax(0, 1fr); }
 .lede { max-width: 100%; }
 
-/* ---------- rail: eight cards, two rows ---------- */
+/* ---------- rail: startup prerequisite followed by seven request stages ---------- */
 
 .rail {
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -45,6 +44,11 @@
   border-left-color: var(--stage-accent, var(--line-2));
 }
 .stage::before { inset: 62% 0 0; }
+.stage[data-stage="bootstrap"] {
+  grid-column: 1 / -1;
+  min-height: 132px;
+}
+.stage[data-stage="bootstrap"]::after { display: none; }
 
 /* ---------- stage motif ---------- */
 /* Replaces the sprite: a tint drawn from the stage's own accent plus one
@@ -105,78 +109,6 @@
 .stage[data-stage="quota"] .stage-texture::before         { content: "◷ · ·"; letter-spacing: 1px; }
 .stage[data-stage="execution"] .stage-texture::before     { content: "◈ ◈ ◈"; letter-spacing: 1px; }
 .stage[data-stage="delivery"] .stage-texture::before      { content: "≈ ≈ ≈"; letter-spacing: 1px; }
-
-/* ---------- cross-cutting strip ---------- */
-/* Four concerns that are not a step in the request: they are the ground the
-   eight stages stand on. Given their own row so the rail stays a sequence. */
-
-.foundations {
-  max-width: var(--maxw);
-  margin: 0 auto;
-  padding: 26px var(--gutter) 6px;
-}
-.foundation-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 14px;
-}
-@media (max-width: 1180px) { .foundation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 680px)  { .foundation-grid { grid-template-columns: minmax(0, 1fr); } }
-
-.foundation {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 14px 15px 13px;
-  border: 1px solid var(--line);
-  border-top: 2px solid var(--stage-accent, var(--ink-3));
-  border-radius: var(--radius);
-  background: var(--card);
-  text-align: left;
-  cursor: pointer;
-  transition: transform 0.22s var(--ease), box-shadow 0.22s var(--ease), border-color 0.22s var(--ease);
-}
-.foundation:hover,
-.foundation:focus-visible {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow);
-  border-color: color-mix(in srgb, var(--stage-accent, var(--ink-3)) 40%, var(--line));
-  border-top-color: var(--stage-accent, var(--ink-3));
-}
-.foundation-tag {
-  font-family: var(--mono);
-  font-size: var(--f-micro);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--stage-accent, var(--ink-3));
-}
-.foundation-name {
-  font-family: var(--serif);
-  font-size: 16.5px;
-  line-height: 1.2;
-  color: var(--ink);
-}
-.foundation-desc {
-  font-size: var(--f-sm);
-  line-height: 1.5;
-  color: var(--ink-3);
-}
-.foundation-go {
-  margin-top: 2px;
-  font-size: var(--f-xs);
-  color: var(--stage-accent, var(--ink-3));
-  opacity: 0;
-  transition: opacity 0.22s var(--ease);
-}
-.foundation:hover .foundation-go,
-.foundation:focus-visible .foundation-go { opacity: 1; }
-
-.foundation[data-open-stage="controlplane"] { --stage-accent: var(--plum); }
-.foundation[data-open-stage="secrets"]      { --stage-accent: var(--amber); }
-.foundation[data-open-stage="persistence"]  { --stage-accent: var(--blue); }
-.foundation[data-open-stage="topology"]     { --stage-accent: var(--green); }
 
 /* ---------- extra HLD colour families ---------- */
 /* The base sheet ships seven phase families, six of which are already

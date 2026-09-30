@@ -87,8 +87,8 @@
       <section class="map" id="map" aria-labelledby="mapTitle">
         <div class="section-head">
           <div>
-            <p class="section-em">The request pipeline</p>
-            <h2 id="mapTitle">Compose → Admit → Identify → Authorize → Route → Reserve → Execute → Stream</h2>
+            <p class="section-em">The inference lifecycle</p>
+            <h2 id="mapTitle">Bootstrap, then receive → authenticate → authorize → resolve → reserve → execute → deliver and settle</h2>
           </div>
           <p class="section-hint">Click any stage to zoom in</p>
         </div>
@@ -98,46 +98,6 @@
         <div class="map-nav">
           <button class="chip" id="mapPrev" type="button" aria-label="Highlight previous stage">← Previous</button>
           <button class="chip" id="mapNext" type="button" aria-label="Highlight next stage">Next →</button>
-        </div>
-      </section>
-
-      <section class="foundations" aria-labelledby="foundTitle">
-        <div class="section-head">
-          <div>
-            <p class="section-em">Cross-cutting</p>
-            <h2 id="foundTitle">Four concerns that are not a step in the request</h2>
-          </div>
-          <p class="section-hint">The ground the eight stages stand on</p>
-        </div>
-
-        <div class="foundation-grid">
-          <button class="foundation" type="button" data-open-stage="controlplane">
-            <span class="foundation-tag">Management API</span>
-            <span class="foundation-name">Control Plane</span>
-            <span class="foundation-desc">Authorize, validate references, write the credential to the vault, then invalidate exactly what changed.</span>
-            <span class="foundation-go" aria-hidden="true">Zoom in ↗</span>
-          </button>
-
-          <button class="foundation" type="button" data-open-stage="secrets">
-            <span class="foundation-tag">Credentials</span>
-            <span class="foundation-name">Secret Management</span>
-            <span class="foundation-desc">Two vault identities that cannot do each other's job — the request path reads, the management path writes.</span>
-            <span class="foundation-go" aria-hidden="true">Zoom in ↗</span>
-          </button>
-
-          <button class="foundation" type="button" data-open-stage="persistence">
-            <span class="foundation-tag">Data</span>
-            <span class="foundation-name">Persistence &amp; Schema</span>
-            <span class="foundation-desc">Named parameterised statements, explicit projections, and invariants the database itself refuses to break.</span>
-            <span class="foundation-go" aria-hidden="true">Zoom in ↗</span>
-          </button>
-
-          <button class="foundation" type="button" data-open-stage="topology">
-            <span class="foundation-tag">Service boundary</span>
-            <span class="foundation-name">Why Two Services</span>
-            <span class="foundation-desc">Exactly one responsibility was moved out of process, and the argument for it is a shared ceiling nobody can count locally.</span>
-            <span class="foundation-go" aria-hidden="true">Zoom in ↗</span>
-          </button>
         </div>
       </section>
     </main>

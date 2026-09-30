@@ -2,7 +2,7 @@
    llm_services — content model
    ============================================================
    Everything the engine renders lives here: the pressure probes (Q),
-   the eight pipeline stages plus four cross-cutting foundations
+   one startup prerequisite and seven request stages
    (STAGES), the component contracts (COMPONENTS), and the rail order.
 
    Scope note: this describes the architecture of a multi-tenant LLM
@@ -81,7 +81,7 @@ const Q = {
 const STAGES = {
   /* ========== 01 — bootstrap ========== */
   bootstrap: {
-    rail: { index: "01", tag: "Compose", name: "Application Bootstrap", desc: "Build every pool before the first request" },
+    rail: { index: "01", tag: "Bootstrap", name: "Application Bootstrap", desc: "Startup prerequisite: build shared resources before requests" },
     eyebrow: "01 · Application bootstrap",
     title: "Prove the configuration, then build every shared resource exactly once.",
     reveal: "Nothing is created lazily on a request. If the process is accepting traffic, every pool it needs already exists.",
@@ -104,8 +104,8 @@ const STAGES = {
 
   /* ========== 02 — admission ========== */
   admission: {
-    rail: { index: "02", tag: "Admit", name: "Request Admission", desc: "Correlate, bound, and never leak an unhandled error" },
-    eyebrow: "02 · Request admission",
+    rail: { index: "02", tag: "Receive", name: "Receive & Validate", desc: "Correlate and bound each request at the ASGI edge" },
+    eyebrow: "02 · Receive and validate",
     title: "Give the request an identity, a size limit, and a guaranteed shape of failure.",
     reveal: "Correlation is assigned at the ASGI boundary, before routing — so even a rejected request is traceable.",
     summary:
@@ -127,7 +127,7 @@ const STAGES = {
 
   /* ========== 03 — identity ========== */
   identity: {
-    rail: { index: "03", tag: "Identify", name: "Authentication & Roles", desc: "Prove who is asking, then what rung they hold" },
+    rail: { index: "03", tag: "Authenticate", name: "Authentication", desc: "Verify the caller's token and platform identity" },
     eyebrow: "03 · Authentication and platform roles",
     title: "Settle identity completely in one operation, so no caller can validate half a token.",
     reveal: "Signature, algorithm, issuer, audience, time bounds, token kind, role and subject — one call, or none.",
@@ -150,30 +150,30 @@ const STAGES = {
 
   /* ========== 04 — authorization ========== */
   authorization: {
-    rail: { index: "04", tag: "Authorize", name: "Inference Authorization", desc: "Four gates in order, then a sealed pass" },
+    rail: { index: "04", tag: "Authorize", name: "Inference Authorization", desc: "Check tenant, membership, deployment and entitlement" },
     eyebrow: "04 · Inference authorization",
-    title: "Four gates, in a fixed order, and a cached answer that cannot outlive its dependencies.",
+    title: "Four gates, in a fixed order, before routing can begin.",
     reveal: "Every gate opens or nothing runs. There is no partial pass and no fallback to a weaker grant.",
     summary:
-      "The caller's tenant must exist and be active; the caller must be an active member holding a role permitted to run inference; the named deployment must exist and be active; and there must be an active entitlement for that exact tenant, user, deployment, provider and model. When all four open, a frozen access context is built carrying every identifier the rest of the request needs, and cached against version markers for its four dependencies.",
-    decisionHead: "Cache the yes, version the dependencies, and compare-and-set on write",
+      "The caller's tenant must exist and be active; the caller must be an active member holding a role permitted to run inference; the named deployment must exist and be active; and there must be an active entitlement for that exact tenant, user, deployment, provider and model. When all four open, a frozen access context carries the identifiers routing needs. Live wiring reads the source of truth on every request; the grant-cache backend is disabled.",
+    decisionHead: "Check the source of truth before building the access context",
     decisionBody:
-      "A grant read fetches the cached answer and all four version markers in one round trip. A management change to a tenant, membership, deployment or route replaces one marker with a fresh random value, invalidating every grant that depended on it without enumerating them. The write back is a compare-and-set against all four, so a revocation landing mid-check cannot be overwritten by the answer it invalidated.",
-    failure: "A revoked user continuing to reach a model because a cached decision outlived the decision it was based on, and a check-then-write race quietly re-storing a grant that a concurrent management change had just killed.",
-    tradeoff: "Invalidation fails closed: if Redis refuses the marker write, the management operation raises rather than completing, so a cache outage becomes visible as failed administration. That is a deliberate availability cost taken to protect the invariant.",
-    talk: "This is the stage where the system decides whether the request exists at all. Everything after it is execution detail — and it is the only stage where the answer is allowed to be cached.",
-    questions: [Q.cacheStaleness, Q.redisPolicy, Q.whyReread],
+      "Each request checks the active tenant, membership and role, deployment, and exact entitlement in order. The access context is frozen after these checks. The cache implementation remains in the codebase, but live dependency wiring supplies no backend because write-side invalidation is not transactionally coupled to the database changes.",
+    failure: "A revoked user continuing to reach a model because a cached authorization decision outlived its underlying database state.",
+    tradeoff: "Reading the four gates for each inference request costs database work, but avoids relying on non-transactional cache invalidation for access control.",
+    talk: "This stage decides whether this caller may use this exact tenant and deployment. Tenant roles are checked here, after token authentication.",
+    questions: [Q.whyReread],
     steps: [
-      { label: "Ask the cache first", meta: "Grant plus four version markers, read in one operation", kind: "deterministic", component: "grant-cache" },
+      { label: "Read the current records", meta: "Live wiring bypasses the grant-cache backend", kind: "deterministic", component: "grant-cache" },
       { label: "Run the four gates", meta: "Tenant, membership and role, deployment, exact entitlement — in order, failing at the first", kind: "gate", component: "four-gates" },
       { label: "Build the frozen pass", meta: "Tenant, user, deployment, provider, model, tenant role, entitlement — all resolved", kind: "deterministic" },
-      { label: "Store only if unchanged", meta: "Compare-and-set against every marker observed at lookup time", kind: "gate", component: "version-invalidation" },
+      { label: "Pass the context to routing", meta: "The frozen identifiers bind routing to the exact approved entitlement", kind: "deterministic" },
     ],
   },
 
   /* ========== 05 — routing ========== */
   routing: {
-    rail: { index: "05", tag: "Route", name: "Route Resolution", desc: "Turn an approved grant into an execution plan" },
+    rail: { index: "05", tag: "Resolve", name: "Route Resolution", desc: "Turn an approved grant into an execution plan" },
     eyebrow: "05 · Route resolution",
     title: "Answer a different question: not may they, but can this grant execute this operation right now.",
     reveal: "The resolver re-reads the approved entitlement and never searches for a substitute.",
@@ -181,10 +181,10 @@ const STAGES = {
       "Tenant policy and the exact authorized entitlement are re-read from PostgreSQL without a cache, the tenant's provider allow-list is applied, and the provider and model are looked up in the startup-validated catalog and checked for the requested capability. What comes out is a frozen route with every default already resolved — endpoint, timeout, temperature, output ceiling, secret reference, quota key and a deterministic fingerprint.",
     decisionHead: "Uncached reads for the two facts a revocation changes",
     decisionBody:
-      "Authorization can be cached because its dependencies have explicit invalidation markers. Tenant status and entitlement status cannot, because they are the values a suspension or revocation actually moves — so both are read fresh on every inference request, and a mismatch between the returned entitlement and the authorized one is treated as a configuration error rather than a fallback.",
+      "Authorization reads its four gates from the database on every request because the live grant-cache backend is disabled. Routing re-reads current tenant policy and the exact approved entitlement, then refuses any mismatch rather than substituting a different grant.",
     failure: "A suspended tenant or revoked entitlement continuing to serve because a cached routing decision lagged, and an embed-only model being handed a chat request because nobody checked the capability before dialling out.",
     tradeoff: "Two PostgreSQL reads on every inference request that a fully cached design would avoid, and a resolver that will fail a request rather than fall back to the tenant's default deployment when the named grant is unavailable.",
-    talk: "Splitting authorization from routing is the decision I would defend hardest. One is an identity question with cacheable inputs; the other is a liveness question with inputs that must not be cached. Merging them means picking the wrong policy for one of them.",
+    talk: "Authorization decides whether the caller has this exact grant; routing checks whether it can execute the requested operation with current tenant policy and provider capabilities. Both checks currently read live database state.",
     questions: [Q.whyReread, Q.fingerprint, Q.providerEnum],
     steps: [
       { label: "Re-read tenant policy", meta: "Uncached — a suspension must land on the next request", kind: "gate", component: "live-reads" },
@@ -196,12 +196,12 @@ const STAGES = {
 
   /* ========== 06 — quota ========== */
   quota: {
-    rail: { index: "06", tag: "Reserve", name: "Capacity Reservation", desc: "Buy the capacity before spending it" },
+    rail: { index: "06", tag: "Reserve", name: "Capacity Reservation", desc: "Reserve token quota and, for streams, a worker slot" },
     eyebrow: "06 · Capacity reservation",
-    title: "Reserve against a shared ceiling, and refuse a reservation that names a different endpoint.",
+    title: "Reserve token quota and, for a stream, a worker slot before provider execution.",
     reveal: "The reservation is checked against the route that was authorized. A mismatch is a protocol error, not a redirect.",
     summary:
-      "Before any provider call, the service asks a separate token manager for capacity on this exact route, sending an estimate derived from the request and the resolved output ceiling. A rejection or a queued allocation becomes a 429 carrying Retry-After. When the call finishes — completed, failed, cancelled or disconnected — the reservation is finalised with the real token counts the provider reported.",
+      "For streaming chat, a per-worker limiter first grants a slot or refuses with 503 and Retry-After. Before any provider call, the service asks a separate token manager for capacity on the exact route, sending an estimate derived from the request and the resolved output ceiling. A rejected or queued token allocation becomes a 429. When the call finishes — completed, failed, cancelled or disconnected — the reservation is finalised with reported usage.",
     decisionHead: "Central accounting, and a client that refuses to be re-routed by it",
     decisionBody:
       "Concurrency and token ceilings belong to a provider endpoint, not to a replica, so the count has to live in one place. But the token manager is an accounting authority, not a routing authority: if the reservation comes back naming a different endpoint than the authorized route, the client raises rather than executing — because accounting for one deployment while calling another is worse than failing.",
@@ -210,16 +210,16 @@ const STAGES = {
     talk: "This is the one place the service deliberately depends on something outside itself mid-request. The argument for it is that a shared ceiling counted locally is not a ceiling at all.",
     questions: [Q.twoServices, Q.finalizeAsymmetry, Q.quotaObservability],
     steps: [
+      { label: "Admit a stream, if requested", meta: "Acquire a per-worker slot before reserving token quota", kind: "gate", component: "capacity-lease" },
       { label: "Estimate and request", meta: "Operation-specific input plus the resolved output ceiling, under a short-lived service token", kind: "deterministic", component: "reservation" },
       { label: "Verify the endpoint", meta: "A reserved endpoint that differs from the authorized route is refused", kind: "gate", component: "endpoint-binding" },
       { label: "Execute under the reservation", meta: "Provider work happens inside the window the reservation opened", kind: "deterministic" },
-      { label: "Finalise with real usage", meta: "completed, failed, cancelled or disconnected — always exactly one", kind: "gate", component: "finalization" },
     ],
   },
 
   /* ========== 07 — execution ========== */
   execution: {
-    rail: { index: "07", tag: "Execute", name: "Provider Execution", desc: "One contract over five providers, behind a fuse" },
+    rail: { index: "07", tag: "Execute", name: "Provider Execution", desc: "Call the selected provider through one adapter contract" },
     eyebrow: "07 · Provider execution",
     title: "Five vendor dialects, one internal contract, and a fuse that preserves the real cause.",
     reveal: "The service layer calls generate, embed, rerank or stream. It never learns which vendor answered.",
@@ -242,12 +242,12 @@ const STAGES = {
 
   /* ========== 08 — delivery ========== */
   delivery: {
-    rail: { index: "08", tag: "Stream", name: "Delivery & Settlement", desc: "Stream it, then settle the books exactly once" },
+    rail: { index: "08", tag: "Deliver & Settle", name: "Delivery & Settlement", desc: "Return JSON or SSE and finalize usage on every path" },
     eyebrow: "08 · Delivery and settlement",
-    title: "Admit the stream before the headers leave, and settle it exactly once however it ends.",
+    title: "Deliver JSON or SSE, and finalize the reservation on every terminal path.",
     reveal: "Capacity, credential and adapter are all acquired eagerly — so a failure becomes an HTTP error, not a broken stream.",
     summary:
-      "A per-worker limiter admits the stream or refuses with 503 and a retry hint. Preparation is eager: the reservation and the provider stream are established before the response starts, so anything that can fail still can fail as a status code. A stateful session object then owns the lifecycle, classifying every terminal path and finalising provider cleanup, quota and capacity exactly once, while the SSE layer adds sequence, thread identity and heartbeats.",
+      "Non-streaming chat, embedding and rerank return JSON after token usage is finalized. Streaming chat returns SSE: its worker slot and quota reservation were acquired before provider execution, and the provider stream is prepared before response headers leave. A stateful session owns disconnect, cancellation and completion cleanup, while the SSE layer adds sequence, thread identity and heartbeats.",
     decisionHead: "An explicit iterator, because an async generator cannot clean up what it never started",
     decisionBody:
       "If the client disconnects before the first chunk, a never-started generator has no cleanup hook at all. A real iterator object has an aclose, so the session can close the provider stream, reconcile usage and release the capacity slot on a path where the generator body never ran. Cleanup is shielded from the disconnect cancellation so it completes rather than being cancelled halfway.",
@@ -256,101 +256,10 @@ const STAGES = {
     talk: "The design question in streaming is not how to send tokens, it is what happens when the person on the other end closes the tab. Everything here is arranged so that answer is the same as every other ending.",
     questions: [Q.streamNoRetry, Q.finalizeAsymmetry, Q.quotaObservability],
     steps: [
-      { label: "Admit or refuse", meta: "Per-worker concurrency ceiling; a refusal is 503 with Retry-After, never a queued socket", kind: "gate", component: "capacity-lease" },
-      { label: "Prepare eagerly", meta: "Reservation and provider stream established before response headers leave", kind: "gate" },
+      { label: "Return a JSON response", meta: "Non-streaming chat, embed and rerank finalize usage before returning", kind: "deterministic" },
+      { label: "Prepare SSE eagerly", meta: "Streaming chat acquires resources before response headers leave", kind: "gate" },
       { label: "Own the lifecycle", meta: "completed, failed, cancelled, disconnected — each classified, cleanup run once", kind: "deterministic", component: "streaming-session" },
       { label: "Frame and deliver", meta: "Thread id, monotonic sequence, heartbeats, one terminal event", kind: "deterministic", component: "sse-delivery" },
-    ],
-  },
-
-  /* ========== off-rail: control plane ========== */
-  controlplane: {
-    foundation: { name: "Control Plane" },
-    eyebrow: "Cross-cutting · management API",
-    title: "Every mutation authorizes, validates references, writes the secret, then invalidates what it changed.",
-    reveal: "The management API is what makes an inference route exist. Its last act is always an invalidation.",
-    summary:
-      "Tenants, users, memberships, deployments, entitlements and the provider and model catalogs are managed through resource routers, each backed by a service that applies the same sequence: authorize against tenant scope, pre-validate foreign references so a missing id is a clean 404 rather than a constraint error, persist, then invalidate the authorization grants the change affects. Rows are scrubbed of secret-bearing fields before they leave the service layer.",
-    decisionHead: "Authorization-aware CRUD, with cache coherence as part of the write",
-    decisionBody:
-      "A management write that does not invalidate is a write that has not taken effect yet. Deployment and entitlement changes advance the version markers for exactly the scope they touched, so a deactivated deployment stops serving on the next request rather than at the end of a TTL. Reference validation runs before persistence so callers get the identifier that was wrong.",
-    failure: "A deactivated deployment continuing to serve from cached grants, a credential landing in a database column or a log line, and a foreign-key violation surfacing as an opaque database error instead of a named missing resource.",
-    tradeoff: "Every mutating path carries an invalidation that can fail, and it fails the operation when it does. Redaction is also a defensive filter on the way out rather than a guarantee at the query — the safe-column projections are maintained by hand.",
-    talk: "This side of the service is deliberately boring, and that is the point: the inference path can be strict about what exists because this path is the only thing that creates it.",
-    questions: [Q.cacheStaleness, Q.rawSql, Q.secretsInMemory],
-    steps: [
-      { label: "Authorize the scope", meta: "Platform badge, or tenant admin membership for a write, tenant read for a list", kind: "gate", component: "scoped-crud" },
-      { label: "Validate references", meta: "Tenant, user, provider, model checked before the write is attempted", kind: "gate" },
-      { label: "Store the credential", meta: "Written to the secret backend at a versioned path; only a reference is persisted", kind: "deterministic", component: "credential-writer" },
-      { label: "Invalidate and redact", meta: "Advance the affected version markers; strip secret-bearing fields from the response", kind: "gate", component: "cache-invalidation" },
-    ],
-  },
-
-  /* ========== off-rail: secrets ========== */
-  secrets: {
-    foundation: { name: "Secret Management" },
-    eyebrow: "Cross-cutting · credentials",
-    title: "Two Vault identities, and neither of them can do the other's job.",
-    reveal: "The path that serves requests can read credentials and cannot write. The path that creates them can write and cannot read.",
-    summary:
-      "Credentials never reach PostgreSQL. A typed credential submitted through the management API is written to a versioned KV path by a write-only Vault identity, and only the resulting reference is stored on the row. At inference time a separate read-only identity resolves that reference. One shared client owns login, lease-aware token refresh, bounded full-jitter retry and path normalisation, so both identities behave identically on the network.",
-    decisionHead: "Least privilege expressed as two classes, not two configuration flags",
-    decisionBody:
-      "The reader is a class with no write method and the writer is a class with no read method. A compromised management endpoint cannot retrieve existing credentials, and a compromised inference path cannot plant one. The Vault policies are rendered from the same variables the application builds its paths from, so policy and client cannot disagree about where secrets live.",
-    failure: "A credential in a database backup, in a log line, or in an API response — and a single over-scoped service account that turns any application-level compromise into full credential access.",
-    tradeoff: "Vault becomes a hard dependency of the inference path, mitigated only by the provider cache's TTL. A rotation is also not pushed: the old credential stays in use for cached adapters until their TTL expires, because nothing evicts route fingerprints on write.",
-    talk: "The thing worth noticing is that the split is structural. It is not a permission that could be widened by a config change — the object serving requests does not have the method.",
-    questions: [Q.secretsInMemory, Q.redisPolicy],
-    steps: [
-      { label: "Accept a typed credential", meta: "Only shapes the provider layer can actually use; unimplemented modes are refused", kind: "gate", component: "credential-shapes" },
-      { label: "Write with the write-only identity", meta: "Versioned KV path; rotation writes a new version rather than overwriting", kind: "deterministic", component: "vault-write" },
-      { label: "Persist the reference only", meta: "The row carries a pointer; the value never touches PostgreSQL", kind: "deterministic" },
-      { label: "Read with the read-only identity", meta: "Resolved at adapter build time, held as a secret string, cleared on shutdown", kind: "gate", component: "vault-read" },
-    ],
-  },
-
-  /* ========== off-rail: persistence ========== */
-  persistence: {
-    foundation: { name: "Persistence & Schema" },
-    eyebrow: "Cross-cutting · data",
-    title: "The query the database runs is the query in the file.",
-    reveal: "No ORM between the request path and the plan — and no dynamic SQL built from caller input.",
-    summary:
-      "One pooled engine per worker stamps out short-lived sessions, each its own transaction, committed or rolled back automatically. Queries are named constants with bound parameters; the only dynamic statement is a partial-update builder that validates identifiers, refuses anything but parameterised equality in its WHERE clause, and requires an explicit RETURNING projection. The schema itself carries the invariants: check constraints, partial unique indexes and composite foreign keys.",
-    decisionHead: "Invariants in the database, projections by hand, no star selects",
-    decisionBody:
-      "A tenant can only have one active entitlement per exact route, one default deployment per provider, and a deployment key that matches a format the routing layer can rely on — all enforced by indexes and checks rather than by application code that could be bypassed. Explicit RETURNING columns mean a future column addition cannot silently start appearing in API responses.",
-    failure: "An injection through a dynamically assembled statement, a newly added column leaking through a star select, and duplicate active grants for one route making authorization ambiguous.",
-    tradeoff: "Nothing checks these strings against the schema at build time. A renamed column is a runtime failure caught only by a test that executes it, and the safe-column tuples must be maintained alongside the DDL by hand.",
-    talk: "The database is treated as a participant in correctness rather than a place to put objects. Several rules that would otherwise be service-layer checks are constraints, which means they hold even for a write that did not come through this service.",
-    questions: [Q.rawSql, Q.whyReread],
-    steps: [
-      { label: "Acquire a scoped session", meta: "One pool per worker; each unit of work is its own transaction", kind: "deterministic", component: "session-provider" },
-      { label: "Execute a named statement", meta: "Bound parameters only; no statement assembled from caller values", kind: "deterministic", component: "base-persistence" },
-      { label: "Return an explicit projection", meta: "Safe column tuples, never a star select", kind: "gate", component: "safe-projections" },
-      { label: "Let the schema refuse", meta: "Checks, partial unique indexes and composite foreign keys hold the invariants", kind: "gate", component: "schema-invariants" },
-    ],
-  },
-
-  /* ========== off-rail: topology ========== */
-  topology: {
-    eyebrow: "Architecture decision · service boundary",
-    title: "Why quota is a second service, and why it is not two databases.",
-    reveal: "One shared PostgreSQL, two services, one read contract between them — and no shared tables.",
-    summary:
-      "This service owns identity, authorization, routing, credentials and provider execution. A sibling token manager owns capacity accounting. They share one PostgreSQL instance but not one surface: the token manager reads active deployment capacity through a dedicated view, writes its own allocations table, and is otherwise reached only over HTTP. Neither service reaches into the other's tables directly.",
-    decisionHead: "Split on what must be counted centrally, not on what looks like a microservice",
-    decisionBody:
-      "The only thing that genuinely cannot live per replica is the count against a shared provider ceiling. Everything else — routing, authorization, provider adapters — is stateless per request and gains nothing from being remote. So exactly one responsibility was moved out, and the coupling between them is a narrow HTTP contract plus one read-only view with a stable shape.",
-    failure: "Every replica maintaining its own view of remaining capacity, which sums to a ceiling breach the moment the fleet scales — and, in the other direction, a distributed monolith where two services reach into each other's tables and neither can be deployed alone.",
-    tradeoff: "A shared database instance is a shared failure domain and a shared migration surface, and the read contract is a view that this repository owns and the other service depends on. A genuine split would give each service its own store and pay for the resulting duplication.",
-    talk: "I would rather defend one carefully chosen boundary than a diagram with eight boxes. The question to ask of any split is what breaks if it stays in-process, and here there is exactly one honest answer.",
-    questions: [Q.twoServices, Q.quotaObservability, Q.rawSql],
-    steps: [
-      { label: "This service resolves the route", meta: "Identity, authorization, routing, credential — all local", kind: "deterministic" },
-      { label: "The token manager counts", meta: "Reservations against a shared ceiling, in one place, over HTTP", kind: "gate" },
-      { label: "One read contract", meta: "Active deployment capacity exposed as a view with a stable shape", kind: "deterministic" },
-      { label: "No shared tables", meta: "Allocations belong to the token manager; catalog and tenancy belong here", kind: "gate" },
     ],
   },
 };
@@ -668,126 +577,6 @@ const COMPONENTS = {
     },
   },
 
-  controlplane: {
-    "scoped-crud": {
-      eyebrow: "Control plane · authorization",
-      title: "Tenant-Scoped Writes",
-      reveal: "Platform badges are checked first, because they need no database read at all.",
-      owns: "Deciding whether a caller may read or change one tenant's data — platform administrators and operators pass on their badge alone, everyone else must hold an active membership, and a write additionally requires an admin role inside that tenant.",
-      forbidden: "Authorizing inference, which is a different service with different gates, and inferring tenant scope from a platform role for a mutation.",
-      receives: "The tenant id in the path and the authenticated identity.",
-      validated: "Every denial raises one typed error carrying the specific requirement that failed, which the API maps to a 403. Reads and writes use distinct entry points so a read path cannot accidentally admit a writer's check.",
-      wrong: "A platform operator can read every tenant's configuration and the tenant has no mechanism to see that, object to it, or find it afterwards — there is no per-tenant access log for cross-tenant reads, only the service's own application logs.",
-      questions: [Q.layering],
-    },
-    "credential-writer": {
-      eyebrow: "Control plane · secrets",
-      title: "Credential Write Path",
-      reveal: "The value goes to the secret backend at a versioned path; the row gets a pointer.",
-      owns: "Validating a submitted credential against the provider's declared auth mode, writing it to a fresh versioned path through the write-only backend, and returning the reference the row will store.",
-      forbidden: "Persisting credential material in any database column, accepting a credential shape the provider layer cannot use, and silently dropping a credential when no writer is configured.",
-      receives: "A typed credential, an ownership path, the tenant id and the provider's auth mode.",
-      validated: "A credential whose auth mode disagrees with the provider is refused as a validation error. A missing writer with a real credential present is a server misconfiguration and raises. Backend errors are re-raised as a typed unavailable error carrying only the exception type, never the URL or path.",
-      wrong: "Rotation writes a new version and updates the row, and nothing revokes the old one. Previous versions remain readable in the secret backend by anything holding the read identity, so a rotation limits future exposure without retracting past exposure.",
-      questions: [Q.secretsInMemory],
-    },
-    "cache-invalidation": {
-      eyebrow: "Control plane · coherence",
-      title: "Write-Side Invalidation",
-      reveal: "A management write is not finished until the grants that depended on it are dead.",
-      owns: "Advancing the version markers for exactly the scope a mutation touched — the tenant, one membership, one deployment, or one exact route — as the final step of every mutating operation.",
-      forbidden: "Returning success on a mutation whose invalidation was refused, and invalidating a wider scope than the change requires.",
-      receives: "The identifiers of the changed record, read before the change where the key itself is being updated.",
-      validated: "A refused marker write raises a typed error that the API maps to 503, so an administrator learns the change is not yet safe rather than believing it landed.",
-      wrong: "Invalidation is by scope, not by consequence. Deactivating a provider catalog row is not one of the four scopes, so grants naming that provider survive here untouched — they fail one stage later in routing, which is correct behaviour arrived at by accident rather than by this component's design.",
-      questions: [Q.cacheStaleness],
-    },
-  },
-
-  secrets: {
-    "credential-shapes": {
-      eyebrow: "Secrets · input contract",
-      title: "Accepted Credential Shapes",
-      reveal: "Only the credential types the provider layer can actually use are accepted at all.",
-      owns: "Defining the credential shapes the management API accepts — a single API key presented as a bearer token or a custom header — and refusing everything else.",
-      forbidden: "Accepting OAuth exchanges or arbitrary custom fields, which would create records that can never authenticate at inference time.",
-      receives: "The credential block of a deployment or entitlement request.",
-      validated: "The key is held as a secret type with a length bound, redacted from representations, and must match the auth mode declared by the provider catalog row it is being attached to.",
-      wrong: "Refusing unimplemented shapes keeps the database honest and also makes the product narrower than the provider catalog suggests: a vendor requiring OAuth cannot be onboarded through this API at all, and the only signal is a validation error at credential entry.",
-      questions: [],
-    },
-    "vault-write": {
-      eyebrow: "Secrets · write identity",
-      title: "Write-Only Vault Adapter",
-      reveal: "A class with no read method. The compromise of a management endpoint cannot retrieve a credential.",
-      owns: "Storing a credential payload at a namespaced key-value path using an identity whose policy grants create and update, and returning the canonical reference.",
-      forbidden: "Reading a secret back, deleting or listing — rotation writes a new version rather than removing history.",
-      receives: "A validated path, the tenant id for audit context, and the credential fields.",
-      validated: "Every path segment is normalised and checked before it becomes a URL. An empty payload is refused. Permission denials and rejections become distinct, actionable errors that never echo the response body.",
-      wrong: "Least privilege is enforced by the Vault policy, not by this class — the class is the readable expression of it. An operator who grants the write account read capability changes the security property without changing a line of code here, and nothing in the service would notice.",
-      questions: [],
-    },
-    "vault-read": {
-      eyebrow: "Secrets · read identity",
-      title: "Read-Only Vault Adapter",
-      reveal: "The request path can read its own namespace and can never write to it.",
-      owns: "Resolving one reference to a validated credential field, translating permission and not-found responses into precise domain errors, and treating a malformed success as backend unavailability.",
-      forbidden: "Writing or overwriting any secret, and including secret values or response bodies in logs or error messages.",
-      receives: "A secret reference from the resolved route, and the tenant id.",
-      validated: "The shared client owns login, lease-aware token refresh, and bounded retry with full jitter — retrying only transport failures, timeouts and 5xx, while 403 and 404 return to this adapter because they carry domain meaning. A rejected token is refreshed once; a second denial is a real policy failure.",
-      wrong: "The adapter proves it received a usable value from Vault. It cannot prove the value is the current one for that provider — a credential rotated at the vendor but never updated here resolves perfectly and fails at the provider call, which surfaces as an authentication error attributed to the provider rather than to configuration.",
-      questions: [Q.secretsInMemory],
-    },
-  },
-
-  persistence: {
-    "session-provider": {
-      eyebrow: "Persistence · pooling",
-      title: "Session Provider",
-      reveal: "One pool per worker; each unit of work gets its own session and its own transaction.",
-      owns: "Building the connection pool from validated settings, handing out short-lived sessions whose transactions commit on success and roll back on failure, and answering the readiness probe.",
-      forbidden: "Sharing a session across concurrent operations, logging the connection URL, and serving a session after the pool has been closed.",
-      receives: "Validated database configuration.",
-      validated: "Statement timeouts are applied server-side and mirrored by a client-side command timeout for the case where the network itself stops responding. Connections are pre-pinged and recycled, and use after close fails loudly.",
-      wrong: "Pool sizing is per worker, so the real connection count against PostgreSQL is the configured size times the number of workers times the number of replicas — a number that is never stated anywhere in configuration and is discovered when the database refuses new connections.",
-      questions: [Q.rawSql],
-    },
-    "base-persistence": {
-      eyebrow: "Persistence · query safety",
-      title: "Query Construction",
-      reveal: "The one place that builds SQL dynamically validates every identifier and refuses a free-form WHERE.",
-      owns: "Executing named parameterised statements, and building partial UPDATE statements from only the fields that changed.",
-      forbidden: "Interpolating any caller-supplied value into a statement, accepting a WHERE clause that is not parameterised equality joined by AND, and allowing update and where bindings to collide.",
-      receives: "A table name, the changed fields, a where clause with its bindings, and an explicit returning projection.",
-      validated: "Table and column names must match a plain-identifier pattern, the where clause must match a strict equality pattern, an empty update set raises, and updated_at is always appended so no caller can forget it.",
-      wrong: "Everything here is checked at runtime against a pattern, and nothing is checked against the actual schema. A column that exists in the tuple and not in the table passes every validation in this class and fails inside the transaction, where the error names a database object rather than the code that asked for it.",
-      questions: [Q.rawSql],
-    },
-    "safe-projections": {
-      eyebrow: "Persistence · exposure",
-      title: "Explicit Projections",
-      reveal: "No star selects, and secret-bearing fields are stripped again on the way out.",
-      owns: "Returning only the columns named in a safe projection tuple, and scrubbing secret-named keys — including nested ones — from rows before they leave the service layer.",
-      forbidden: "Returning a credential reference to an API caller, and relying on a single layer to prevent that.",
-      receives: "A persistence row, or a list of them.",
-      validated: "Redaction walks nested mappings and sequences, so burying a credential one level inside a JSON column does not defeat it. The persistence layer exposes the reference only through a dedicated method, never through a list projection.",
-      wrong: "Both layers work from a hand-maintained list of names that look like secrets. A field named something the list does not anticipate is returned in full by a projection that was written before it existed — the defence is a convention enforced twice, not a type the compiler understands.",
-      questions: [Q.rawSql],
-    },
-    "schema-invariants": {
-      eyebrow: "Persistence · constraints",
-      title: "Schema Invariants",
-      reveal: "Several rules that look like service logic are actually indexes and checks.",
-      owns: "Enforcing at most one active entitlement per exact route, one default deployment per tenant and provider, deployment keys in a format routing can rely on, and referential integrity across composite provider and model keys.",
-      forbidden: "Deferring these rules to application code that a direct database write could bypass.",
-      receives: "Every insert and update, whatever issued it.",
-      validated: "Partial unique indexes scope uniqueness to active rows, check constraints bound statuses and sampling parameters, and a dedicated view gives the sibling service a stable read shape rather than a join it would have to maintain.",
-      wrong: "Constraints hold the shape and say nothing about the meaning. A deployment row can satisfy every check while naming an endpoint that does not exist, a capacity limit nobody sized, and a provider with no runtime configuration file — all perfectly valid, and all discovered by the first request that tries to use it.",
-      questions: [Q.rawSql, Q.providerEnum],
-    },
-  },
-
-  topology: {},
 };
 
 const RAIL_ORDER = [

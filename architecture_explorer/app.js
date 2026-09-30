@@ -38,7 +38,7 @@ const state = {
 const esc = (value) =>
   String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const stageName = (id) => STAGES[id]?.rail?.name || STAGES[id]?.foundation?.name || (id === "topology" ? "Topology" : id);
+const stageName = (id) => STAGES[id]?.rail?.name || id;
 
 /* ============================================================
    Level 1 — build the map
@@ -868,12 +868,7 @@ function renderStage(id, originEl, moveFocus) {
 
   const i = RAIL_ORDER.indexOf(id);
   if (i >= 0) highlightStage(i);
-  panelIndex.textContent =
-    i >= 0
-      ? `Stage ${String(i + 1).padStart(2, "0")} / ${String(RAIL_ORDER.length).padStart(2, "0")}`
-      : STAGES[id].foundation
-        ? "Shared foundation"
-        : "Architecture decision";
+  panelIndex.textContent = `Stage ${String(i + 1).padStart(2, "0")} / ${String(RAIL_ORDER.length).padStart(2, "0")}`;
   panelPrevLabel.textContent = "Previous stage";
   panelNextLabel.textContent = i === RAIL_ORDER.length - 1 ? "End of flow" : "Next stage";
   panelPrev.disabled = i <= 0;
@@ -1052,10 +1047,6 @@ document.addEventListener("click", (event) => {
   if (stageBtn) {
     openStage(stageBtn.dataset.stage, stageBtn);
     return;
-  }
-  const openBtn = event.target.closest("[data-open-stage]");
-  if (openBtn) {
-    openStage(openBtn.dataset.openStage, openBtn);
   }
 });
 

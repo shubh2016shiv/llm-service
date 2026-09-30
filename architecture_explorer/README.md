@@ -33,10 +33,9 @@ Three properties carry the argument:
 - **Isolation is a sequence, not a flag.** Four ordered gates read four separate sources of truth,
   and the first failure is the one the caller hears about. There is no partial pass and no fallback
   to a weaker grant.
-- **Caching stops exactly where security begins.** An authorization decision is cached against four
-  version markers and stored with a compare-and-set, so a revocation kills every dependent grant
-  without enumerating them. Tenant status and entitlement status are read uncached on every request,
-  because those are the two values a revocation actually moves.
+- **Access checks read current state.** Live inference authorization checks the tenant, membership,
+  deployment and entitlement in order. Its grant-cache backend is disabled; routing then re-reads
+  current tenant policy and the exact entitlement before building an execution plan.
 - **Every ending settles the same way.** A stream that completes, fails, is cancelled, or whose
   client simply vanished all run the same cleanup exactly once — provider stream closed, usage
   reconciled, capacity slot returned.
@@ -45,7 +44,7 @@ Three properties carry the argument:
 
 | Level | What it shows | How you get there |
 | --- | --- | --- |
-| **1 · System** | Eight pipeline stages, four cross-cutting concerns, and the topology decision | The landing page |
+| **1 · System** | One startup prerequisite and seven request stages | The landing page |
 | **2 · Stage** | The stage's mechanism, design decision, failure controlled, trade-off accepted, talk track | Click a stage card |
 | **3 · Component** | What a component owns, what it is forbidden from doing, what it receives, how its output is validated, and a "passes every check, still wrong" example | Click an outlined node in the mechanism ladder |
 
@@ -55,10 +54,6 @@ Authorization (four gates, grant cache, version invalidation), Resolve Deploymen
 route fingerprint), Quota (reservation, endpoint binding, finalization), Execution (provider
 registry, transport factory, credential resolution, circuit breaker) and Delivery (capacity lease,
 streaming session, SSE delivery).
-
-Four stages sit off the rail on the **Cross-cutting** strip, and are also reachable by deep link:
-Control Plane (`?stage=controlplane`), Secret Management (`?stage=secrets`), Persistence & Schema
-(`?stage=persistence`) and Why Two Services (`?stage=topology`).
 
 ## Full flow diagram
 
@@ -165,14 +160,13 @@ Optimised for a 16:9 desktop display; usable down to tablet and mobile widths.
 
 ## Folder contents
 
-- `index.html` — page shell, hero, rail, cross-cutting strip, panel and full-flow dialog.
-- `content.js` — all content: the probe bank, twelve stages, thirty-six component contracts.
+- `index.html` — page shell, hero, rail, panel and full-flow dialog.
+- `content.js` — all content: the probe bank, eight stages and their component contracts.
 - `app.js` — the rendering and navigation engine. Content-agnostic.
 - `full-flow.js` — the consolidated end-to-end HLD as a React Flow canvas.
 - `styles.css` — the shared design system, carried over unmodified from the sibling explorer.
 - `explorer.css` — this explorer's adaptations: eight rail cards instead of seven, a pure-CSS stage
-  motif in place of the illustrated sprite, one extra diagram colour family, and the cross-cutting
-  strip.
+  motif in place of the illustrated sprite, and one extra diagram colour family.
 - `serve.py` — dev server that disables caching, so an edited stylesheet is never served stale.
 
 The engine/content split is deliberate: `app.js` and `styles.css` carry no domain knowledge, so
