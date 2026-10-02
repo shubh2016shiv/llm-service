@@ -2136,7 +2136,7 @@ body > .knowledge-bubble.knowledge-bubble--external {
   bottom: 72px;
   left: auto;
   z-index: 90;
-  width: clamp(340px, 22vw, 420px);
+  width: clamp(320px, 25vw, 480px);
   max-height: none;
   box-sizing: border-box;
   padding: 16px 17px;
@@ -2159,20 +2159,13 @@ body > .knowledge-bubble.knowledge-bubble--external.is-open {
   opacity: 1;
   transform: translateX(0);
 }
-/* Set by updateKnowledgeDrawerLayoutMode() when the measured gap beside the
-   diagram is too narrow for the side drawer to sit in without overlapping
-   it. Reuses the same fixed bottom-sheet treatment the <820px breakpoint
-   below falls back to, so there is one visual pattern for "not enough
-   side room" regardless of why (a narrow viewport, or a wide one whose
-   centred content column leaves little margin). */
-body > .knowledge-bubble.knowledge-bubble--external.is-side-cramped {
-  top: auto;
-  right: 12px;
-  bottom: 82px;
-  left: 12px;
-  width: auto;
-  max-height: min(68dvh, 680px);
-}
+/* is-side-cramped used to drop this into a bottom sheet whenever the gap
+   beside the diagram looked narrow, even on a wide desktop viewport, which
+   read as "the panel only opens from the bottom right" rather than as a
+   full-height right-side drawer. The drawer is a fixed overlay regardless,
+   so it is allowed to sit on top of the canvas when space is tight instead
+   of relocating to the bottom; only the <820px breakpoint below (a genuinely
+   small screen) still uses the bottom-sheet treatment. */
 /* Clicking a second node while the drawer is already open swaps its content
    in place. Only opacity moves here — the slide transform stays reserved
    for the closed-to-open transition, so this never reads as a reopen. */
@@ -2562,6 +2555,12 @@ body > .knowledge-bubble.knowledge-bubble--external .knowledge-bubble-example {
 .rf-lane--etl { background: color-mix(in srgb, var(--plum) 5%, transparent); border-color: color-mix(in srgb, var(--plum) 40%, transparent); }
 .rf-lane--store,
 .rf-lane--ask { background: color-mix(in srgb, var(--ink) 3%, transparent); }
+/* Bootstrap's three phase lanes stack directly on top of one another with no
+   gap, so a solid border reads as one continuous outer rectangle rather than
+   three distinct phases. Dotted marks each boundary as a phase change. */
+.rf-lane--phase1,
+.rf-lane--phase2,
+.rf-lane--phase3 { border-style: dotted; border-width: 1.5px; }
 
 .rf-shell--knowledge { height: 1320px; }
 .rf-shell--extraction { height: 1550px; }

@@ -206,7 +206,6 @@ function externalizeKnowledgeBubble(stageId) {
   bubble.classList.add("knowledge-bubble--external");
   bubble.dataset.ownerStage = stageId;
   document.body.appendChild(bubble);
-  updateKnowledgeDrawerLayoutMode();
 }
 
 /* Stage navigation and panel close both discard the diagram markup the
@@ -220,24 +219,6 @@ function removeExternalKnowledgeBubbles() {
   activeKnowledgeBubbleElement = null;
 }
 
-/* The drawer's ~340-420px fixed width is only "otherwise-unused viewport
-   space" when the centred content column actually leaves that much room to
-   its right. A static CSS breakpoint can't know that — the column's own
-   width and gutters already flex with viewport size — so this measures the
-   real gap next to the stage's diagram and switches the drawer into the
-   same bottom-sheet treatment narrow viewports use whenever it wouldn't
-   fit without overlapping the diagram. Never changes the diagram itself. */
-function updateKnowledgeDrawerLayoutMode() {
-  const shell = document.querySelector(".knowledge-diagram-shell--external[data-diagram-stage]");
-  const bubble = document.querySelector(".knowledge-bubble--external");
-  if (!shell || !bubble) return;
-  const MIN_DRAWER_WIDTH = 340;
-  const INSET_AND_GAP = 22 + 18;
-  const available = window.innerWidth - shell.getBoundingClientRect().right;
-  bubble.classList.toggle("is-side-cramped", available < MIN_DRAWER_WIDTH + INSET_AND_GAP);
-}
-
-window.addEventListener("resize", () => updateKnowledgeDrawerLayoutMode());
 
 function positionKnowledgeBubble(shell, bubble, node) {
   const nodeBox = node.getBoundingClientRect();

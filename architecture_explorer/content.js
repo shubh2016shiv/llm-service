@@ -728,15 +728,89 @@ const DIAGRAM_STAGES = {
       ["FastAPI dependencies", "Declared headers and other dependency parameters are validated during dependency resolution. The diagram does not claim every validation check finishes before authentication."],
     ],
     details: {
-      ARRIVE: { eyebrow: "Input", title: "Receive an HTTP request", body: "The ASGI application receives the request scope, body receiver and response sender. Non-HTTP scopes are passed through by these middleware classes. Source: app/api/request_context.py." },
-      ID: { eyebrow: "Correlation", title: "Keep or create a safe request ID", body: "RequestContextMiddleware accepts X-Request-ID only if it matches the allowed pattern; otherwise it generates a UUID. It stores the value in request state, binds it to logs and writes it to the response header. Source: app/api/request_context.py:RequestContextMiddleware." },
-      WRAP: { eyebrow: "Response boundary", title: "Apply CORS and the error safety net", body: "The middleware registration in app/main.py makes request context outermost, then CORS, then UnhandledExceptionMiddleware. An unexpected exception becomes a sanitized 500 only if response headers have not started. Source: app/main.py:_register_middleware and app/api/request_context.py." },
-      SIZE: { eyebrow: "Body limit", title: "Check declared and received body size", body: "RequestBodyLimitMiddleware rejects a malformed or negative Content-Length with 400, and a declared body above the configured limit with 413. It also counts actual received bytes and stops forwarding when the same limit is crossed. Source: app/api/request_context.py:RequestBodyLimitMiddleware." },
-      PARSE: { eyebrow: "Framework validation", title: "Match the route and validate input", body: "Once the body passes the limit, FastAPI matches the route, parses its body and validates declared inputs. Header parameters declared in dependencies are validated as those dependencies resolve. A RequestValidationError is handled without returning rejected input values. Source: app/api/llm_inference_router.py and app/api/exception_handlers.py." },
-      NEXT: { eyebrow: "Handoff", title: "Continue through route dependencies", body: "Inference route dependencies include get_current_user, which verifies the bearer token, followed by tenant/deployment authorization and route resolution. FastAPI may validate dependency parameters during this process. Source: app/api/inference_dependencies.py." },
-      BODY_ERROR: { eyebrow: "Early exit", title: "Return a body-size error", body: "A bad Content-Length returns 400; an oversized body returns 413. The JSON error carries detail, error_code and request_id. The outer request-context middleware still sets X-Request-ID on the response. Source: app/api/request_context.py." },
-      VALIDATION_ERROR: { eyebrow: "Early exit", title: "Return safe validation errors", body: "The request-validation handler returns 422 with field location, message and type. It deliberately omits the rejected input value, which could be a secret. Source: app/api/exception_handlers.py:_on_request_validation_error." },
-      UNEXPECTED: { eyebrow: "Safety net", title: "Handle an unexpected failure", body: "Before response headers, an unhandled exception is logged and returned as a sanitized 500. After headers have started, the middleware re-raises because it cannot replace an active stream with JSON. Source: app/api/request_context.py:UnhandledExceptionMiddleware." },
+      ARRIVE: { eyebrow: "Input", title: "Receive an HTTP request", body: "Every request starts here, at the boundary between the web server (Uvicorn, from the bootstrap diagram) and this application. The two communicate through a standard interface called ASGI. It hands the application a description of the incoming request, for example: the method (POST), the path (/api/v1/llm/chat), and its headers (Authorization for who's calling, X-Tenant-ID and X-Deployment-Key for which customer and deployment, X-Request-ID for tracking this one call). It also gives the application a way to read the request's body as it arrives rather than only once it's fully received, and a way to send the response back the same way, piece by piece. That piece-by-piece sending is what lets a response be streamed out later in this flow, instead of only ever being sent as one finished block.", sections: [
+        { title: "What it receives", items: [
+          "A description of this one request: its method (e.g. POST), path (e.g. /api/v1/llm/chat) and headers (e.g. Authorization, X-Tenant-ID, X-Request-ID)",
+          "A way to read the request body as it arrives, instead of only after it's fully received",
+          "A way to send the response back, which later steps use to stream output",
+        ] },
+        { title: "What it does not do", items: [
+          "It does not touch anything that isn't an ordinary web request. A different kind of connection, such as a live two-way socket, is passed straight through untouched",
+        ] },
+      ] },
+      ID: { eyebrow: "Correlation", title: "Keep or create a safe request ID", body: "Every request gets one tracking number, used to follow that specific request through the logs, which matters most when something goes wrong and you need to find exactly what happened for that one call. If the caller already sent a tracking number in a header called X-Request-ID, the server checks that it's actually safe to reuse: only letters, digits, and a handful of harmless punctuation marks like - _ . : and /, nothing that could break a log line or be used to inject something unexpected. A value like checkout-2024-05-01:00042 passes; something containing a space, a quote, or a stray symbol does not. If the caller didn't send one, or sent something that fails that check, the server makes up a new one itself: a UUID, a long, effectively-unique code it generates on the spot, something like 3b2c9f10-4e21-4b8a-9c3d-1a2b3c4d5e6f.", sections: [
+        { title: "What gets checked", items: [
+          "Accepted: letters, digits, and the characters - _ . : /, for example checkout-2024-05-01:00042",
+          "Rejected: anything with a space, a quote, or any other character outside that list, a new ID is generated instead",
+        ] },
+        { title: "What happens with it", items: [
+          "It's attached to every log line written while this request is being handled",
+          "It's sent back to the caller in the response, so they can match their request to what the server logged for it",
+          "A rejected caller-supplied value is logged as a warning, but the request still proceeds with the newly generated ID instead of being refused",
+        ] },
+      ] },
+      WRAP: { eyebrow: "Response boundary", title: "Apply CORS and the error safety net", body: "Two protections wrap around every route here. The first is CORS, a browser rule controlling which other websites' JavaScript is allowed to call this API directly from someone's browser. Without it, any website could embed a script that quietly calls this API using a visitor's already-logged-in session. This service only allows specific, configured addresses to do that, for example http://localhost:3000 in development; a production deployment is not allowed to leave this wide open to every site (a wildcard * is rejected at startup). The second is a safety net for anything that crashes unexpectedly, a bug nothing else here was built to catch. It turns that crash into a clean, generic error response instead of letting a raw Python error leak out to the caller.", sections: [
+        { title: "What CORS controls", items: [
+          "Which website addresses may call this API from a browser; anything not on that list is refused by the browser itself, before the request even reaches here",
+          "The allowed addresses are configured per environment, and a production deployment can't leave this set to allow everyone",
+        ] },
+        { title: "What the safety net does", items: [
+          "Catches any crash that wasn't already turned into a proper error response elsewhere",
+          "Logs the method and path of the failing request, then returns a clean, generic error instead of leaking internal detail",
+        ] },
+      ] },
+      SIZE: { eyebrow: "Body limit", title: "Check declared and received body size", body: "Every request body (the data being sent, like a chat message) has a size limit, 10,485,760 bytes by default (10 MB, roughly a few photos' worth of data, or several million characters of text). There are two different checks, because not every request says upfront how big it is. If the caller sends a Content-Length header, declaring the size before sending any data, the server checks that number immediately: if it's not a valid non-negative number, or if it's already over the limit, the request is rejected before a single byte of the body is read. If there's no declared size (a chunked upload, where data streams in without saying how much is coming), the server counts bytes as they arrive and cuts the request off the moment the same limit is crossed, so it can't silently read an unbounded amount of data into memory.", sections: [
+        { title: "Checked upfront (Content-Length header)", items: [
+          "Not a valid non-negative number: rejected immediately, 400",
+          "Already bigger than 10,485,760 bytes: rejected immediately, 413",
+        ] },
+        { title: "Checked as it streams (no declared size)", items: [
+          "Bytes are counted as they arrive; once the running total crosses 10,485,760, the request is cut off, 413",
+          "The bytes already received before the cutoff were still read off the network, this limits how much memory is held onto, not how much bandwidth is spent",
+        ] },
+      ] },
+      PARSE: { eyebrow: "Framework validation", title: "Match the route and validate input", body: "Every endpoint in this app expects certain information, almost like a form with required boxes to fill in. A chat request needs a messages field, for example. Before any of that endpoint's real code runs, two things happen. First, the request is matched to the right endpoint based on its method and path, a POST to /api/v1/llm/chat goes to the chat handler, nowhere else. Second, everything that handler expects gets checked: fields in the body (like messages), and anything required in the headers (like X-Tenant-ID). If something is missing, or in the wrong format, the request stops right here. It never reaches the actual handler code.", sections: [
+        { title: "What gets checked", items: [
+          "Fields in the request body, like messages for a chat request",
+          "Required headers, like X-Tenant-ID",
+          "This is only checking \"is the request filled out correctly\", not whether the caller is allowed to do this. That comes later",
+        ] },
+      ] },
+      NEXT: { eyebrow: "Handoff", title: "Continue through route dependencies", body: "A request that makes it this far has the right shape, but nobody has checked who's making it yet, or whether they're allowed to. That happens next, before the actual endpoint code (like the chat handler) runs. First, the caller's identity is checked from the Authorization header. Then, it's checked whether that caller is allowed to use the specific customer account and deployment named in the request. Only after both of those pass does the real work start.", sections: [
+        { title: "What happens next, in order", items: [
+          "The caller's identity is verified",
+          "Whether that caller may use this customer account and deployment is checked",
+          "The exact AI provider and model to call is worked out",
+        ] },
+        { title: "What this step is not", items: [
+          "It's a handoff point, not where the checks themselves happen. The identity check is covered in the next diagram (authentication); the permission check comes after that (authorization)",
+        ] },
+      ] },
+      BODY_ERROR: { eyebrow: "Early exit", title: "Return a body-size error", body: "Both rejection paths from the previous step land here, and both return the same stable shape, so a caller can handle them the same way: a JSON body with a human-readable detail, a machine-readable error_code, and the tracking ID (from step 2) for matching against the logs. Nothing about the actual request content is echoed back.", sections: [
+        { title: "Example responses", items: [
+          "Malformed length (400): { \"detail\": \"Content-Length must be a non-negative integer.\", \"error_code\": \"INVALID_CONTENT_LENGTH\", \"request_id\": \"...\" }",
+          "Too large (413): { \"detail\": \"Request body exceeds the 10485760-byte limit.\", \"error_code\": \"REQUEST_BODY_TOO_LARGE\", \"request_id\": \"...\" }",
+        ] },
+      ] },
+      VALIDATION_ERROR: { eyebrow: "Early exit", title: "Return safe validation errors", body: "When a request fails that check, the error says exactly which field was wrong and why, but never repeats back the actual value that was sent. That matters because the bad value could be something sensitive, like a badly formatted API key, and printing it back in an error message would leak it into logs and error screens.", sections: [
+        { title: "Example response", items: [
+          "{ \"detail\": \"Request validation failed.\", \"error_code\": \"REQUEST_VALIDATION_ERROR\", \"request_id\": \"...\", \"errors\": [{ \"location\": [\"body\", \"messages\"], \"message\": \"Field required\", \"type\": \"missing\" }] }",
+        ] },
+        { title: "What's included vs. left out", items: [
+          "Included: where the problem is, and what's wrong",
+          "Left out, on purpose: the actual value that was submitted",
+        ] },
+      ] },
+      UNEXPECTED: { eyebrow: "Safety net", title: "Handle an unexpected failure", body: "This only runs when something crashes that nothing upstream was prepared for. What happens next depends on one thing: has any part of the response already been sent to the caller? If not, the caller gets a plain, predictable error instead of a raw crash. If the response had already started, for example mid-stream, there's no way to take that back and swap in an error page, so the connection is simply closed instead of sending something broken.", sections: [
+        { title: "Before any response has been sent", items: [
+          "Returns a generic 500 response that looks the same no matter what actually broke: {\"detail\": \"An unexpected error occurred.\", \"error_code\": \"INTERNAL_SERVER_ERROR\", \"request_id\": \"...\"}",
+          "The request's tracking ID (from step 2) is included, so the caller and the logs can be matched up afterward",
+        ] },
+        { title: "After a response has already started", items: [
+          "It's too late to send a clean error: the caller is already receiving the first part of a JSON or streamed reply",
+          "The connection is closed instead, rather than mixing a broken partial reply with an error page",
+        ] },
+      ] },
     },
   },
   identity: {
