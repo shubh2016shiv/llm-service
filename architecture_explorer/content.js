@@ -828,14 +828,59 @@ const DIAGRAM_STAGES = {
       ["Role guards are separate", "Some protected routes add a platform RoleGuard after authentication. Inference uses get_current_user directly; tenant-role eligibility is checked in the following authorization phase."],
     ],
     details: {
-      DEPENDENCY: { eyebrow: "Route dependency", title: "Ask for the current user", body: "Inference's require_inference_access declares Depends(get_current_user). FastAPI resolves that dependency before the authorization service receives the caller identity. Source: app/api/inference_dependencies.py." },
-      BEARER: { eyebrow: "Header", title: "Extract a Bearer token", body: "HTTPBearer reads the Authorization header. With auto_error disabled, a missing or unusable bearer header becomes None so get_current_user can return a consistent 401 with WWW-Authenticate: Bearer. Source: app/auth/auth_dependencies.py." },
-      SIGNATURE: { eyebrow: "Cryptographic check", title: "Verify the signed JWT", body: "validate_access_token calls jwt.decode with the configured secret and algorithm, expected issuer and audience, required time and identity claims, and allowed clock skew. A bad signature, malformed token or expired claim raises JWTError. Source: app/auth/jwt_token_validator.py." },
-      CONTRACT: { eyebrow: "Claim checks", title: "Check the access-token contract", body: "The validator requires sub, role, type, exp, iat, nbf, iss, aud and jti. It requires type=access, a known platform role, and a positive lifetime no longer than the configured maximum; UUID and time values must form a valid AuthTokenPayload. Source: app/auth/jwt_token_validator.py and app/schemas/auth_schema.py." },
-      IDENTITY: { eyebrow: "Output", title: "Return a frozen identity", body: "get_current_user returns AuthTokenPayload with user_id, platform role, token_id, expiry and issue time. The object is immutable and becomes input to the next authorization phase. Source: app/auth/auth_dependencies.py and app/schemas/auth_schema.py." },
-      MISSING: { eyebrow: "Early exit", title: "No Bearer token: 401", body: "When HTTPBearer finds no usable Bearer credentials, get_current_user returns 401 with WWW-Authenticate: Bearer. Source: app/auth/auth_dependencies.py:get_current_user." },
-      INVALID_JWT: { eyebrow: "Early exit", title: "JWT verification failed: 401", body: "A bad signature, expired token or other JWT verification failure becomes a 401. The log records the error type, never the token. Source: app/auth/jwt_token_validator.py and app/auth/auth_dependencies.py." },
-      BAD_CLAIMS: { eyebrow: "Early exit", title: "Token contents unusable: 401", body: "A signed token with missing claims, wrong token kind, unknown role, invalid UUID or unsupported lifetime becomes a 401 rather than a server error. Source: app/auth/jwt_token_validator.py and app/auth/auth_dependencies.py." },
+      DEPENDENCY: { eyebrow: "Route dependency", title: "Ask for the current user", body: "Think of a building with a front desk. Before anyone reaches a specific office, the front desk checks their ID automatically, for everyone, before anyone gets past the lobby. The office itself never has to check IDs. In this service, the \"office\" is the chat endpoint, and the \"front desk\" is a check built into FastAPI, the web framework this app is built on. The endpoint lists what it needs before it can run, here, a verified identity, and FastAPI runs that check first, automatically, before the endpoint's own code ever executes. The endpoint doesn't call the check itself; it simply can't run without the check having already passed. For example, a request arrives at /api/v1/llm/chat with no valid token at all. The chat endpoint's own code never starts running, not even one line of it. The request is stopped at the front desk (the identity check) and handed straight to a 401 response, the same way a visitor without ID is stopped in the lobby and never reaches the office upstairs.", sections: [
+        { title: "Why it works this way", items: [
+          "If every endpoint had to remember to run this check itself, one could forget, and let a request through unchecked. Declaring it up front makes that mistake impossible",
+        ] },
+      ] },
+      BEARER: { eyebrow: "Header", title: "Extract a Bearer token", body: "Think of a cinema ticket. Whoever is physically holding it can use it to get in, the usher at the door doesn't ask who originally bought it. Showing the ticket is enough. The caller sends that \"ticket\" in the Authorization header, with the word Bearer in front of it. This step's only job is to read that one header and pull the ticket (the token) out of it. It doesn't check whether the ticket is real, that's the next step. If the header isn't there at all, or isn't in that exact Bearer <token> shape, this step hands back nothing rather than raising an error itself. A real request includes Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIi.... If a request instead sends a different scheme, like Authorization: Basic dXNlcjpwYXNz, or leaves the header out entirely, nothing is extracted.", sections: [
+        { title: "What it looks for", items: [
+          "The Authorization header, in the form Bearer <token>",
+        ] },
+        { title: "What happens if it's missing or wrong", items: [
+          "The request skips straight to the \"No Bearer token\" box on the right, bypassing the verification steps below entirely, so every missing-or-wrong-shape case gets exactly the same response, including the standard WWW-Authenticate: Bearer header that tells the client what kind of credential this service expects",
+        ] },
+      ] },
+      SIGNATURE: { eyebrow: "Cryptographic check", title: "Verify the signed JWT", body: "Think of a wax seal on a letter. Anyone who has the letter can open it and read every word, nothing is hidden. But the moment someone changes even one word and tries to reseal it, the seal no longer matches, and anyone checking it can tell it's been tampered with. The token is signed with a secret key only this service knows. This step checks three things: the signature is genuine (calculated with the correct key and algorithm, proving nothing was altered), the token's issuer and audience match what this service expects (proving the token was actually meant for this service, not borrowed from somewhere else), and the timing is valid, not expired, and not used before it's allowed to be (with a brief allowance for clock differences).", sections: [
+        { title: "Example: a token that passes", code: "{\n  \"sub\": \"3b2c9f10-4e21-4b8a-9c3d-1a2b3c4d5e6f\",\n  \"role\": \"developer\",\n  \"type\": \"access\",\n  \"iat\": 1717000000,\n  \"nbf\": 1717000000,\n  \"exp\": 1717003600,\n  \"iss\": \"llm-provider-service\",\n  \"aud\": \"llm-provider-service\",\n  \"jti\": \"a1b2c3d4-5e6f-7890-abcd-ef1234567890\"\n}" },
+        { title: "Example: a token that is genuinely signed, but still rejected", code: "{\n  \"sub\": \"3b2c9f10-4e21-4b8a-9c3d-1a2b3c4d5e6f\",\n  \"role\": \"developer\",\n  \"type\": \"access\",\n  \"iat\": 1717000000,\n  \"nbf\": 1717000000,\n  \"exp\": 1717003600,\n  \"iss\": \"llm-provider-service\",\n  \"aud\": \"admin-dashboard\",\n  \"jti\": \"a1b2c3d4-5e6f-7890-abcd-ef1234567890\"\n}", body: "Rejected because its aud doesn't match this service, even though nobody tampered with it." },
+      ] },
+      CONTRACT: { eyebrow: "Claim checks", title: "Check the access-token contract", body: "Think of a passport. Immigration doesn't just check that the signature page is genuine. They also check that every required field is actually filled in: a name, a photo, a date of birth, an expiry date. A genuinely signed passport missing its photo page is still useless. A JWT is one string made of three dot-separated parts. The middle part decodes into a plain dictionary called its claims, nine required keys, each with its own value. This step checks that dictionary all at once: every required key is present, and every value actually makes sense, so no caller can check a token halfway and skip the rest.", sections: [
+        { title: "Example: a decoded token", code: "{\n  \"sub\": \"3b2c9f10-4e21-4b8a-9c3d-1a2b3c4d5e6f\",\n  \"role\": \"developer\",\n  \"type\": \"access\",\n  \"iat\": 1717000000,\n  \"nbf\": 1717000000,\n  \"exp\": 1717003600,\n  \"iss\": \"llm-provider-service\",\n  \"aud\": \"llm-provider-service\",\n  \"jti\": \"a1b2c3d4-5e6f-7890-abcd-ef1234567890\"\n}" },
+        { title: "What each required key means", items: [
+          "sub: who this token belongs to, a user ID",
+          "role: that user's platform role, for example developer",
+          "type: what kind of token this is, must be access",
+          "iat / nbf / exp: when it was issued, when it becomes valid, and when it expires, each a timestamp",
+          "iss / aud: which service issued it, and which service it's meant for",
+          "jti: a unique ID for this one token",
+        ] },
+        { title: "What else gets checked, beyond just being present", items: [
+          "type must specifically equal access. Other kinds of token exist in this system and are refused here",
+          "role must be one this service actually recognizes, not just any string",
+          "The gap between iat and exp must be positive and no longer than the maximum lifetime this service allows",
+        ] },
+      ] },
+      IDENTITY: { eyebrow: "Output", title: "Return a frozen identity", body: "Think of a laminated visitor badge printed at a building's front desk. Once it's printed and laminated, nobody, not the visitor, not anyone else, can scribble on it and change what it says. It's handed over exactly as issued, and whoever looks at it later trusts it completely because it can't have been altered since. Once every check in this diagram has passed, this step produces one small, frozen record describing the caller. Frozen means nothing later in the request can modify it, it's built once, here, and carried forward as-is. Notably, nothing in this entire diagram touched a database: everything was proven from the token itself.", sections: [
+        { title: "Example", code: "{\n  \"user_id\": \"3b2c9f10-4e21-4b8a-9c3d-1a2b3c4d5e6f\",\n  \"role\": \"developer\",\n  \"token_id\": \"a1b2c3d4-5e6f-7890-abcd-ef1234567890\",\n  \"issued_at\": \"2026-06-01T10:00:00Z\",\n  \"expires_at\": \"2026-06-01T11:00:00Z\"\n}" },
+        { title: "What this is not", items: [
+          "This says who is calling, not what they're allowed to do. Whether this caller may use a particular customer account and model is decided in the next diagram (authorization)",
+        ] },
+      ] },
+      MISSING: { eyebrow: "Early exit", title: "No Bearer token: 401", body: "No usable credentials were found in the Authorization header, so there is nothing to verify. The response is 401 with the detail \"Authorization token is required.\" and a WWW-Authenticate: Bearer header, which is the standard way of telling a client what kind of credential to send." },
+      INVALID_JWT: { eyebrow: "Early exit", title: "JWT verification failed: 401", body: "A token was present, but it did not survive the signature and timing check: wrong signature, altered contents, or expired. The response is 401 with the detail \"Token is invalid or has expired.\" The logs record what type of failure it was, never the token itself, because the token is a working credential for anyone who reads it." },
+      BAD_CLAIMS: { eyebrow: "Early exit", title: "Token contents unusable: 401", body: "The signature was genuine, so nobody tampered with this token, but its contents still don't pass the checks from the previous step. Any one of these returns 401 with the detail \"Token format is invalid.\"", sections: [
+        { title: "Example failures", items: [
+          "A required key is missing entirely, say the decoded token has sub, role, type... but no jti",
+          "type is something other than \"access\", for example \"refresh\"",
+          "role is a string this service doesn't recognize, like \"superadmin\" instead of developer/operator/admin/owner",
+          "sub or jti isn't a properly formed ID",
+          "The gap between iat and exp is longer than this service allows, for example a token valid for 30 days when the maximum is 1 hour",
+        ] },
+        { title: "Why 401 and not 500", items: [
+          "401 means \"you, the caller, sent something that isn't acceptable.\" 500 means \"something broke inside this server.\" A malformed token is the caller's problem, a bad or expired token they're holding, not a bug in this service. So it's handled the same way as \"wrong password\" would be: a normal, expected rejection, not treated as a crash",
+        ] },
+      ] },
     },
   },
   authorization: {
