@@ -153,7 +153,7 @@ function diagramStageMarkup(stageId) {
         <aside class="knowledge-bubble" id="knowledgeBubble" aria-live="polite" hidden></aside>
       </div>`;
   const flowActions = cfg.engine === "reactflow"
-    ? `<p>Click any step to open its explanation. Drag to pan; use the controls in the corner to zoom.</p>`
+    ? `<p>Hover or click any step to open its full explanation in the panel on the right. Drag the background to pan; use the controls in the corner to zoom.</p>`
     : `<div class="knowledge-flow-actions">
           <p>Hover or focus any step. Enable pan to drag and scroll inside the diagram — off by default so the page scrolls normally.</p>
           <span class="knowledge-zoom">
@@ -339,13 +339,14 @@ function closeKnowledgeBubble(shell, bubble, node = activeKnowledgeBubbleNode, o
 }
 
 function showKnowledgeBubble(node, detail, options = {}) {
+  const { toggle = true } = options;
   const shell = node.closest(".knowledge-diagram-shell");
   const bubble = shell?.classList.contains("knowledge-diagram-shell--external")
     ? document.querySelector(`.knowledge-bubble--external[data-owner-stage="${shell.dataset.diagramStage}"]`)
     : shell?.querySelector(".knowledge-bubble");
   if (!shell || !bubble) return;
 
-  if (activeKnowledgeBubbleNode === node && shell.classList.contains("is-drawer-open")) {
+  if (toggle && activeKnowledgeBubbleNode === node && shell.classList.contains("is-drawer-open")) {
     closeKnowledgeBubble(shell, bubble, node, { restoreFocus: false });
     return;
   }
@@ -397,6 +398,12 @@ function showKnowledgeBubble(node, detail, options = {}) {
     shell.classList.remove("is-drawer-closing");
     shell.classList.add("is-drawer-open");
     bubble.querySelector(".knowledge-drawer-close")?.addEventListener("click", () => closeKnowledgeBubble(shell, bubble, node));
+    /* Hover opens this drawer (see scheduleKnowledgeBubble/hideKnowledgeBubble
+       below), so the pointer has to be able to move from the node onto the
+       drawer itself, e.g. to scroll it, without the leave-delay in
+       hideKnowledgeBubble closing it underneath the cursor. */
+    bubble.onpointerenter = keepKnowledgeBubbleOpen;
+    bubble.onpointerleave = () => hideKnowledgeBubble(node);
     bubble.scrollTop = 0;
     if (wasAlreadyOpen) {
       /* Drawer is already on screen: swap content with a brief fade instead
@@ -415,9 +422,44 @@ function showKnowledgeBubble(node, detail, options = {}) {
   openBubble();
 }
 
-function hideKnowledgeBubble(node) {
-  /* Explanations are click-controlled drawers. Pointer departure must not
-     dismiss reading content. The close button and Escape key own dismissal. */
+/* Hovering a ReactFlow step node opens its drawer after a short pause, so
+   passing over a node on the way to another one doesn't flash it open.
+   Click/Enter still opens immediately (openKnowledgeBubble's toggle path),
+   which is what keyboard and touch users rely on since they have no hover. */
+function scheduleKnowledgeBubble(node, detail, delay = 400) {
+  window.clearTimeout(knowledgeBubbleTimer);
+  knowledgeBubbleTimer = window.setTimeout(() => {
+    knowledgeBubbleTimer = null;
+    showKnowledgeBubble(node, detail, { immediate: true, toggle: false });
+  }, delay);
+}
+
+function cancelScheduledKnowledgeBubble() {
+  window.clearTimeout(knowledgeBubbleTimer);
+  knowledgeBubbleTimer = null;
+}
+
+function keepKnowledgeBubbleOpen() {
+  window.clearTimeout(knowledgeBubbleHideTimer);
+  knowledgeBubbleHideTimer = null;
+}
+
+/* Pointer leaving the node schedules a close a beat later, rather than
+   closing instantly, so moving onto the drawer itself (see
+   bubble.onpointerenter above) cancels the close instead of racing it. The
+   close button and Escape key remain the only way to dismiss a bubble that
+   was opened by click/Enter rather than hover. */
+function hideKnowledgeBubble(node, delay = 110) {
+  cancelScheduledKnowledgeBubble();
+  window.clearTimeout(knowledgeBubbleHideTimer);
+  knowledgeBubbleHideTimer = null;
+  if (activeKnowledgeBubbleNode !== node) return;
+  const shell = activeKnowledgeBubbleShell;
+  const bubble = activeKnowledgeBubbleElement;
+  knowledgeBubbleHideTimer = window.setTimeout(() => {
+    knowledgeBubbleHideTimer = null;
+    if (activeKnowledgeBubbleNode === node) closeKnowledgeBubble(shell, bubble, node, { restoreFocus: false });
+  }, delay);
 }
 
 /* Zoom/pan for the knowledge diagram. The main flow view has its own copy of
@@ -818,7 +860,14 @@ function paint(html, originEl, moveFocus = true) {
      going through its own unmount, which otherwise leaks the root and can
      throw on the next render. No-ops when nothing is mounted. */
   window.unmountKnowledgeReactFlow?.();
+  window.unmountBootstrapReactFlow?.();
   window.unmountAdmissionReactFlow?.();
+  window.unmountAuthenticationReactFlow?.();
+  window.unmountAuthorizationReactFlow?.();
+  window.unmountRoutingReactFlow?.();
+  window.unmountReservationReactFlow?.();
+  window.unmountExecutionReactFlow?.();
+  window.unmountDeliveryReactFlow?.();
   window.unmountExtractionReactFlow?.();
   window.unmountClassificationReactFlow?.();
   window.unmountRetrievalReactFlow?.();
@@ -1206,6 +1255,8 @@ initStatReveal();
 window.DIAGRAM_STAGES = DIAGRAM_STAGES;
 window.showKnowledgeBubble = showKnowledgeBubble;
 window.hideKnowledgeBubble = hideKnowledgeBubble;
+window.scheduleKnowledgeBubble = scheduleKnowledgeBubble;
+window.cancelScheduledKnowledgeBubble = cancelScheduledKnowledgeBubble;
 
 window.addEventListener("popstate", syncFromUrl);
 history.replaceState({ stage: null, component: null }, "", window.location.href);

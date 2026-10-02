@@ -45,15 +45,16 @@ Three properties carry the argument:
 | Level | What it shows | How you get there |
 | --- | --- | --- |
 | **1 · System** | One startup prerequisite and seven request stages | The landing page |
-| **2 · Stage** | The stage's mechanism, design decision, failure controlled, trade-off accepted, talk track | Click a stage card |
-| **3 · Component** | What a component owns, what it is forbidden from doing, what it receives, how its output is validated, and a "passes every check, still wrong" example | Click an outlined node in the mechanism ladder |
+| **2 · Stage** | Traced React Flow low-level designs for all eight stages | Click a stage card |
+| **3 · Component** | Source-backed explanation for a step or failure path | Click a node in a stage diagram |
 
-The eight rail stages are Bootstrap (settings root, config loader, exit stack, app state), Admission
-(request context, body limit, error boundary), Identity (JWT validator, role guard, token issuer),
-Authorization (four gates, grant cache, version invalidation), Resolve Deployment (config read, capability check,
-route fingerprint), Quota (reservation, endpoint binding, finalization), Execution (provider
-registry, transport factory, credential resolution, circuit breaker) and Delivery (capacity lease,
-streaming session, SSE delivery).
+The eight rail stages are Bootstrap (settings root, config loader, exit stack, app state), Receive & Validate
+(request context, body limit, error boundary), Authentication (Bearer extraction, JWT validation, typed identity),
+Inference Authorization (four live database gates), Route Resolution (live policy and exact entitlement,
+catalog checks, immutable route), Capacity Reservation (worker stream slot, token-manager acquisition,
+endpoint binding and finalization handoff), Provider Execution (provider
+registry, transport factory, credential resolution, circuit breaker) and Delivery & Settlement (JSON
+finalization, managed stream cleanup, SSE delivery).
 
 ## Full flow diagram
 
@@ -161,7 +162,15 @@ Optimised for a 16:9 desktop display; usable down to tablet and mobile widths.
 ## Folder contents
 
 - `index.html` — page shell, hero, rail, panel and full-flow dialog.
-- `content.js` — all content: the probe bank, eight stages and their component contracts.
+- `content.js` — stage content, component contracts and source-backed diagram explanations.
+- `bootstrap-flow.js` — clickable React Flow low-level design of application startup and cleanup.
+- `admission-flow.js` — clickable React Flow low-level design of request receipt, body limits and validation.
+- `authentication-flow.js` — clickable React Flow low-level design of bearer-token verification.
+- `authorization-flow.js` — clickable React Flow low-level design of the four inference-access gates.
+- `routing-flow.js` — detailed React Flow design of live routing reads, policy and catalog gates, and route construction.
+- `reservation-flow.js` — clickable React Flow design of stream admission, token reservation, failure paths and cleanup handoff.
+- `execution-flow.js` — clickable React Flow design of adapter reuse, credential lookup, guarded vendor calls and normalized results.
+- `delivery-flow.js` — clickable React Flow design of JSON settlement and the managed SSE lifecycle.
 - `app.js` — the rendering and navigation engine. Content-agnostic.
 - `full-flow.js` — the consolidated end-to-end HLD as a React Flow canvas.
 - `styles.css` — the shared design system, carried over unmodified from the sibling explorer.

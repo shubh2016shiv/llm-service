@@ -3,7 +3,7 @@
    ============================================================
    styles.css is the shared design system and is not edited. This
    file adapts it to this explorer: eight rail stages instead of
-   seven, no illustrated sprite (a CSS motif per stage instead),
+   seven, a dedicated eight-stage illustrated sprite,
    and one extra diagram colour family.
    ============================================================ */
 
@@ -21,67 +21,138 @@
 .hero-zone2 { grid-template-columns: minmax(0, 1fr); }
 .lede { max-width: 100%; }
 
-/* ---------- rail: startup prerequisite followed by seven request stages ---------- */
+/* ---------- rail: one proportion for every phase ---------- */
 
 .rail {
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  gap: 16px;
+  margin-top: 18px;
 }
 
-@media (max-width: 1180px) {
-  .rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 680px) {
-  .rail { grid-template-columns: minmax(0, 1fr); }
-}
-
-/* The base card height was sized around an illustrated sprite. Without one
-   the copy is the whole card, so it shrinks to fit the copy instead. */
 .stage {
-  min-height: 176px;
-  border-left-width: 3px;
-  border-left-style: solid;
-  border-left-color: var(--stage-accent, var(--line-2));
+  min-width: 0;
+  min-height: 230px;
+  padding: 48px 19px 17px;
+  gap: 0;
+  border-left: 4px solid var(--stage-accent, var(--line-2));
+  background: color-mix(in srgb, var(--stage-accent, var(--ink-3)) 3%, var(--card));
 }
-.stage::before { inset: 62% 0 0; }
-.stage[data-stage="bootstrap"] {
-  grid-column: 1 / -1;
-  min-height: 132px;
+.stage::before {
+  inset: 40% 0 0;
+  background: linear-gradient(to bottom, transparent, rgba(251, 250, 246, 0.72) 38%, #fbfaf6 68%);
 }
-.stage[data-stage="bootstrap"]::after { display: none; }
+.stage::after { display: none; }
+.stage > .stage-band {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 30px;
+  padding: 0 17px;
+}
+.stage > .stage-copy {
+  position: relative;
+  margin-top: auto;
+  gap: 6px;
+  padding-right: 34px;
+}
+.stage-name {
+  font-size: 17px;
+  line-height: 1.2;
+  font-weight: 650;
+}
+.stage-desc {
+  max-width: 34ch;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.stage > .stage-texture,
+.stage > .stage-check,
+.stage > .stage-mode-standalone,
+.stage > .stage-top,
+.stage > .stage-arrow { display: none; }
+.stage:focus-visible {
+  outline: 2px solid var(--stage-accent);
+  outline-offset: 3px;
+}
 
-/* ---------- stage motif ---------- */
-/* Replaces the sprite: a tint drawn from the stage's own accent plus one
-   large watermark glyph. Pure CSS, so there is no image to ship and the
-   motif recolours with the accent rather than being baked into a bitmap. */
+@media (max-width: 1100px) {
+  .rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stage { min-height: 214px; }
+}
+@media (max-width: 600px) {
+  .rail { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .stage { min-height: 198px; padding-top: 44px; }
+}
+
+/* Bootstrap's traced React Flow fits one startup path and one cleanup branch. */
+.rf-shell--bootstrap { height: 920px; }
+.rf-shell--admission { height: 820px; }
+.rf-shell--authentication { height: 780px; }
+.rf-shell--authorization { height: 1030px; }
+.rf-shell--routing { height: 1580px; }
+.rf-shell--reservation { height: 1270px; }
+.rf-shell--reservation .rf-node--neutral { background: #f8eeee; border-color: #a2453c; }
+.rf-shell--reservation .rf-lane--local { background: rgba(48, 105, 130, 0.035); border-color: rgba(48, 105, 130, 0.3); }
+.rf-shell--reservation .rf-lane--shared { background: rgba(184, 114, 37, 0.035); border-color: rgba(184, 114, 37, 0.3); }
+.rf-shell--reservation .rf-lane--handoff { background: rgba(33, 111, 78, 0.035); border-color: rgba(33, 111, 78, 0.3); }
+.rf-shell--execution { height: 1540px; }
+.rf-shell--execution .rf-node--neutral { background: #f8eeee; border-color: #a2453c; }
+.rf-shell--execution .rf-lane--lookup { background: rgba(48, 105, 130, 0.035); border-color: rgba(48, 105, 130, 0.3); }
+.rf-shell--execution .rf-lane--call { background: rgba(184, 114, 37, 0.035); border-color: rgba(184, 114, 37, 0.3); }
+.rf-shell--execution .rf-lane--result { background: rgba(33, 111, 78, 0.035); border-color: rgba(33, 111, 78, 0.3); }
+.rf-shell--delivery { height: 1290px; }
+.rf-shell--delivery .rf-node--neutral { background: #f8eeee; border-color: #a2453c; }
+.rf-shell--delivery .rf-lane--json { background: rgba(48, 105, 130, 0.035); border-color: rgba(48, 105, 130, 0.3); }
+.rf-shell--delivery .rf-lane--sse { background: rgba(33, 111, 78, 0.035); border-color: rgba(33, 111, 78, 0.3); }
+.rf-shell--routing .rf-node--neutral { background: #f8eeee; border-color: #a2453c; }
+.rf-shell--routing .rf-lane--live { background: rgba(48, 105, 130, 0.035); border-color: rgba(48, 105, 130, 0.3); }
+.rf-shell--routing .rf-lane--policy { background: rgba(184, 114, 37, 0.035); border-color: rgba(184, 114, 37, 0.3); }
+.rf-shell--routing .rf-lane--plan { background: rgba(33, 111, 78, 0.035); border-color: rgba(33, 111, 78, 0.3); }
+.rf-shell--authorization .rf-node--neutral {
+  background: #f8eeee;
+  border-color: #a2453c;
+}
+.rf-shell--bootstrap .rf-node { width: 100%; height: 100%; cursor: pointer; }
+.rf-shell--bootstrap .rf-node-main { width: 100%; justify-content: flex-start; }
+.lld-step-number {
+  display: grid;
+  place-items: center;
+  flex: 0 0 31px;
+  width: 31px;
+  height: 31px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* ---------- stage personalities ---------- */
 
 .stage-art {
-  background-image:
-    radial-gradient(120% 90% at 88% 6%, color-mix(in srgb, var(--stage-accent, var(--ink-3)) 16%, transparent) 0%, transparent 62%),
-    linear-gradient(180deg, color-mix(in srgb, var(--stage-accent, var(--ink-3)) 7%, transparent) 0%, transparent 58%);
-  background-size: auto;
-  background-position: 0 0;
-  mix-blend-mode: normal;
-  filter: none;
-  opacity: 1;
+  inset: 0 4%;
+  width: 92%;
+  background-image: url("stage-personalities-inference.png");
+  /* Keep each illustration's aspect ratio; the card acts as a crop window. */
+  background-size: 400% auto;
+  mix-blend-mode: multiply;
+  filter: saturate(0.88) contrast(0.98);
+  opacity: 0.66;
 }
-.stage-art::after {
-  content: var(--stage-glyph, "·");
-  position: absolute;
-  top: 44px;
-  right: 10px;
-  font-family: var(--serif);
-  font-size: 62px;
-  line-height: 1;
-  color: var(--stage-accent, var(--ink-3));
-  opacity: 0.13;
-  transition: opacity 0.3s var(--ease), transform 0.3s var(--ease);
+.stage-art::after { content: none; }
+.stage:is(:hover, :focus-visible, .is-active) .stage-art {
+  opacity: 0.82;
+  filter: saturate(1) contrast(1);
+  transform: scale(1.01);
 }
-.stage:is(:hover, :focus-visible, .is-active) .stage-art { opacity: 1; transform: none; }
-.stage:is(:hover, :focus-visible, .is-active) .stage-art::after {
-  opacity: 0.2;
-  transform: translateY(-2px);
-}
+.stage[data-stage="bootstrap"] .stage-art { background-position: 0 12%; }
+.stage[data-stage="admission"] .stage-art { background-position: 33.333% 12%; }
+.stage[data-stage="identity"] .stage-art { background-position: 66.667% 12%; }
+.stage[data-stage="authorization"] .stage-art { background-position: 100% 12%; }
+.stage[data-stage="routing"] .stage-art { background-position: 0 75%; }
+.stage[data-stage="quota"] .stage-art { background-position: 33.333% 75%; }
+.stage[data-stage="execution"] .stage-art { background-position: 66.667% 75%; }
+.stage[data-stage="delivery"] .stage-art { background-position: 100% 75%; }
 
 /* ---------- per-stage accents ---------- */
 /* The order walks the palette once rather than repeating a colour, so two

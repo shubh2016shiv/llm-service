@@ -2333,6 +2333,14 @@ body > .knowledge-bubble.knowledge-bubble--external .knowledge-bubble-example {
   align-content: center;
   justify-items: center;
   min-height: 56px;
+  /* Fill the node wrapper React Flow sizes from the STEPS entry. Without this
+     the box only covers its own text, so the rest of the wrapper is bare pane:
+     it shows the pane's grab cursor and clicks there never reach this div's
+     handlers, which reads as "the node is not clickable". Same reason
+     .hld-node carries it in the full-flow diagram. */
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
   padding: 10px 14px;
   border-radius: 12px;
   border: 1.5px solid transparent;

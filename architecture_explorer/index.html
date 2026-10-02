@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="explorer.css" />
 
-    <!-- React Flow (end-to-end HLD canvas): loaded from a CDN as ES modules via
+    <!-- React Flow (stage LLDs and end-to-end HLD): loaded from a CDN as ES modules via
          an import map — no npm, no bundler, no build step. The rest of the site
          stays plain HTML/CSS/JS. esm.sh resolves react/react-dom as shared
          singletons so there is one copy of each across every entry. -->
@@ -212,6 +212,14 @@
 
     <script src="content.js"></script>
     <script src="app.js"></script>
+    <script type="module" src="bootstrap-flow.js"></script>
+    <script type="module" src="admission-flow.js"></script>
+    <script type="module" src="authentication-flow.js"></script>
+    <script type="module" src="authorization-flow.js"></script>
+    <script type="module" src="routing-flow.js"></script>
+    <script type="module" src="reservation-flow.js"></script>
+    <script type="module" src="execution-flow.js"></script>
+    <script type="module" src="delivery-flow.js"></script>
     <script type="module" src="full-flow.js"></script>
   </body>
 </html>
